@@ -66,6 +66,7 @@ const props = {
 // （标签页③）共享同一 useGenerationDrafts 实例；busy 上报迁至宿主，
 // 与 AnalysisWorkspace 的提升后行为保持一致。
 function WorkspaceHost({
+  analysisPrompt,
   currentUserId = props.currentUserId,
   durationSeconds = props.durationSeconds,
   firstFrameAssetId = props.firstFrameAssetId,
@@ -74,6 +75,7 @@ function WorkspaceHost({
   onRecharge,
   walletProvider,
 }: {
+  analysisPrompt?: string;
   currentUserId?: string;
   durationSeconds?: number;
   firstFrameAssetId?: string;
@@ -83,6 +85,7 @@ function WorkspaceHost({
   walletProvider?: () => Promise<number | null>;
 }) {
   const drafts = useGenerationDrafts({
+    analysisPrompt,
     characterVersionId: props.characterVersionId,
     currentUserId,
     durationSeconds,
@@ -206,6 +209,49 @@ describe("GenerationComposer", () => {
     vi.mocked(api.saveGenerationPrompt).mockRejectedValue(
       new Error("library unavailable"),
     );
+  });
+
+  it.each(["刚刚修改的当前稿", ""])(
+    "preserves the immediate edit %j when a frame changes",
+    async (text) => {
+      const view = render(<WorkspaceHost analysisPrompt="已验收的拆解稿" />);
+      const editor = await screen.findByLabelText("视频生成提示词内容");
+      fireEvent.change(editor, { target: { value: text } });
+      view.rerender(
+        <WorkspaceHost
+          analysisPrompt="已验收的拆解稿"
+          firstFrameAssetId="new-frame"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(text),
+      );
+      view.rerender(
+        <WorkspaceHost analysisPrompt="" firstFrameAssetId="new-frame" />,
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(text),
+      );
+      view.rerender(
+        <WorkspaceHost
+          analysisPrompt="稍后加载的 H3 拆解稿"
+          firstFrameAssetId="new-frame"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(text),
+      );
+    },
+  );
+
+  it("uses the validated analysis prompt without compiling a new version", async () => {
+    render(<WorkspaceHost analysisPrompt="拆解直接返回的 H3 正文" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(
+        "拆解直接返回的 H3 正文",
+      ),
+    );
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
   });
 
   it("shows a saved prompt library load failure instead of an empty library", async () => {
@@ -423,50 +469,44 @@ describe("GenerationComposer", () => {
     );
   });
 
-  it("一键流水线：Prompt 存在未保存修订时提示先保存且不发起任何请求（P0-04-01）", async () => {
-    window.localStorage.clear();
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: {
-        ...baseVersion,
-        payload: {
-          source: "original",
-          full_text: "原稿第一句。原稿第二句。",
-          shot_card_version_id: "shot-card-1",
-          shot_mappings: [],
-        },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
+  it("直接提交当前未保存提示词，不调用编译或锁定", async () => {
     vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
       version: promptVersion("SAVED"),
       stale: false,
       stale_reasons: [],
     });
-
+    vi.mocked(api.createGenerationBatch).mockResolvedValue({
+      id: "batch-direct",
+      project_id: "project-1",
+      prompt_version_id: "server-snapshot",
+      status: "QUEUED",
+      quantity: 1,
+      stale: false,
+      creation_kind: "replica",
+      progress: {
+        total_count: 1,
+        terminal_count: 0,
+        progress_percent: 0,
+        counts: {},
+      },
+      tasks: [],
+    });
     render(<WorkspaceHost />);
-
-    // 等 drafts 重载完成后锚定已保存文本，再制造人工修订中的脏 Prompt。
-    const promptField = await waitFor(() => {
-      const field = screen.getByLabelText("视频生成提示词内容");
-      expect(field).toHaveValue("编译后的 Prompt");
-      return field;
-    });
-    fireEvent.change(promptField, {
-      target: { value: "人工修订中的草稿" },
-    });
+    const input = await screen.findByLabelText("视频生成提示词内容");
+    fireEvent.change(input, { target: { value: "人工修订中的草稿" } });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "触发一键流水线" }));
-
-    // 红线：不自动接受未保存草稿，也不编译/锁定/建批。
-    expect(
-      await screen.findByText(
-        "Prompt 存在未保存修订，请先在「生成设置」中保存后再开始生成。",
-      ),
-    ).toBeInTheDocument();
+    await waitFor(() => expect(props.onBatchCreated).toHaveBeenCalled());
+    expect(api.createGenerationBatch).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ prompt_text: "人工修订中的草稿" }),
+    );
     expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
     expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.createGenerationBatch).not.toHaveBeenCalled();
-    expect(props.onBatchCreated).not.toHaveBeenCalled();
   });
 
   it("runs custom script, prompt revision, lock and max-quantity batch creation", async () => {
@@ -605,7 +645,7 @@ describe("GenerationComposer", () => {
       "project-1",
       expect.objectContaining({
         quantity: 4,
-        prompt_version_id: "prompt-2",
+        prompt_text: "人工修订 Prompt",
         first_frame_asset_id: "first-frame-1",
         provider: "metaso",
       }),
@@ -688,7 +728,7 @@ describe("GenerationComposer", () => {
 
     expect(createButton).toBeDisabled();
     expect(
-      screen.getByText("生成参数已变化，请重新编译 Prompt"),
+      screen.getByText("生成参数已变化，请核对当前提示词"),
     ).toBeInTheDocument();
   });
 
@@ -724,7 +764,7 @@ describe("GenerationComposer", () => {
 
     expect(await screen.findByLabelText("成片时长")).toHaveValue("4");
     expect(
-      screen.getByText("生成参数已变化，请重新编译 Prompt"),
+      screen.getByText("生成参数已变化，请核对当前提示词"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/4–15 秒的整数/)).toBeNull();
   });
@@ -847,7 +887,7 @@ describe("GenerationComposer", () => {
       await screen.findByRole("button", { name: "创建 1 个生成任务" }),
     ).toBeEnabled();
     expect(
-      screen.queryByText("生成参数已变化，请重新编译 Prompt"),
+      screen.queryByText("生成参数已变化，请核对当前提示词"),
     ).not.toBeInTheDocument();
   });
 
@@ -887,7 +927,7 @@ describe("GenerationComposer", () => {
     });
 
     expect(compileButton).toBeDisabled();
-    expect(createButton).toBeDisabled();
+    expect(createButton).toBeEnabled();
     expect(
       screen.getByText("口播稿有未保存修改，请先保存"),
     ).toBeInTheDocument();

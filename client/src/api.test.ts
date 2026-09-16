@@ -997,6 +997,7 @@ describe("素材库 API", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
+        upload_required: true,
         material_id: "asset:audio-1",
         asset_id: "audio-1",
         storage_key: null,
@@ -1055,6 +1056,7 @@ describe("素材库 API", () => {
 
     await uploadMaterial(
       {
+        upload_required: true,
         material_id: "asset:audio-1",
         asset_id: "audio-1",
         storage_key: null,

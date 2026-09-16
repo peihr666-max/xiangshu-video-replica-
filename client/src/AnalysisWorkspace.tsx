@@ -17,6 +17,7 @@ import {
   getLatestProjectShotCards,
   type Project,
   type ProjectMainCharacter,
+  readAnalysisH3Prompt,
   readAnalysisPayload,
   readAnalysisProvider,
   readFirstFrameSelectionPayload,
@@ -211,6 +212,7 @@ export function AnalysisWorkspace({
   walletProvider?: () => Promise<number | null>;
 }) {
   const [analysisId, setAnalysisId] = useState("");
+  const [analysisPrompt, setAnalysisPrompt] = useState("");
   const [analysisProvider, setAnalysisProvider] =
     useState<AnalysisProvider | null>(null);
   const [analysisSummary, setAnalysisSummary] = useState("");
@@ -328,6 +330,7 @@ export function AnalysisWorkspace({
       setError("");
       setSaveMessage("");
       setAnalysisProvider(null);
+      setAnalysisPrompt("");
       setIsAnalysisMissing(true);
       return;
     }
@@ -338,6 +341,7 @@ export function AnalysisWorkspace({
     setError("");
     setSaveMessage("");
     setAnalysisProvider(null);
+    setAnalysisPrompt("");
     setIsAnalysisMissing(false);
     setShotCardVersionId("");
     setShotCardsDirty(false);
@@ -355,6 +359,7 @@ export function AnalysisWorkspace({
           return;
         }
         setAnalysisId(version.id);
+        setAnalysisPrompt(readAnalysisH3Prompt(version));
         setIsAnalysisMissing(false);
         setAnalysisProvider(readAnalysisProvider(version));
         setAnalysisSummary(payload.summary);
@@ -520,6 +525,7 @@ export function AnalysisWorkspace({
   // 标签页③的生成面板共享单一状态源（契约 §2）。Prompt 就绪输入待
   // P0-02-05 接入（契约 §1.2）。
   const generationDrafts = useGenerationDrafts({
+    analysisPrompt,
     characterVersionId: characterSelection?.character_version_id ?? null,
     currentUserId,
     durationSeconds,
@@ -617,24 +623,12 @@ export function AnalysisWorkspace({
     }
   }, [isMissingModalOpen]);
 
-  // P0-04-01：流水线可自动补齐的缺失项——脏口播稿（有已保存版本且非
-  // stale，保存后即可续跑）与 Prompt 未锁定/参数不一致（流水线内编译+
-  // 锁定）；其余缺失（无口播稿版本、上游未确认等）仍需人工处理。
+  // 最终提示词可直接提交；口播稿版本与锁定状态不再是隐式编译的前置条件。
   const pipelineFixableKeys = useMemo(() => {
     const keys = new Set<ReadinessKey>(["promptLocked"]);
-    const scriptBlocked = readiness.missing.some(
-      (item) => item.key === "scriptVersion",
-    );
-    if (
-      scriptBlocked &&
-      generationDrafts.scriptVersion &&
-      generationDrafts.scriptDirty &&
-      !generationDrafts.scriptStale
-    ) {
-      keys.add("scriptVersion");
-    }
+    if (generationDrafts.promptText.trim()) keys.add("scriptVersion");
     return keys;
-  }, [readiness.missing, generationDrafts]);
+  }, [generationDrafts.promptText]);
 
   function startGenerationPipeline() {
     // 流水线反馈（错误/恢复记录）集中在标签页③的生成面板，点击后自动

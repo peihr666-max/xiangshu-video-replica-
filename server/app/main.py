@@ -61,6 +61,7 @@ from app.ops_metrics import (
 )
 from app.oral_routes import router as oral_router
 from app.payment_routes import router as payment_router
+from app.prompt_optimizer_routes import router as prompt_optimizer_router
 from app.publish_browser_routes import router as publish_browser_router
 from app.publish_routes import router as publish_router
 from app.rbac_routes import router as rbac_router
@@ -394,6 +395,7 @@ app.include_router(media_router)
 app.include_router(analysis_router)
 app.include_router(viral_router)
 app.include_router(viral_import_router)
+app.include_router(prompt_optimizer_router)
 app.include_router(character_router)
 app.include_router(character_identity_router)
 app.include_router(character_generation_router)

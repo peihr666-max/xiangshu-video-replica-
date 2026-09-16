@@ -276,6 +276,17 @@ export function patchStudioDraft(
     id: draft.id,
     quoteRevision: draft.quoteRevision + 1,
   };
+  const bindingChanged =
+    firstFrameChanged ||
+    (Object.hasOwn(patch, "tailFrameId") &&
+      patch.tailFrameId !== draft.tailFrameId) ||
+    (patch.referenceIds !== undefined &&
+      JSON.stringify(patch.referenceIds) !==
+        JSON.stringify(draft.referenceIds));
+  if (bindingChanged && /<(Picture|Video|Audio)\s+\d+>|@\d+/.test(draft.prompt))
+    next.promptBindingsStale = true;
+  if (Object.hasOwn(patch, "prompt") && patch.promptBindingsStale === undefined)
+    next.promptBindingsStale = false;
   if (
     sourceChanged ||
     projectChanged ||
@@ -577,9 +588,10 @@ export function validateReferences(
 export function resolveVideoMode(
   page: StudioPage,
   hasFirstFrame = false,
-): "t2v" | "i2v" | "r2v" {
+  hasLastFrame = false,
+): "t2v" | "i2v" | "l2v" | "r2v" {
   if (page === "reference") return "r2v";
-  return hasFirstFrame ? "i2v" : "t2v";
+  return hasFirstFrame ? "i2v" : hasLastFrame ? "l2v" : "t2v";
 }
 
 /** 把分镜卡拼成可读的反推提示词文本（可编辑、可另存为自定义提示词）。 */

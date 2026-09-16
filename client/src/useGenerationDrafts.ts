@@ -62,6 +62,7 @@ export const RECOVERY_CONFLICT_MESSAGE =
   "存在待恢复的已提交批次，请先恢复后再更改生成请求。";
 
 type UseGenerationDraftsInput = {
+  analysisPrompt?: string;
   characterVersionId: string | null;
   currentUserId: string;
   durationSeconds: number;
@@ -82,6 +83,7 @@ type UseGenerationDraftsInput = {
 };
 
 export function useGenerationDrafts({
+  analysisPrompt = "",
   characterVersionId,
   currentUserId,
   durationSeconds,
@@ -104,7 +106,7 @@ export function useGenerationDrafts({
   const [promptVersion, setPromptVersion] = useState<GenerationVersion | null>(
     null,
   );
-  const [promptText, setPromptText] = useState("");
+  const [promptText, setPromptText] = useState(analysisPrompt);
   const [savedPromptText, setSavedPromptText] = useState("");
   const [promptStale, setPromptStale] = useState(false);
   const [limits, setLimits] = useState(DEFAULT_LIMITS);
@@ -204,7 +206,7 @@ export function useGenerationDrafts({
 
         const restoredPrompt = promptState.version;
         const restoredPromptText =
-          readPayloadString(restoredPrompt, "prompt_text") ?? "";
+          readPayloadString(restoredPrompt, "prompt_text") ?? analysisPrompt;
         setPromptVersion(restoredPrompt);
         setPromptText(restoredPromptText);
         setSavedPromptText(restoredPromptText);
@@ -248,7 +250,7 @@ export function useGenerationDrafts({
         const draftScriptKey = localDraftScriptKey(currentUserId, projectId);
         const draftEntry = readLocalDraft(draftScriptKey);
         const draftPromptKey = localDraftPromptKey(currentUserId, projectId);
-        const draftPrompt = readLocalDraft(draftPromptKey);
+        const draftPrompt = readLocalDraft(draftPromptKey, true);
         let draftApplied = false;
         if (draftEntry && draftEntry.text !== restoredScriptText) {
           setScriptText(draftEntry.text);
@@ -260,14 +262,10 @@ export function useGenerationDrafts({
         } else if (draftEntry) {
           clearLocalDraftText(draftScriptKey);
         }
-        if (
-          restoredPrompt &&
-          draftPrompt &&
-          draftPrompt.text !== restoredPromptText
-        ) {
+        if (draftPrompt && draftPrompt.text !== restoredPromptText) {
           setPromptText(draftPrompt.text);
           draftApplied = true;
-        } else if (draftPrompt) {
+        } else if (draftPrompt && restoredPrompt) {
           clearLocalDraftText(draftPromptKey);
         }
         if (draftApplied) {
@@ -396,6 +394,7 @@ export function useGenerationDrafts({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖即草稿状态源；durationSeconds 仅用于成片时长默认值回退
   }, [
+    analysisPrompt,
     characterVersionId,
     currentUserId,
     durationSeconds,
@@ -409,7 +408,7 @@ export function useGenerationDrafts({
     sourceAssetId,
   ]);
 
-  // F-06：未保存编辑的本地草稿防抖写入（与镜头卡 800ms 自动保存同节奏）。
+  // F-06：口播稿保留 800ms 防抖；提示词在编辑回调中立即保存，避免切换素材丢稿。
   // 仅在成功还原后、且文本相对服务端真相有差异时写入——保存/编译后的
   // 等值回写、pending timer 复活都被这里挡掉；显式保存/编译成功仍会主动清除。
   useEffect(() => {
@@ -418,8 +417,7 @@ export function useGenerationDrafts({
     }
     const scriptChanged =
       scriptText.trim() !== serverScriptTextRef.current.trim();
-    const promptChanged = promptText !== savedPromptText;
-    if (!scriptChanged && !promptChanged) {
+    if (!scriptChanged) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -427,11 +425,6 @@ export function useGenerationDrafts({
         writeLocalDraft(localDraftScriptKey(currentUserId, projectId), {
           source: scriptSource,
           text: scriptText.trim(),
-        });
-      }
-      if (promptText !== savedPromptText) {
-        writeLocalDraft(localDraftPromptKey(currentUserId, projectId), {
-          text: promptText,
         });
       }
     }, 800);
@@ -443,9 +436,7 @@ export function useGenerationDrafts({
     draftHydrated,
     isLoading,
     projectId,
-    promptText,
     readOnly,
-    savedPromptText,
     scriptSource,
     scriptText,
   ]);
@@ -486,10 +477,14 @@ export function useGenerationDrafts({
   const durationValid = duration === 4 || duration === 15;
   const provider = defaultBatchProvider();
   const batchRequest: Omit<GenerationBatchInput, "idempotency_key"> | null =
-    promptVersion && quantity !== null && durationValid && firstFrameAssetId
+    quantity !== null && durationValid && firstFrameAssetId
       ? {
           quantity,
-          prompt_version_id: promptVersion.id,
+          prompt_text: promptText,
+          prompt_context: {
+            source: "manual",
+            shot_card_version_id: shotCardVersionId,
+          },
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
           resolution,
@@ -611,12 +606,9 @@ export function useGenerationDrafts({
   );
   const canCreateBatch = Boolean(
     !readOnly &&
-      promptVersion &&
-      promptStatus === "LOCKED" &&
-      !scriptDirty &&
-      !promptStale &&
-      !promptDirty &&
-      promptParametersMatch &&
+      promptText.trim() &&
+      Array.from(promptText).length <= 7000 &&
+      firstFrameAssetId &&
       quantity !== null &&
       durationValid &&
       priceQuoteReady &&
@@ -971,18 +963,15 @@ export function useGenerationDrafts({
     await submitBatch(recoveryRecord, onBatchCreated, true);
   }
 
-  // P0-04-01：主按钮一键流水线——保存脏口播稿 →（需要时）编译 →（需要时）
-  // 锁定 → 幂等建批。不复用单步 UI 动作（各自的 busyAction 守卫会互相
-  // 短路），直连 API 并用本地变量链接力四步；失败停在对应步并给出可重试
-  // 的中文错误，已完成的步骤保留成果（不产生半成品锁定/建批）。
+  // The visible editor is authoritative; the server snapshots it atomically with the batch.
   async function runGenerationPipeline(
     onBatchCreated: (batch: GenerationBatch) => void,
   ) {
     if (readOnly || busyAction || isCreatingBatchRef.current || isLoading) {
       return;
     }
-    if (promptDirty) {
-      setError("Prompt 存在未保存修订，请先在「生成设置」中保存后再开始生成。");
+    if (!promptText.trim() || Array.from(promptText).length > 7000) {
+      setError("请填写 1–7000 字的提示词。");
       return;
     }
     if (!firstFrameAssetId) {
@@ -1013,96 +1002,17 @@ export function useGenerationDrafts({
     setError("");
     setMessage("");
     try {
-      let pipelineScript = scriptVersion;
-      let savedScriptThisRun = false;
-      if (scriptDirty) {
-        const text = scriptText.trim();
-        if (!text) {
-          setError("口播稿内容为空，请先补写后再开始生成。");
-          return;
-        }
-        step = "保存口播稿";
-        setBusyAction("script");
-        const saved = await createScriptVersion(projectId, {
-          source: scriptSource,
-          text,
-          shot_card_version_id: shotCardVersionId,
-        });
-        if (!isCurrent()) {
-          return;
-        }
-        pipelineScript = saved;
-        savedScriptThisRun = true;
-        setScriptVersion(saved);
-        setScriptStale(false);
-        clearLocalDraftText(localDraftScriptKey(currentUserId, projectId));
-        // 与手动 saveScript 对齐：新口播稿落库后旧 Prompt 即刻 stale
-        // （服务端 SCRIPT_SUPERSEDED），编译失败时不能谎报就绪。
-        if (promptVersion) {
-          setPromptStale(true);
-        }
-      }
-
-      let pipelinePrompt = promptVersion;
-      // USED（已用于建批）时必须重编译产出新版本——锁定接口对 USED
-      // 幂等返回，直接建批必被 409 PROMPT_ALREADY_USED 拒绝且重试死循环。
-      const needsCompile =
-        !pipelinePrompt ||
-        readPayloadString(pipelinePrompt, "status") === "USED" ||
-        promptStale ||
-        savedScriptThisRun ||
-        !promptParametersMatch;
-      if (needsCompile) {
-        if (!pipelineScript) {
-          setError("口播稿尚未保存，无法编译 Prompt。");
-          return;
-        }
-        step = "编译 Prompt";
-        setBusyAction("compile");
-        const compiled = await compileGenerationPrompt(projectId, {
-          script_version_id: pipelineScript.id,
-          shot_card_version_id: shotCardVersionId,
-          first_frame_asset_id: firstFrameAssetId,
-          output_duration_seconds: duration,
-          resolution,
-          ratio,
-        });
-        if (!isCurrent()) {
-          return;
-        }
-        pipelinePrompt = compiled;
-        const compiledText = readPayloadString(compiled, "prompt_text") ?? "";
-        setPromptVersion(compiled);
-        setPromptText(compiledText);
-        setSavedPromptText(compiledText);
-        setPromptStale(false);
-        clearLocalDraftText(localDraftPromptKey(currentUserId, projectId));
-      }
-
-      // 正常情况下走到这里 prompt 必非空（未编译 ⇒ 原本存在且参数匹配），
-      // 显式守卫仅为收窄类型并防御编译返回空值的异常。
-      if (!pipelinePrompt) {
-        setError("Prompt 缺失或编译结果为空，无法继续一键生成。可重试。");
-        return;
-      }
-
-      if (readPayloadString(pipelinePrompt, "status") !== "LOCKED") {
-        step = "锁定 Prompt";
-        setBusyAction("lock");
-        const locked = await lockGenerationPrompt(projectId, pipelinePrompt.id);
-        if (!isCurrent()) {
-          return;
-        }
-        pipelinePrompt = locked;
-        setPromptVersion(locked);
-      }
-
+      if (!isCurrent()) return;
       step = "创建批次";
       setBusyAction("batch");
       await resolveAndSubmitBatch(
         {
           quantity,
-          prompt_version_id: pipelinePrompt.id,
+          prompt_text: promptText,
+          prompt_context: {
+            source: "manual",
+            shot_card_version_id: shotCardVersionId,
+          },
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
           resolution,
@@ -1119,8 +1029,7 @@ export function useGenerationDrafts({
         );
       }
     } finally {
-      // 建批步的 busy/错误由 submitBatch 自管理（它推进 actionGeneration），
-      // 此处仅恢复前三步的中断状态。
+      // submitBatch owns its busy/error state and advances actionGeneration.
       if (isCurrent()) {
         setBusyAction(null);
       }
@@ -1154,7 +1063,9 @@ export function useGenerationDrafts({
       }
       if (
         batch.project_id !== projectId ||
-        batch.prompt_version_id !== idempotencyRecord.request.prompt_version_id
+        (idempotencyRecord.request.prompt_version_id !== undefined &&
+          batch.prompt_version_id !==
+            idempotencyRecord.request.prompt_version_id)
       ) {
         setError("服务返回的批次不属于当前项目或 Prompt，请在任务记录中核对。");
         return;
@@ -1199,6 +1110,8 @@ export function useGenerationDrafts({
   }
 
   return {
+    projectId,
+    promptScope: `${currentUserId}:${projectId}`,
     // script 状态
     scriptVersion,
     scriptSource,
@@ -1246,7 +1159,16 @@ export function useGenerationDrafts({
     rewriteScriptWithAi,
     saveScript,
     compilePrompt,
-    setPromptText,
+    setPromptText: (text: string) => {
+      setPromptText(text);
+      // Persist even an intentional clear before changing materials can reload
+      // the server snapshot; AI apply/undo uses this same editor callback.
+      writeLocalDraft(
+        localDraftPromptKey(currentUserId, projectId),
+        { text },
+        true,
+      );
+    },
     savePromptRevision,
     lockPrompt,
     setQuantityInput,
@@ -1601,7 +1523,10 @@ function isScriptSource(value: unknown): value is ScriptSource {
   return value === "original" || value === "custom";
 }
 
-function readLocalDraft(storageKey: string): LocalDraftEntry | null {
+function readLocalDraft(
+  storageKey: string,
+  allowEmpty = false,
+): LocalDraftEntry | null {
   try {
     const saved = window.localStorage.getItem(storageKey);
     if (!saved) {
@@ -1612,7 +1537,7 @@ function readLocalDraft(storageKey: string): LocalDraftEntry | null {
       typeof parsed === "object" &&
       parsed !== null &&
       typeof (parsed as LocalDraftEntry).text === "string" &&
-      (parsed as LocalDraftEntry).text.trim()
+      (allowEmpty || (parsed as LocalDraftEntry).text.trim())
     ) {
       const entry = parsed as LocalDraftEntry;
       return isScriptSource(entry.source) ? entry : { text: entry.text };
@@ -1624,9 +1549,13 @@ function readLocalDraft(storageKey: string): LocalDraftEntry | null {
   }
 }
 
-function writeLocalDraft(storageKey: string, entry: LocalDraftEntry): void {
+function writeLocalDraft(
+  storageKey: string,
+  entry: LocalDraftEntry,
+  allowEmpty = false,
+): void {
   try {
-    if (entry.text.trim()) {
+    if (allowEmpty || entry.text.trim()) {
       window.localStorage.setItem(storageKey, JSON.stringify(entry));
     } else {
       window.localStorage.removeItem(storageKey);
@@ -1680,7 +1609,8 @@ function isIdempotencyRecord(value: unknown): value is IdempotencyRecord {
     !request ||
     request.idempotency_key !== record.key ||
     typeof request.quantity !== "number" ||
-    typeof request.prompt_version_id !== "string" ||
+    (typeof request.prompt_version_id === "string") ===
+      (typeof request.prompt_text === "string") ||
     typeof request.first_frame_asset_id !== "string" ||
     typeof request.output_duration_seconds !== "number" ||
     (request.resolution !== "768P" && request.resolution !== "2K") ||

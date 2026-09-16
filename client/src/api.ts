@@ -193,10 +193,23 @@ export type PromptCompileInput =
   };
 export type PromptRevisionInput =
   components["schemas"]["PromptRevisionRequest"];
-export type GenerationBatchInput =
-  components["schemas"]["GenerationBatchRequest"] & {
-    ratio?: GenerationRatio;
-  };
+export type PromptContext = {
+  source?: "analysis" | "manual" | "ai" | "imported";
+  analysis_version_id?: string | null;
+  shot_card_version_id?: string | null;
+  script_version_id?: string | null;
+  optimization_task_id?: string | null;
+  context_hash?: string | null;
+};
+export type GenerationBatchInput = Omit<
+  components["schemas"]["GenerationBatchRequest"],
+  "prompt_version_id"
+> & {
+  prompt_version_id?: string;
+  prompt_text?: string;
+  prompt_context?: PromptContext;
+  ratio?: GenerationRatio;
+};
 export type GenerationRuntimeLimits =
   components["schemas"]["GenerationRuntimeLimits"];
 export type GenerationRatio =
@@ -219,6 +232,7 @@ export type GenerationPriceQuote = {
   credit_price_version?: number;
 };
 export type SavedPromptInput = {
+  generation_context?: PromptGenerationContext;
   name: string;
   prompt_text: string;
   base_prompt_version_id?: string;
@@ -1808,7 +1822,7 @@ export async function getIndependentCapabilities(): Promise<IndependentCapabilit
 }
 
 export type IndependentVideoTaskInput = {
-  mode: "t2v" | "i2v" | "r2v";
+  mode: "t2v" | "i2v" | "l2v" | "r2v";
   prompt_text: string;
   first_frame_asset_id?: string | null;
   last_frame_asset_id?: string | null;
@@ -1837,6 +1851,10 @@ export async function createIndependentVideoTask(
 }
 
 export type SavedPromptItem = {
+  generation_context?: PromptGenerationContext & {
+    mode?: H3Mode;
+    generation_assets?: { label: string; purpose: string }[];
+  };
   id: string;
   project_id: string;
   name: string;
@@ -2908,6 +2926,7 @@ export async function completeVideoUpload(
 export async function startVideoAnalysis(
   projectId: string,
   assetId: string,
+  generationContext?: PromptGenerationContext,
 ): Promise<AnalysisTask> {
   const errorPrefix = "启动视频拆解失败";
   try {
@@ -2918,7 +2937,11 @@ export async function startVideoAnalysis(
         method: "POST",
         // Clicking “重新拆解” must publish a fresh immutable analysis version;
         // existing versions are loaded separately when the workspace opens.
-        body: JSON.stringify({ asset_id: assetId, reuse_existing: false }),
+        body: JSON.stringify({
+          asset_id: assetId,
+          reuse_existing: false,
+          generation_context: generationContext,
+        }),
       },
     );
   } catch (error) {
@@ -4748,6 +4771,17 @@ export function readFirstFrameSelectionPayload(
       payload.first_frame_candidates_version_id,
     first_frame_asset_id: payload.first_frame_asset_id,
   };
+}
+
+export function readAnalysisH3Prompt(
+  version: { payload: Record<string, unknown> } | null | undefined,
+): string {
+  const result = version?.payload.generation_prompt as
+    | { status?: string; prompt_text?: string }
+    | undefined;
+  return result?.status === "READY" && typeof result.prompt_text === "string"
+    ? result.prompt_text
+    : "";
 }
 
 export function readAnalysisPayload(
@@ -6815,6 +6849,77 @@ export function resolveViralLink(
     },
     60_000,
   );
+}
+
+// ---------------------------------------------------------------------------
+// AI 优化提示词：提示词框右上角的小图标。任意文本 → MiniMax H3 官方结构。
+// 同步付费调用（按次计费）；Idempotency-Key 由调用方每次点击生成。
+// ---------------------------------------------------------------------------
+
+export type H3Mode = "T2VA" | "I2VA" | "FL2VA" | "L2VA" | "Ref2VA";
+export type PromptGenerationContext = {
+  route: "text_image" | "reference" | "replica";
+  duration_seconds: number;
+  ratio?: GenerationRatio;
+  project_id?: string | null;
+  analysis_version_id?: string | null;
+  shot_card_version_id?: string | null;
+  script_version_id?: string | null;
+  source_asset_id?: string | null;
+  first_frame_asset_id?: string | null;
+  last_frame_asset_id?: string | null;
+  references?: { asset_id: string; purpose: string }[];
+  instructions?: string;
+};
+export type PromptOptimizeInput = PromptGenerationContext & {
+  idempotency_key: string;
+  editor_revision: number;
+  prompt_text: string;
+};
+export type PromptOptimizeResult = {
+  task_id: string;
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "NEEDS_INPUT"
+    | "FAILED"
+    | "SUBMISSION_UNCERTAIN";
+  mode: H3Mode;
+  editor_revision: number;
+  context_hash: string;
+  formatter_version: string;
+  error_message?: string | null;
+  result?: {
+    prompt_text: string | null;
+    warnings: { code: string; message: string }[];
+    validation_status: string;
+  } | null;
+};
+export function createPromptOptimization(
+  input: PromptOptimizeInput,
+): Promise<PromptOptimizeResult> {
+  return requestApiJson<PromptOptimizeResult>(
+    "/api/prompt-optimizations",
+    "启动提示词优化失败",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+export function getPromptOptimization(
+  id: string,
+): Promise<PromptOptimizeResult> {
+  return requestApiJson<PromptOptimizeResult>(
+    `/api/prompt-optimizations/${encodeURIComponent(id)}`,
+    "查询提示词优化失败",
+  );
+}
+/** Keep authentication material private; callers only get a session equality check. */
+export function capturePromptSession(): () => boolean {
+  const token = workspaceAccessToken();
+  return () => workspaceAccessToken() === token;
 }
 
 export function getViralImportTask(taskId: string): Promise<ViralImportTask> {

@@ -23,6 +23,7 @@ import {
   listUserSavedPrompts,
   type Project,
   type ProjectMainCharacter,
+  readAnalysisH3Prompt,
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
   rewriteProjectScript,
@@ -52,6 +53,7 @@ import {
   uploadVideoMaterial,
   uploadWorkbenchSourceVideo,
 } from "./live";
+import { PromptEditor } from "./PromptEditor";
 import {
   clearScriptRewriteIdempotencyKey,
   resolvePendingRewrite,
@@ -1214,6 +1216,10 @@ export function ReplicaPage() {
   const [promptNameOpen, setPromptNameOpen] = useState(false);
   const [promptName, setPromptName] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
+  const [pendingAnalysisPrompt, setPendingAnalysisPrompt] = useState<{
+    projectId: string;
+    text: string;
+  } | null>(null);
   const [generating, setGenerating] = useState(false);
   const [replicaQuote, setReplicaQuote] = useState<GenerationPriceQuote | null>(
     null,
@@ -1327,7 +1333,9 @@ export function ReplicaPage() {
             ? savedPromptText
             : "";
         const prompt =
-          savedPrompt || buildReplicaPromptText(restoredShots, original);
+          savedPrompt ||
+          readAnalysisH3Prompt(analysisVersion) ||
+          buildReplicaPromptText(restoredShots, original);
         const savedScriptText = scriptState.version?.payload.full_text;
         const savedScript =
           !scriptState.stale && typeof savedScriptText === "string"
@@ -1630,7 +1638,20 @@ export function ReplicaPage() {
     setStage("analyzing");
     notify("AI 拆解进行中，约需一到数分钟，请保持页面打开…");
     try {
-      const task = await startVideoAnalysis(projectId, assetId);
+      const editAtAnalysisStart = promptEditVersionRef.current;
+      const analysisTarget = JSON.stringify([
+        state.draft.firstFrameId,
+        state.draft.duration,
+        state.draft.ratio,
+      ]);
+      const task = await startVideoAnalysis(projectId, assetId, {
+        route: "replica",
+        project_id: projectId,
+        source_asset_id: assetId,
+        first_frame_asset_id: state.draft.firstFrameId,
+        duration_seconds: replicaDuration,
+        ratio: state.draft.ratio as GenerationRatio,
+      });
       await waitForAnalysisTask(task.id);
       if (analysisProjectRef.current !== projectId) {
         return; // 等待期间用户更换了来源视频，丢弃旧项目的拆解结果。
@@ -1666,14 +1687,40 @@ export function ReplicaPage() {
       setShots(finalShots);
       setShotCardVersionId(shotVersion?.id || undefined);
       setOriginalScript(script);
-      const text = buildReplicaPromptText(finalShots, script);
-      if (!promptTextRef.current.trim()) {
+      const generationPrompt = analysisVersion?.payload.generation_prompt as
+        | {
+            status?: string;
+            prompt_text?: string;
+            issues?: { message: string }[];
+          }
+        | undefined;
+      const text =
+        generationPrompt?.status === "READY" && generationPrompt.prompt_text
+          ? generationPrompt.prompt_text
+          : buildReplicaPromptText(finalShots, script);
+      if (
+        !promptEditedRef.current &&
+        promptEditVersionRef.current === editAtAnalysisStart &&
+        analysisTarget ===
+          JSON.stringify([
+            latestDraftRef.current.firstFrameId,
+            latestDraftRef.current.duration,
+            latestDraftRef.current.ratio,
+          ])
+      ) {
         setPromptText(text);
+        promptTextRef.current = text;
         patchDraft({ prompt: text, promptEdited: false });
+      } else {
+        setPendingAnalysisPrompt({ projectId, text });
       }
       setStage("ready");
       setAnalysisBusy(false);
-      notify("拆解完成：分镜与 Prompt 已生成，可编辑后保存或送生成。");
+      notify(
+        generationPrompt?.status === "READY"
+          ? "拆解完成，H3 提示词可直接编辑后生成，无需再次优化。"
+          : `分镜已保存。${generationPrompt?.issues?.map((issue) => issue.message).join("；") || "提示词待核对，可手动编辑或主动优化。"}`,
+      );
     } catch (cause: unknown) {
       setAnalysisBusy(false);
       setStage("ready");
@@ -1701,6 +1748,14 @@ export function ReplicaPage() {
           promptName.trim() ||
           `复刻提示词 ${new Date().toLocaleDateString("zh-CN")}`,
         prompt_text: submittedPrompt,
+        generation_context: {
+          route: "replica",
+          project_id: projectId,
+          source_asset_id: latestDraftRef.current.sourceAssetId,
+          first_frame_asset_id: latestDraftRef.current.firstFrameId,
+          duration_seconds: replicaDuration,
+          ratio: latestDraftRef.current.ratio as GenerationRatio,
+        },
       });
       const stillCurrent =
         operation === promptSaveOperationRef.current &&
@@ -1712,14 +1767,8 @@ export function ReplicaPage() {
           notify("提交时的 Prompt 已保存，当前修改仍需再次保存。");
         return;
       }
-      promptEditVersionRef.current += 1;
-      promptEditedRef.current = false;
-      promptTypedThisMountRef.current = false;
-      latestDraftRef.current = {
-        ...latestDraftRef.current,
-        promptEdited: false,
-      };
-      patchDraftRef.current({ promptEdited: false });
+      // Saving a reusable template does not revert the authoritative local draft.
+      patchDraftRef.current({ prompt: submittedPrompt, promptEdited: true });
       notify("已保存到我的提示词，视频生成页可直接导入。");
       setPromptNameOpen(false);
     } catch (cause: unknown) {
@@ -1969,18 +2018,50 @@ export function ReplicaPage() {
               <span>拆解 Prompt（可编辑）</span>
               {displayShots.length === 0 && <small>完成拆解后自动生成</small>}
             </div>
-            <textarea
-              aria-label="拆解 Prompt"
-              disabled={readOnly}
-              className="creation-textarea"
-              onChange={(event) => {
-                setPromptText(event.target.value);
-                promptTextRef.current = event.target.value;
+            {pendingAnalysisPrompt &&
+              pendingAnalysisPrompt.projectId === project?.id && (
+                <details>
+                  <summary>
+                    查看拆解开始时的提示词（当前编辑与素材已保留）
+                  </summary>
+                  <pre>{pendingAnalysisPrompt.text}</pre>
+                  <Button
+                    disabled={readOnly}
+                    onClick={() => {
+                      const text = pendingAnalysisPrompt.text;
+                      setPromptText(text);
+                      promptTextRef.current = text;
+                      promptEditVersionRef.current += 1;
+                      promptEditedRef.current = true;
+                      patchDraft({ prompt: text, promptEdited: true });
+                      setPendingAnalysisPrompt(null);
+                    }}
+                  >
+                    应用拆解结果
+                  </Button>
+                </details>
+              )}
+            <PromptEditor
+              label="拆解 Prompt"
+              readOnly={readOnly}
+              optimizationDisabled={review}
+              scope={`${user.id}:${state.draft.projectId ?? ""}`}
+              context={{
+                route: "replica",
+                project_id: state.draft.projectId,
+                source_asset_id: state.draft.sourceAssetId,
+                first_frame_asset_id: state.draft.firstFrameId,
+                duration_seconds: replicaDuration,
+                ratio: state.draft.ratio as GenerationRatio,
+              }}
+              onChange={(text) => {
+                setPromptText(text);
+                promptTextRef.current = text;
                 promptEditedRef.current = true;
                 promptTypedThisMountRef.current = true;
                 promptEditVersionRef.current += 1;
                 patchDraft({
-                  prompt: event.target.value,
+                  prompt: text,
                   promptEdited: true,
                 });
               }}
@@ -2100,8 +2181,7 @@ export function ReplicaPage() {
             </Hint>
             {state.draft.script.confirmed && state.draft.script.text.trim() ? (
               <Hint>
-                送生成将使用文案工坊已确认的终稿重新编译
-                Prompt，替换原片台词；当前自定义 Prompt 仍保留在编辑区。
+                生成使用当前提示词框内容。文案已更新时，请先核对提示词中的台词。
               </Hint>
             ) : null}
           </Panel>
@@ -2736,7 +2816,10 @@ function VideoProgressView({ task }: { task: StudioTask }) {
 function SavedPromptImporter({
   onImport,
 }: {
-  onImport: (promptText: string) => void;
+  onImport: (
+    promptText: string,
+    context?: SavedPromptItem["generation_context"],
+  ) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [prompts, setPrompts] = useState<SavedPromptItem[]>();
@@ -2782,7 +2865,7 @@ function SavedPromptImporter({
                 key={item.id}
                 type="button"
                 onClick={() => {
-                  onImport(item.prompt_text);
+                  onImport(item.prompt_text, item.generation_context);
                   notify(`已导入「${item.name}」，可继续修改。`);
                   setOpen(false);
                 }}
@@ -3157,16 +3240,65 @@ export function VideoPage() {
       >
         <Panel className="creation-video-form">
           <Field label="提示词">
-            <textarea
-              aria-label="提示词"
-              className="creation-textarea"
-              disabled={readOnly}
-              onChange={(event) => patchDraft({ prompt: event.target.value })}
-              placeholder="描述镜头、场景、运动与光线"
+            <PromptEditor
+              label="提示词"
               value={state.draft.prompt}
+              readOnly={readOnly}
+              optimizationDisabled={review}
+              scope={`${user.id}:${state.page}`}
+              onChange={(text) =>
+                patchDraft({ prompt: text, promptEdited: true })
+              }
+              placeholder="描述镜头、场景、运动与光线"
+              context={{
+                route: referenceMode ? "reference" : "text_image",
+                duration_seconds: state.draft.duration,
+                ratio: state.draft.ratio as GenerationRatio,
+                first_frame_asset_id: referenceMode
+                  ? undefined
+                  : state.draft.firstFrameId,
+                last_frame_asset_id: referenceMode
+                  ? undefined
+                  : state.draft.tailFrameId,
+                references: referenceMode
+                  ? references.map((asset) => ({
+                      asset_id: asset.assetId ?? asset.id,
+                      purpose:
+                        state.draft.referencePurposes?.[asset.id] ||
+                        "unspecified",
+                    }))
+                  : [],
+              }}
             />
+            {state.draft.promptBindingsStale && (
+              <div role="alert">
+                参考素材已变化，请核对提示词的素材编号。
+                <Button
+                  onClick={() => patchDraft({ promptBindingsStale: false })}
+                  disabled={readOnly}
+                >
+                  已核对当前素材绑定
+                </Button>
+              </div>
+            )}
+            {state.draft.importedPromptContext && (
+              <small>
+                模板模式：{state.draft.importedPromptContext.mode ?? "未记录"}。
+                {(state.draft.importedPromptContext.generation_assets ?? [])
+                  .map((asset) => `${asset.label}：${asset.purpose}`)
+                  .join("；")}
+                请按当前素材重新核对引用。
+              </small>
+            )}
             <SavedPromptImporter
-              onImport={(promptText) => patchDraft({ prompt: promptText })}
+              onImport={(promptText, context) =>
+                patchDraft({
+                  prompt: promptText,
+                  importedPromptContext: context,
+                  promptBindingsStale:
+                    /<(Picture|Video|Audio)\s+\d+>|@\d+/.test(promptText),
+                })
+              }
             />
           </Field>
           {referenceMode ? (
@@ -3278,12 +3410,38 @@ export function VideoPage() {
                     <Media asset={asset} alt={asset.name} />
                     <span className="creation-reference-copy">
                       <strong>
-                        @{index + 1} {asset.name}
+                        @{index + 1} → &lt;
+                        {asset.kind === "image"
+                          ? "Picture"
+                          : asset.kind === "video"
+                            ? "Video"
+                            : "Audio"}{" "}
+                        {
+                          references
+                            .slice(0, index + 1)
+                            .filter((item) => item.kind === asset.kind).length
+                        }
+                        &gt; {asset.name}
                       </strong>
                       <small>
                         {assetKindNames[asset.kind]} · {asset.source}
                       </small>
                     </span>
+                    <input
+                      aria-label={`${asset.name}的参考用途`}
+                      placeholder="参考用途，如人物、服装、场景"
+                      disabled={readOnly}
+                      value={state.draft.referencePurposes?.[asset.id] ?? ""}
+                      maxLength={200}
+                      onChange={(event) =>
+                        patchDraft({
+                          referencePurposes: {
+                            ...state.draft.referencePurposes,
+                            [asset.id]: event.target.value,
+                          },
+                        })
+                      }
+                    />
                     <Button
                       aria-label={`移除 ${asset.name}`}
                       className="creation-reference-remove"

@@ -33,6 +33,7 @@ SERVICES: dict[str, Service] = {
     "asr": Service("语音转写", "second", "dashscope", "copy"),
     "viral_data": Service("爆款视频数据请求", "call", "tikhub", "viral"),
     "link_resolution": Service("链接解析", "call", "douyidou", "workbench"),
+    "prompt_optimize": Service("提示词 AI 优化", "call", "apilio", "workbench"),
     "avatar_clone": Service("口播分身创建", "call", "hifly", "people"),
     "voice_clone": Service("声音克隆", "call", "hifly", "people"),
     "quality_inspection": Service("图片及视频质量检查", "call", "apilio", "internal", False),

@@ -88,3 +88,11 @@ UI-TYPOGRAPHY-BRAND / PROMPT-OPTIMIZE 并行任务涉及同名大文件，本任
 ## 第二次主分支同步（#124）
 
 上次冲突修复后，main 新增 2f4fc9c9（#124 字号、品牌与 IP 文案流程），两份公共任务记录再次冲突。本次在原分支合入，保留 main 的 UI-TYPOGRAPHY 记录及本分支 ORAL-VIDEO-TTS、PUBLISH-INLINE-QR 记录。共享前端文件自动合并经检查，人物 IP 编辑和文案工坊增量保留，视频分身与独立声音档案改造保留。完整前端检查通过：Biome、TypeScript、103 文件 / 1598 passed（25.42s）；秘密扫描及差异检查通过。服务端新增 main 文件与本任务 materials/oral_routes 无直接重叠，完整集成门禁交由本次 PR CI 核验，未重复本地全量 PG。
+
+## 第三次主分支同步（#125）
+
+用户提交两份公共任务记录冲突截图后，核对 PR #125 已合并、当前唯一冲突 PR 为 #126；原执行任务空闲且 worktree 干净。本次由 Codex 会话 01a0a9f5-f543-73d3-9b55-2610d08fe06a 仅处理主线同步，保持原 Owner 和任务边界。
+
+在同一分支合入 origin/main ba616f46（#125 H3 提示词）。两份账本完整保留主线内容并追加本任务独立章节；ORAL-VIDEO-TTS、PROMPT-OPTIMIZE、PUBLISH-INLINE-QR 各一份，没有重复扫码记录。检查自动合并的共享前端：H3 当前文本提交、优化编辑器与素材绑定检查保留；口播和人物改造保留。口播服务端源码与专项测试未被此次合并改写。
+
+本地前端完整检查通过：Biome、TypeScript、104 文件 / 1607 项（25.27 秒）；秘密扫描、链接存在性与 diff 检查通过。未重复已完成的本地全量 PG，集成后端及安装包由本次 PR CI 验证，旧 head 绿色结果不作为新 head 结论。没有创建 Docker 资源，没有合并 PR 或部署。

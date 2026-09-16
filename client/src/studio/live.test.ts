@@ -1567,125 +1567,65 @@ describe("runReplicaGeneration（复刻一键管线）", () => {
     api.createGenerationBatch.mockResolvedValue({ id: "batch-r1" });
   }
 
-  it("编辑过 Prompt 时走 revise 再锁定，建批引用锁定版本", async () => {
-    mockHappyPath();
-    const batch = await live.runReplicaGeneration("project-1", baseInput);
-
-    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
-      source: "original",
-      text: "原片口播稿",
-      shot_card_version_id: "scv-1",
-    });
-    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({
-        script_version_id: "script-1",
-        shot_card_version_id: "scv-1",
-        first_frame_asset_id: "ff-1",
-      }),
-    );
-    expect(api.reviseGenerationPrompt).toHaveBeenCalledWith("project-1", {
-      base_prompt_version_id: "prompt-compiled",
-      prompt_text: "编辑后的提示词",
-    });
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-revised",
-    );
-    expect(api.createGenerationBatch).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({ idempotency_key: "replica-idempotency-1" }),
-    );
-    expect(batch.id).toBe("batch-r1");
-  });
-
-  it("已确认工坊终稿以 custom 来源写入真实镜头映射并使用重编译 Prompt", async () => {
-    mockHappyPath();
-    await live.runReplicaGeneration("project-1", {
-      ...baseInput,
-      idempotencyKey: "confirmed-copy-request",
-      confirmedScriptText: "客户确认的新口播终稿",
-    });
-    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
-      source: "custom",
-      text: "客户确认的新口播终稿",
-      shot_card_version_id: "scv-1",
-    });
-    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({ script_version_id: "script-1" }),
-    );
-    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-compiled",
-    );
-  });
+  it.each([undefined, "客户确认的新口播終稿"])(
+    "直接提交当前提示词，确认文案=%s",
+    async (confirmedScriptText) => {
+      mockHappyPath();
+      const batch = await live.runReplicaGeneration("project-1", {
+        ...baseInput,
+        confirmedScriptText,
+      });
+      expect(batch.id).toBe("batch-r1");
+      expect(api.createScriptVersion).not.toHaveBeenCalled();
+      expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.createGenerationBatch).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          prompt_text: "编辑后的提示词",
+          prompt_context: expect.objectContaining({
+            shot_card_version_id: "scv-1",
+          }),
+          idempotency_key: baseInput.idempotencyKey,
+        }),
+      );
+    },
+  );
 
   it("建批响应不确定时复用已冻结的完整请求", async () => {
-    api.createScriptVersion.mockResolvedValue({
-      id: "script-first",
-      payload: { shot_card_version_id: "scv-1" },
-    });
-    api.compileGenerationPrompt.mockResolvedValue({
-      id: "prompt-compiled-first",
-      payload: { prompt_text: "编译产物提示词" },
-    });
-    api.reviseGenerationPrompt.mockResolvedValue({
-      id: "prompt-revised-first",
-      payload: { prompt_text: "编辑后的提示词" },
-    });
-    api.lockGenerationPrompt.mockResolvedValue({ id: "prompt-locked-first" });
     api.createGenerationBatch
-      .mockRejectedValueOnce(new Error("提交结果未知，请安全重试。"))
+      .mockRejectedValueOnce(new Error("提交结果未知"))
       .mockResolvedValueOnce({ id: "batch-replayed" });
-
     await expect(
       live.runReplicaGeneration("project-1", baseInput),
     ).rejects.toThrow("提交结果未知");
     await expect(
       live.runReplicaGeneration("project-1", {
         ...baseInput,
-        idempotencyKey: "replica-key-after-reenter",
+        idempotencyKey: "new-click",
       }),
     ).resolves.toEqual({ id: "batch-replayed" });
-
-    expect(api.createScriptVersion).toHaveBeenCalledOnce();
-    expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.reviseGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.createGenerationBatch).toHaveBeenCalledTimes(2);
     expect(api.createGenerationBatch.mock.calls[1]).toEqual(
       api.createGenerationBatch.mock.calls[0],
     );
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
   });
 
-  it("Prompt 未编辑时跳过 revise 直接锁定编译产物", async () => {
-    mockHappyPath();
-    await live.runReplicaGeneration("project-1", {
-      ...baseInput,
-      promptText: "编译产物提示词",
-    });
-
-    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-compiled",
-    );
-  });
-
-  it("原稿为空时回退纯画面叙事文案并以 custom 来源存稿", async () => {
-    mockHappyPath();
-    await live.runReplicaGeneration("project-1", {
-      ...baseInput,
-      originalScriptText: "",
-    });
-
-    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
-      source: "custom",
-      text: "",
-      shot_card_version_id: "scv-1",
-    });
+  it("空白提示词不回退成编译稿，页面已变化时停止提交", async () => {
+    await expect(
+      live.runReplicaGeneration("project-1", {
+        ...baseInput,
+        promptText: "  ",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      live.runReplicaGeneration("project-1", {
+        ...baseInput,
+        isCurrent: () => false,
+      }),
+    ).rejects.toThrow();
+    expect(api.createGenerationBatch).not.toHaveBeenCalled();
   });
 });
 

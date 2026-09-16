@@ -324,6 +324,25 @@ describe("ProjectDetailFlow", () => {
     vi.restoreAllMocks();
   });
 
+  it("prefers a READY H3 analysis prompt to the legacy preview", async () => {
+    vi.mocked(api.getLatestProjectAnalysis).mockResolvedValue({
+      ...analysisVersion,
+      payload: {
+        ...analysisVersion.payload,
+        generation_prompt: { status: "READY", prompt_text: "直接拆解 H3 正文" },
+      },
+    });
+    render(
+      <ProjectDetailFlow
+        project={project}
+        readOnly={false}
+        onBack={vi.fn()}
+        onBatchCreated={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("直接拆解 H3 正文")).toBeInTheDocument();
+  });
+
   it("renders the five flow steps with editable custom copy", async () => {
     render(
       <ProjectDetailFlow
@@ -813,26 +832,17 @@ describe("ProjectDetailFlow", () => {
       expect(screen.getByLabelText("成片时长")).toBeDisabled();
       expect(screen.getByLabelText("生成数量")).toBeDisabled();
 
-      await waitFor(() =>
-        expect(api.createScriptVersion).toHaveBeenCalledWith(project.id, {
-          source: "custom",
-          text: "这栋乡下别墅真让人心动。",
-          shot_card_version_id: "shot-card-1",
+      await waitFor(() => expect(api.createGenerationBatch).toHaveBeenCalled());
+      expect(api.createGenerationBatch).toHaveBeenCalledWith(
+        project.id,
+        expect.objectContaining({
+          prompt_text: "保存过但已过时的手工 Prompt",
         }),
       );
-      expect(api.compileGenerationPrompt).toHaveBeenCalledWith(project.id, {
-        script_version_id: "script-custom-1",
-        shot_card_version_id: "shot-card-1",
-        first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 15,
-        resolution: "768P",
-        ratio: "adaptive",
-      });
+      expect(api.createScriptVersion).not.toHaveBeenCalled();
+      expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
       expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-      expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-        project.id,
-        "prompt-compiled-custom-1",
-      );
+      expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
       expect(
         await screen.findByText("提交结果未知，请安全重试。"),
       ).toBeInTheDocument();
@@ -844,8 +854,8 @@ describe("ProjectDetailFlow", () => {
         .calls[1]?.[1].idempotency_key;
       expect(firstIdempotencyKey).toBeTruthy();
       expect(secondIdempotencyKey).toBe(firstIdempotencyKey);
-      expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-      expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
+      expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
       expect(vi.mocked(api.createGenerationBatch).mock.calls[1]?.[1]).toEqual(
         vi.mocked(api.createGenerationBatch).mock.calls[0]?.[1],
       );
@@ -947,9 +957,9 @@ describe("ProjectDetailFlow", () => {
     fireEvent.click(secondSubmit);
 
     await waitFor(() => expect(onBatchCreated).toHaveBeenCalledWith(batch));
-    expect(api.createScriptVersion).toHaveBeenCalledOnce();
-    expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
+    expect(api.createScriptVersion).not.toHaveBeenCalled();
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
     expect(api.createGenerationBatch).toHaveBeenCalledTimes(2);
     expect(vi.mocked(api.createGenerationBatch).mock.calls[1]).toEqual(
       vi.mocked(api.createGenerationBatch).mock.calls[0],

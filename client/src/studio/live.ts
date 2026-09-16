@@ -3,7 +3,6 @@ import {
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
-  compileGenerationPrompt,
   completeMaterialUpload,
   completeVideoUpload,
   createGenerationBatch,
@@ -45,7 +44,6 @@ import {
   listSimpleCharacterLibraryPage,
   listStudioSavedScripts,
   listViralVideos,
-  lockGenerationPrompt,
   type MaterialItem,
   type OralAvatarRecord,
   type OralTaskRecord,
@@ -55,7 +53,6 @@ import {
   readAnalysisPayload,
   resolveMaterials,
   retryOralTaskArchive,
-  reviseGenerationPrompt,
   type SimpleLibraryEntry,
   type StudioDraftKind,
   type StudioSavedScriptInput,
@@ -1476,7 +1473,7 @@ export async function loadLatestScriptFromUpload(projectId: string) {
     : null;
 }
 
-/** 复刻一键生成：存稿 → 编译 →（编辑过则存修订）→ 锁定 → 建批。 */
+/** 复刻一键生成：冻结当前可见文本与素材 → 原子建批。 */
 export async function runReplicaGeneration(
   projectId: string,
   input: {
@@ -1510,42 +1507,19 @@ export async function runReplicaGeneration(
     clearFrozenReplicaRequest(frozen);
     return batch;
   }
-  const script = await createScriptVersion(projectId, {
-    source: input.confirmedScriptText?.trim()
-      ? "custom"
-      : input.originalScriptText.trim()
-        ? "original"
-        : "custom",
-    text: input.confirmedScriptText?.trim() || input.originalScriptText,
-    shot_card_version_id: input.shotCardVersionId,
-  });
-  const compiled = await compileGenerationPrompt(projectId, {
-    script_version_id: script.id,
-    shot_card_version_id: input.shotCardVersionId,
-    first_frame_asset_id: input.firstFrameAssetId,
-    output_duration_seconds: input.outputDurationSeconds,
-    resolution: input.resolution,
-    ratio: input.ratio,
-  });
-  const compiledText = String(
-    (compiled.payload as Record<string, unknown>).prompt_text ?? "",
-  );
-  const finalPrompt =
-    !input.confirmedScriptText?.trim() &&
-    input.promptText.trim() &&
-    input.promptText !== compiledText
-      ? await reviseGenerationPrompt(projectId, {
-          base_prompt_version_id: compiled.id,
-          prompt_text: input.promptText.trim(),
-        })
-      : compiled;
-  const locked = await lockGenerationPrompt(projectId, finalPrompt.id);
+  if (!input.promptText.trim() || Array.from(input.promptText).length > 7000) {
+    throw new Error("请输入 1–7000 字的提示词。");
+  }
   if (isCurrent && !isCurrent()) {
     throw new Error("复刻页面已变化，本次旧提交已停止。");
   }
   const request: GenerationBatchInput = {
     quantity: input.quantity,
-    prompt_version_id: locked.id,
+    prompt_text: input.promptText,
+    prompt_context: {
+      source: "manual",
+      shot_card_version_id: input.shotCardVersionId,
+    },
     first_frame_asset_id: input.firstFrameAssetId,
     output_duration_seconds: input.outputDurationSeconds,
     resolution: input.resolution,

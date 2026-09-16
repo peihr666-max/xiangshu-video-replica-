@@ -120,6 +120,9 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # CW-058 content/asset domain matrix: one dedicated database for the
         # 内容/版本/工作台/素材/人物/爆款 TEST-PG matrix (truncated per test).
         "cw058_content_asset_test",
+        # PROMPT-OPTIMIZE-20260916: the asynchronous「AI 优化提示词」task
+        # (test_prompt_optimizer.py), migrated to head and truncated per test.
+        "prompt_optimize_route_test",
         # CW-059 billing/task/permission domain matrices: one dedicated database
         # each for the 账务/支付/钱包 matrix (test_cw059_billing_pg_matrix.py),
         # the 任务/Worker/生成 matrix (test_cw059_task_worker_pg_matrix.py) and
