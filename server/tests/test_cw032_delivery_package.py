@@ -27,7 +27,12 @@ contracts are pinned here and the real topology acceptance is CW-047.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,7 +44,7 @@ ROLLOUT = REPO_ROOT / "deploy" / "customer-git-rollout.sh"
 NGINX = REPO_ROOT / "deploy" / "nginx" / "customer.conf.example"
 
 # The closed inventory of the formal delivery package.
-PACKAGE_FILES = ("compose.yaml", "README.md", "bootstrap-base-image.sh")
+PACKAGE_FILES = ("compose.yaml", "README.md", "bootstrap-base-image.sh", "healthcheck.py")
 
 ROLLOUT_SERVICES = (
     "api-1",
@@ -109,10 +114,7 @@ def test_compose_declares_exactly_the_rollout_topology() -> None:
     assert optional_line is not None
     assert required_line.group(1).split() + optional_line.group(1).split() == list(ROLLOUT_SERVICES)
     # Optional services are only rolled when the target compose declares them.
-    assert (
-        'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)'
-        in rollout
-    )
+    assert "mapfile -t CONFIGURED_SERVICES < <(compose config --services)" in rollout
     assert "OPTIONAL_SERVICES=(" in rollout
     assert 'SERVICES+=("$service")' in rollout
 
@@ -151,7 +153,7 @@ def test_api_wiring_matches_nginx_and_health_contract() -> None:
     assert "127.0.0.1:8001" in nginx and "127.0.0.1:8002" in nginx
     # Health checks: db pg_isready; api /health via the in-image python.
     assert "pg_isready" in compose
-    assert compose.count("urllib.request.urlopen('http://127.0.0.1:8000/health'") == 2
+    assert compose.count('"/opt/video-replica/customer-healthcheck.py"') == 2
     # The health route itself exists (release VERIFY curls it through nginx).
     main_py = (REPO_ROOT / "server" / "app" / "main.py").read_text(encoding="utf-8")
     assert '@app.get("/health"' in main_py
@@ -159,7 +161,7 @@ def test_api_wiring_matches_nginx_and_health_contract() -> None:
 
 def test_rollout_consumes_the_registered_package() -> None:
     rollout = ROLLOUT.read_text(encoding="utf-8")
-    assert 'COMPOSE="${CUSTOMER_COMPOSE:-$SOURCE/deploy/customer/compose.yaml}"' in rollout
+    assert 'COMPOSE="${CUSTOMER_COMPOSE:-$SCRIPT_DIR/customer/compose.yaml}"' in rollout
     assert 'sha256sum "$COMPOSE" > "$BACKUP/compose.sha256"' in rollout
     bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
     assert "uv sync --locked --no-dev" in bootstrap
@@ -170,6 +172,7 @@ def test_rollout_consumes_the_registered_package() -> None:
     )
     # Douyin protocol signing runs a Node.js subprocess inside the publish worker.
     assert "ffmpeg ca-certificates nodejs" in bootstrap and "command -v node" in bootstrap
+    assert "command -v node" in rollout
     assert "historical SQLite tooling in the customer image" in bootstrap
 
 
@@ -219,3 +222,79 @@ def test_fail_fast_matrix_targets_exist() -> None:
         path = REPO_ROOT / test_file
         assert path.is_file(), (dependency, test_file)
         assert marker in path.read_text(encoding="utf-8"), (dependency, marker)
+
+
+def test_customer_package_mounts_files_and_enables_postgres_tls() -> None:
+    compose = _compose_text()
+    assert "${CUSTOMER_ENV_FILE:-/etc/video-replica/customer.env}" in compose
+    assert "target: /etc/video-replica/postgresql-ca.pem" in compose
+    assert "target: /etc/video-replica/metrics.token" in compose
+    assert "create_host_path: false" in compose
+    db = _service_block("db")
+    assert "ssl=on" in db and "ssl_cert_file=/etc/postgresql/tls/server.crt" in db
+    assert "ssl_key_file=/etc/postgresql/tls/server.key" in db
+    for service in ("api-1", "api-2"):
+        assert "--no-proxy-headers" in _service_block(service)
+    assert "--volume /etc/video-replica/cos-bootstrap.json:" in README.read_text()
+
+
+def test_container_health_probe_preserves_ingress_headers_and_fails_on_not_ready() -> None:
+    requests = []
+    response_status = 200
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requests.append((self.path, dict(self.headers)))
+            self.send_response(response_status)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = {**os.environ, "VIDEO_REPLICA_PUBLIC_ORIGIN": "https://video.example.com"}
+        command = [sys.executable, str(PACKAGE_DIR / "healthcheck.py"), str(server.server_port)]
+        success = subprocess.run(command, cwd=REPO_ROOT / "server", env=env, capture_output=True)
+        assert success.returncode == 0, success.stderr.decode()
+        path, headers = requests[-1]
+        assert path == "/ready"
+        assert headers["Host"] == "video.example.com"
+        assert headers["X-Forwarded-Proto"] == "https"
+        assert headers["X-Forwarded-For"] == "127.0.0.2"
+        response_status = 503
+        failure = subprocess.run(command, cwd=REPO_ROOT / "server", env=env, capture_output=True)
+        assert failure.returncode != 0
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_readiness_probe_headers_pass_production_boundary_without_bypassing_it(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app import main as main_module
+
+    monkeypatch.setenv("VIDEO_REPLICA_CUSTOMER_PRODUCTION", "true")
+    monkeypatch.setenv("VIDEO_REPLICA_PUBLIC_ORIGIN", "https://video.example.com")
+    monkeypatch.setenv("VIDEO_REPLICA_TRUSTED_PROXY_CIDRS", "127.0.0.1/32,172.30.42.1/32")
+    monkeypatch.setattr(main_module, "check_customer_production_runtime_dependencies", lambda: None)
+    headers = {
+        "Host": "video.example.com",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-For": "127.0.0.2",
+    }
+    client = TestClient(main_module.app, client=("127.0.0.1", 12345))
+    assert client.get("/ready", headers=headers).status_code == 200
+    assert client.get("/ready").status_code == 421
+    untrusted = TestClient(main_module.app, client=("172.30.42.20", 12345))
+    assert untrusted.get("/ready", headers=headers).status_code == 403
+
+    def unavailable() -> None:
+        raise RuntimeError("dependency unavailable")
+
+    monkeypatch.setattr(main_module, "check_customer_production_runtime_dependencies", unavailable)
+    assert client.get("/ready", headers=headers).status_code == 503
