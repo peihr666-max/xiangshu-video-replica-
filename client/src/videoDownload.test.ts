@@ -25,6 +25,12 @@ type Finished = {
   error: string | null;
 };
 
+// Container-header fixture for download lifecycle tests; not a decodable video.
+const mp4HeaderFixture = Uint8Array.from([
+  0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115,
+  111, 109, 109, 112, 52, 50, 0, 0, 0, 9, 109, 100, 97, 116, 0,
+]);
+
 describe("desktop video download feedback", () => {
   let finish: (event: { payload: Finished }) => void;
   const unlisten = vi.fn();
@@ -52,7 +58,7 @@ describe("desktop video download feedback", () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        blob: async () => new Blob(["video"], { type: "video/mp4" }),
+        blob: async () => new Blob([mp4HeaderFixture], { type: "video/mp4" }),
       });
     vi.stubGlobal("fetch", fetchMock);
     vi.stubGlobal("URL", {
@@ -208,6 +214,9 @@ describe("desktop video download feedback", () => {
     const rejected = expect(download).rejects.toBeInstanceOf(
       VideoDownloadUnconfirmedError,
     );
+    await vi.waitFor(() =>
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce(),
+    );
     await vi.advanceTimersByTimeAsync(300_001);
     await rejected;
     expect(unlisten).toHaveBeenCalledOnce();
@@ -223,6 +232,9 @@ describe("desktop video download feedback", () => {
       }
     });
     const download = downloadGenerationTaskResult("task-1", "video.mp4");
+    await vi.waitFor(() =>
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce(),
+    );
     await vi.advanceTimersByTimeAsync(2_001);
     expect(native.invoke).toHaveBeenCalledWith("get_video_download_status", {
       downloadId: "download-1",
@@ -248,6 +260,9 @@ describe("desktop video download feedback", () => {
     const rejected = expect(
       downloadGenerationTaskResult("task-1", "video.mp4"),
     ).rejects.toThrow("尚未确认");
+    await vi.waitFor(() =>
+      expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce(),
+    );
     await vi.advanceTimersByTimeAsync(2_001);
     expect(native.invoke).toHaveBeenCalledWith("get_video_download_status", {
       downloadId: "download-1",
@@ -285,7 +300,9 @@ describe("desktop video download feedback", () => {
   it("downloads an authorized inline fixture without fetching a data URL", async () => {
     fetchMock.mockReset().mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ url: "data:video/mp4;base64,AP+AQQ==" }),
+      json: async () => ({
+        url: `data:video/mp4;base64,${btoa(String.fromCharCode(...mp4HeaderFixture))}`,
+      }),
     });
     const download = downloadGenerationTaskResult("task-inline", "inline.mp4");
     await vi.waitFor(() =>

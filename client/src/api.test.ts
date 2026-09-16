@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const nativeDownload = vi.hoisted(() => ({
+  isTauri: vi.fn(() => false),
+  invoke: vi.fn(),
+  listen: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: nativeDownload.isTauri,
+  invoke: nativeDownload.invoke,
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: nativeDownload.listen }));
+
 import {
   applySavedGenerationPrompt,
   archiveGenerationTask,
@@ -89,6 +100,134 @@ import {
   waitForScriptRewriteTask,
   waitForSourceFrameTask,
 } from "./api";
+
+describe("generation download media boundary", () => {
+  afterEach(() => {
+    nativeDownload.isTauri.mockReturnValue(false);
+    vi.unstubAllGlobals();
+  });
+
+  function prepareDownload(
+    blob: Blob,
+    url = "https://provider.example/video.mp4",
+  ) {
+    nativeDownload.isTauri.mockReturnValue(true);
+    nativeDownload.invoke
+      .mockReset()
+      .mockImplementation(async (command) =>
+        command === "choose_video_download"
+          ? { download_id: "boundary-1", path: "C:\\Downloads\\video.mp4" }
+          : undefined,
+      );
+    let completed = () => {};
+    nativeDownload.listen.mockImplementation(async (_event, callback) => {
+      completed = () =>
+        callback({
+          payload: {
+            download_id: "boundary-1",
+            success: true,
+            path: "C:\\Downloads\\video.mp4",
+            error: null,
+          },
+        });
+      return vi.fn();
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ url }) })
+        .mockResolvedValueOnce({ ok: true, blob: async () => blob }),
+    );
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:test"),
+      revokeObjectURL: vi.fn(),
+    });
+    return vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => completed());
+  }
+
+  // Only a container-header fixture; these tests do not assert decodability.
+  const container = Uint8Array.from([
+    0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115,
+    111, 109, 109, 112, 52, 50, 0, 0, 0, 9, 109, 100, 97, 116, 0,
+  ]);
+  const imageContainer = container.slice();
+  for (const offset of [8, 16, 20])
+    imageContainer.set([104, 101, 105, 99], offset);
+
+  it.each([
+    ["HTTP 200 HTML error", "text/html", "<html>Expired token</html>"],
+    ["JSON error", "application/json", '{"error":"expired"}'],
+    ["HTML disguised as MP4", "video/mp4", "<html>Expired token</html>"],
+    [
+      "HTML with generic MIME",
+      "application/octet-stream",
+      "<html>Expired token</html>",
+    ],
+    ["empty file", "video/mp4", ""],
+    ["truncated file-type box", "video/mp4", container.slice(0, 20)],
+    ["unsupported image container", "video/mp4", imageContainer],
+  ])(
+    "rejects %s without saving it as a video",
+    async (_name, mime, content) => {
+      const click = prepareDownload(
+        new Blob([content], { type: mime as string }),
+      );
+
+      await expect(
+        downloadGenerationTaskResult("task-boundary", "video.mp4"),
+      ).rejects.toThrow("不是有效的 MP4");
+      expect(click).not.toHaveBeenCalled();
+      expect(nativeDownload.invoke).toHaveBeenCalledWith(
+        "cancel_video_download",
+        { downloadId: "boundary-1" },
+      );
+      expect(nativeDownload.invoke).not.toHaveBeenCalledWith(
+        "start_video_download",
+        expect.anything(),
+      );
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "video/mp4",
+    "application/mp4",
+    "application/octet-stream",
+    "",
+    "VIDEO/MP4; charset=binary",
+  ])(
+    "allows an MP4 container with MIME %s and awaits native save confirmation",
+    async (type) => {
+      prepareDownload(new Blob([container], { type }));
+      await expect(
+        downloadGenerationTaskResult("task-boundary", "video.mp4"),
+      ).resolves.toMatchObject({ status: "saved" });
+      expect(nativeDownload.invoke).not.toHaveBeenCalledWith(
+        "cancel_video_download",
+        expect.anything(),
+      );
+      expect(URL.revokeObjectURL).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("rejects inline base64 that decodes to an error page", async () => {
+    prepareDownload(
+      new Blob(),
+      `data:video/mp4;base64,${btoa("<html>Expired token</html>")}`,
+    );
+    await expect(
+      downloadGenerationTaskResult("task-boundary", "video.mp4"),
+    ).rejects.toThrow("内联视频数据无效");
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(nativeDownload.invoke).toHaveBeenCalledWith(
+      "cancel_video_download",
+      { downloadId: "boundary-1" },
+    );
+  });
+});
 
 describe("爆款列表 API", () => {
   afterEach(() => {
