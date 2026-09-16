@@ -56,6 +56,7 @@ export function FirstFrameSelection({
   const [model, setModel] = useState<FirstFrameModel>("gpt-image-2");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [quantity, setQuantity] = useState(1);
+  const [replaceScene, setReplaceScene] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<
     NonNullable<GenerateFirstFramesInput["aspect_ratio"]> | "source"
   >("source");
@@ -88,6 +89,7 @@ export function FirstFrameSelection({
     version?.id ?? "",
     selectedAssetId,
     aspectRatio,
+    String(replaceScene),
   ].join("\0");
   const confirmationBindingKeyRef = useRef(confirmationBindingKey);
   confirmationBindingKeyRef.current = confirmationBindingKey;
@@ -169,6 +171,7 @@ export function FirstFrameSelection({
         }
         setModel(payload.model);
         setAspectRatio(payload.aspect_ratio ?? "source");
+        setReplaceScene(Boolean(payload.replace_scene));
         if (!simplified) {
           setPrompt(payload.prompt);
         }
@@ -374,7 +377,8 @@ export function FirstFrameSelection({
 
   const payload = version ? readFirstFrameCandidates(version) : null;
   const aspectMatchesVersion =
-    (payload?.aspect_ratio ?? "source") === aspectRatio;
+    (payload?.aspect_ratio ?? "source") === aspectRatio &&
+    Boolean(payload?.replace_scene) === replaceScene;
   const isHistoryVersion = Boolean(version && version.id !== latestVersionId);
   const selectedPreview = previewUrls[selectedAssetId];
   const comparisonReady =
@@ -437,6 +441,7 @@ export function FirstFrameSelection({
           // contact-sheet/reference-role prompt assembly on the server.
           prompt: simplified ? undefined : prompt,
           quantity,
+          ...(replaceScene ? { replace_scene: true } : {}),
           ...(aspectRatio === "source" ? {} : { aspect_ratio: aspectRatio }),
           ...binding,
         },
@@ -567,15 +572,33 @@ export function FirstFrameSelection({
         </label>
       ) : null}
       <div className="source-frame-actions">
+        {simplified && (
+          <label>
+            场景设置
+            <select
+              aria-label="场景设置"
+              disabled={readOnly || isSubmitting || !canGenerate}
+              value={replaceScene ? "replace" : "preserve"}
+              onChange={(event) => {
+                setReplaceScene(event.target.value === "replace");
+                onSelectionChange?.(null);
+              }}
+            >
+              <option value="preserve">保留原场景</option>
+              <option value="replace">使用所选场景形象的背景</option>
+            </select>
+          </label>
+        )}
         <label>
           图片画幅
           <select
             aria-label="图片画幅"
             value={aspectRatio}
             disabled={readOnly || isSubmitting || !canGenerate}
-            onChange={(event) =>
-              setAspectRatio(event.target.value as typeof aspectRatio)
-            }
+            onChange={(event) => {
+              setAspectRatio(event.target.value as typeof aspectRatio);
+              onSelectionChange?.(null);
+            }}
           >
             <option value="source">跟随原视频（默认）</option>
             <option value="9:16">9:16 · 竖屏</option>
@@ -616,7 +639,7 @@ export function FirstFrameSelection({
         </button>
       </div>
       {payload && !aspectMatchesVersion && !isSubmitting ? (
-        <p className="status-note">画幅已更改，请重新生成后确认首帧。</p>
+        <p className="status-note">画幅或场景已更改，请重新生成后确认首帧。</p>
       ) : null}
       {generationStartedAt !== null ? (
         <div className="first-frame-generation-progress" role="status">
@@ -674,7 +697,9 @@ export function FirstFrameSelection({
           {payload.review_mode === "HUMAN_CONFIRMATION" ? (
             <section aria-label="首帧对照确认" className="first-frame-options">
               <p>
-                请核对人物外观与场景形象一致，原视频背景、姿态、道具和构图保持不变。确认后进入视频生成。
+                {payload.replace_scene
+                  ? "请核对人物与目标场景形象一致，背景已替换，姿态和构图与原帧一致；确认自然光照、肢体和道具没有冲突后采用。"
+                  : "请核对人物外观与场景形象一致，原视频背景、姿态、道具和构图保持不变。确认后进入视频生成。"}
               </p>
               {[
                 { id: payload.source_frame_asset_id, label: "原视频源画面" },
@@ -832,17 +857,13 @@ function FirstFrameOption({
         type="radio"
         value={candidate.asset_id}
       />
-      {previewUrl ? (
-        <VideoPreview
-          alt={`首帧候选 ${index + 1}`}
-          onPosterError={onPreviewError}
-          poster={previewUrl}
-        />
-      ) : (
-        <span className="source-frame-placeholder">
-          {readOnly ? "预览不可用" : "预览加载失败，请重新生成"}
-        </span>
-      )}
+      <VideoPreview
+        frameRatio="adaptive"
+        alt={`首帧候选 ${index + 1}`}
+        onPosterError={onPreviewError}
+        poster={previewUrl}
+        fallback={readOnly ? "预览不可用" : "预览加载失败，请重新生成"}
+      />
       <span>
         <strong>首帧候选 {index + 1}</strong>
         <small>{candidate.content_type}</small>

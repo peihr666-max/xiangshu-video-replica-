@@ -9,6 +9,7 @@ import {
 import "./video-preview.css";
 
 type Props = ComponentProps<"video"> & {
+  frameRatio?: string;
   alt?: string;
   videoClassName?: string;
   onPosterError?: () => void;
@@ -30,11 +31,28 @@ export function VideoPreview({
   fallback,
   overlay,
   children,
+  frameRatio = src ? undefined : "adaptive",
+  onLoadedMetadata,
   ...videoProps
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [failedPoster, setFailedPoster] = useState<string>();
+  const [mediaRatio, setMediaRatio] = useState<{
+    source: string;
+    ratio: number;
+  }>();
+  const [ratioWidth, ratioHeight] = (frameRatio ?? "9:16")
+    .split(":")
+    .map(Number);
+  const source = src || poster || "";
+  const automatic = frameRatio === "adaptive" || frameRatio === "source";
+  const ratio =
+    automatic && mediaRatio?.source === source
+      ? mediaRatio.ratio
+      : ratioWidth > 0 && ratioHeight > 0
+        ? ratioWidth / ratioHeight
+        : 9 / 16;
   const posterFailed = Boolean(poster && failedPoster === poster);
   const attachVideo = useCallback(
     (video: HTMLVideoElement | null) => {
@@ -69,9 +87,8 @@ export function VideoPreview({
         !video.videoHeight
       )
         return;
-      // Exact portrait fills the foreground already; do not draw an invisible background.
-      if (Math.abs(video.videoWidth / video.videoHeight - 9 / 16) < 0.01)
-        return;
+      // Matching aspect ratios already fill the foreground; skip the hidden background.
+      if (Math.abs(video.videoWidth / video.videoHeight - ratio) < 0.01) return;
       try {
         const scale = Math.min(160 / video.videoWidth, 284 / video.videoHeight);
         const width = Math.max(1, Math.round(video.videoWidth * scale));
@@ -128,20 +145,24 @@ export function VideoPreview({
       video.removeEventListener("ended", stop);
       video.removeEventListener("error", fail);
     };
-  }, [src]);
+  }, [src, ratio]);
 
   return (
-    <div className={`video-preview ${className}`}>
-      {poster && !posterFailed && (
-        <img
-          className="video-preview__backdrop"
-          src={poster}
-          alt=""
-          aria-hidden="true"
-          loading="lazy"
-          referrerPolicy="no-referrer"
-        />
-      )}
+    <div
+      className={`video-preview ${className}`}
+      style={
+        frameRatio
+          ? {
+              aspectRatio: String(ratio),
+              width: `min(100%, calc(var(--image-preview-height, 320px) * ${ratio}))`,
+              height: "auto",
+              minHeight: 0,
+              maxHeight: "none",
+              marginInline: "auto",
+            }
+          : undefined
+      }
+    >
       {src ? (
         <>
           <canvas
@@ -159,6 +180,15 @@ export function VideoPreview({
             poster={posterFailed ? undefined : poster}
             playsInline
             preload={videoProps.preload ?? "metadata"}
+            onLoadedMetadata={(event) => {
+              const video = event.currentTarget;
+              if (video.videoWidth > 0 && video.videoHeight > 0)
+                setMediaRatio({
+                  source: src || "",
+                  ratio: video.videoWidth / video.videoHeight,
+                });
+              onLoadedMetadata?.(event);
+            }}
           >
             {children}
           </video>
@@ -170,6 +200,14 @@ export function VideoPreview({
           alt={alt}
           loading="lazy"
           referrerPolicy="no-referrer"
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            if (image.naturalWidth > 0 && image.naturalHeight > 0)
+              setMediaRatio({
+                source: poster,
+                ratio: image.naturalWidth / image.naturalHeight,
+              });
+          }}
           onError={() => {
             setFailedPoster(poster);
             onPosterError?.();
@@ -180,6 +218,16 @@ export function VideoPreview({
           {fallback ??
             (posterFailed ? "预览图暂不可用" : alt || "暂无视频预览")}
         </div>
+      )}
+      {poster && !posterFailed && (
+        <img
+          className="video-preview__backdrop"
+          src={poster}
+          alt=""
+          aria-hidden="true"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+        />
       )}
       {overlay}
     </div>

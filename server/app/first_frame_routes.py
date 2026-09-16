@@ -50,6 +50,7 @@ class GenerateFirstFramesRequest(BaseModel):
 
     model: Literal["gpt-image-2", "nano-banana-pro-2k"] = "gpt-image-2"
     prompt: str | None = Field(default=None, max_length=4000)
+    replace_scene: bool = False
     quantity: int = Field(default=1, ge=1, le=3)
     aspect_ratio: Literal["9:16", "16:9", "1:1", "3:4", "4:3"] | None = None
     character_version_id: str | None = Field(default=None, min_length=1)
@@ -267,6 +268,7 @@ def generate_project_first_frames(
             prompt=request.prompt,
             quantity=request.quantity,
             aspect_ratio=request.aspect_ratio,
+            replace_scene=request.replace_scene,
             character_version_id=request.character_version_id,
             character_reference_selection_id=request.character_reference_selection_id,
         )
@@ -323,6 +325,7 @@ def create_project_first_frame_task(
             character_reference_selection_id=request.character_reference_selection_id,
             idempotency_key=request.idempotency_key,
             aspect_ratio=request.aspect_ratio,
+            replace_scene=request.replace_scene,
         )
         return first_frame_task_response(row)
 

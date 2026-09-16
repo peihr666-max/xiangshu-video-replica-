@@ -177,7 +177,7 @@ export function createDraft(): StudioDraft {
     promptEdited: false,
     referenceIds: [],
     resolution: "768P",
-    ratio: "16:9",
+    ratio: "9:16",
     duration: 8,
     count: 1,
     frameConfirmed: false,
@@ -314,6 +314,12 @@ export function patchStudioDraft(
   }
   if (projectChanged || sourceChanged) {
     const blank = createDraft();
+    if (!Object.hasOwn(patch, "replicaSourcePrompt"))
+      next.replicaSourcePrompt = undefined;
+    if (!Object.hasOwn(patch, "replicaPromptBasis"))
+      next.replicaPromptBasis = undefined;
+    if (!Object.hasOwn(patch, "replicaPreparationPending"))
+      next.replicaPreparationPending = undefined;
     if (!Object.hasOwn(patch, "prompt")) next.prompt = "";
     if (!Object.hasOwn(patch, "promptEdited")) next.promptEdited = false;
     if (!patch.script) next.script = blank.script;
@@ -353,6 +359,14 @@ export function patchStudioDraft(
     patch.prompt !== draft.prompt
   )
     next.promptEdited = true;
+  if (
+    !Object.hasOwn(patch, "replicaPreparationPending") &&
+    next.replicaSourcePrompt !== undefined &&
+    ((Object.hasOwn(patch, "replicaSourcePrompt") &&
+      patch.replicaSourcePrompt !== draft.replicaSourcePrompt) ||
+      (patch.script && patch.script.text !== draft.script.text))
+  )
+    next.replicaPreparationPending = true;
   return next;
 }
 

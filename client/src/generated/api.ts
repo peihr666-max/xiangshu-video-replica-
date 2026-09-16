@@ -7188,6 +7188,8 @@ export interface components {
        * @enum {string}
        */
       model: "gpt-image-2" | "nano-banana-pro-2k";
+      /** Replace Scene — default false */
+      replace_scene?: boolean;
       /** Prompt */
       prompt?: string | null;
       /**
@@ -7300,6 +7302,8 @@ export interface components {
        * @enum {string}
        */
       model: "gpt-image-2" | "nano-banana-pro-2k";
+      /** Replace Scene — default false */
+      replace_scene?: boolean;
       /** Prompt */
       prompt?: string | null;
       /**

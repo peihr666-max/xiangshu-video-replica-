@@ -2279,7 +2279,10 @@ def test_first_frame_async_receipt_is_fenced_and_resumes_original_task(pg_state)
     assert json.loads(row["result_json"])["provider_submission"]["task_id"] == "vendor-1"
 
 
-def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkeypatch):
+@pytest.mark.parametrize("replace_scene", [False, True])
+def test_first_frame_ratio_is_frozen_in_request_and_idempotency(
+    pg_state, monkeypatch, replace_scene
+):
     import json
     from types import SimpleNamespace
 
@@ -2294,7 +2297,7 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
     observed = []
 
     def plan(*args, **kwargs):
-        observed.append(kwargs.get("aspect_ratio"))
+        observed.append((kwargs.get("aspect_ratio"), kwargs.get("replace_scene")))
         return SimpleNamespace(
             model="gpt-image-2",
             quantity=1,
@@ -2321,6 +2324,7 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
             character_version_id=None,
             character_reference_selection_id=None,
             idempotency_key="ratio-key-1",
+            replace_scene=replace_scene,
         )
         first = enqueue_first_frame_task(conn, **kwargs, aspect_ratio="9:16")
         assert json.loads(first["request_json"])["aspect_ratio"] == "9:16"
@@ -2332,12 +2336,20 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
             )
         assert conflict.value.status_code == 409
     with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            enqueue_first_frame_task(
+                BusinessConnection.postgres(raw),
+                **{**kwargs, "replace_scene": not replace_scene},
+                aspect_ratio="9:16",
+            )
+        assert conflict.value.status_code == 409
+    with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
         lease = acquire_first_frame_task(conn, worker_id="ratio-worker")
         prepare_first_frame_task(
             conn, lease=lease, provider=ApilioImageProvider(api_key="test-key")
         )
-    assert observed[-1] == "9:16"
+    assert observed[-1] == ("9:16", replace_scene)
 
 
 def test_rewrite_instructions_and_extended_profile_contract():

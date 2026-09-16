@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import type { PromptGenerationContext } from "../api";
+import { Icon } from "./ui";
 import { usePromptOptimization } from "./usePromptOptimization";
 import "./prompt-editor.css";
 
@@ -12,6 +14,9 @@ type Props = {
   readOnly?: boolean;
   optimizationDisabled?: boolean;
   rows?: number;
+  toolbarStart?: ReactNode;
+  showToolbarLabel?: boolean;
+  toolbarLabel?: ReactNode;
 };
 
 export function PromptEditor({
@@ -24,12 +29,19 @@ export function PromptEditor({
   readOnly = false,
   optimizationDisabled = false,
   rows = 8,
+  toolbarStart,
+  showToolbarLabel = false,
+  toolbarLabel = "画面描述",
 }: Props) {
   const optimization = usePromptOptimization(value, context, onChange, scope);
   const count = Array.from(value).length;
   return (
     <div className="h3-prompt-editor">
       <div className="h3-prompt-tools">
+        {showToolbarLabel && (
+          <span className="h3-prompt-label">{toolbarLabel}</span>
+        )}
+        {toolbarStart}
         {optimization.canUndo && !readOnly && (
           <button type="button" onClick={optimization.undo}>
             撤销
@@ -49,7 +61,8 @@ export function PromptEditor({
           }
           onClick={() => void optimization.run()}
         >
-          {optimization.busy ? "◌" : "✦"}
+          <Icon name={optimization.busy ? "refresh" : "sparkles"} size={16} />
+          <span>{optimization.busy ? "正在优化…" : "AI 优化提示词"}</span>
         </button>
       </div>
       <textarea

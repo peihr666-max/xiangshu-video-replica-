@@ -2275,6 +2275,8 @@ describe("数字人口播提交", () => {
 
   it("字幕参数进入请求，并发点击单飞且网络重试复用幂等键", async () => {
     const state = createReviewState("oral");
+    // 复刻准备只约束 AI 视频，不能阻止独立的数字人口播提交。
+    state.draft.replicaPreparationPending = true;
     state.draft.style = "standard";
     state.draft.subtitles = true;
     live.loadStudioData.mockResolvedValue({
@@ -2461,7 +2463,7 @@ describe("视频生成（C2 独立创作）", () => {
   async function openVideoPage() {
     // 侧边栏「视频创作」进入复刻页签组，再切到「视频生成」。
     fireEvent.click(screen.getByRole("button", { name: "视频创作" }));
-    fireEvent.click(screen.getByRole("tab", { name: "视频生成" }));
+    fireEvent.click(screen.getByRole("tab", { name: "AI 视频" }));
     await waitFor(() =>
       expect(screen.getByLabelText("提示词")).toBeInTheDocument(),
     );
