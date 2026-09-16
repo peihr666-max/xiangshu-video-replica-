@@ -128,3 +128,112 @@ def test_text_video_creation_preserves_subtitles_and_integer_watermark_flag() ->
     assert transport.payload["st_show"] == 1
     assert transport.payload["st_font_size"] == 72
     assert type(transport.payload["aigc_flag"]) is int
+
+
+@pytest.mark.parametrize(
+    "subtitle",
+    [
+        {"avatar": "unvalidated-avatar"},
+        {"voice": "unvalidated-voice"},
+        {"text": "changed script"},
+        {"title": "changed title"},
+        {"aigc_flag": 0},
+        {"callback_url": "https://example.invalid/callback"},
+        {"st_unknown": 1},
+        {"st_show": "true"},
+        {"st_font_size": True},
+        {"st_font_size": 101},
+        {"st_primary_color": {"value": "0xFFFFFF"}},
+    ],
+)
+def test_subtitle_invalid_fields_never_reach_provider(subtitle: dict[str, Any]) -> None:
+    vendor, transport = client({"code": 0, "task_id": "tts-task"})
+    with pytest.raises(HiflyError, match="字幕"):
+        vendor.create_video_by_tts(
+            voice="voice-test",
+            text="approved script",
+            avatar="avatar-test",
+            title="test",
+            aigc_flag=True,
+            subtitle=subtitle,
+        )
+    assert transport.payload == {}
+
+
+def test_documented_subtitle_fields_preserve_client_values() -> None:
+    vendor, transport = client({"code": 0, "task_id": "tts-task"})
+    subtitle = {
+        "st_show": True,
+        "st_font_name": "Arial",
+        "st_font_size": 30,
+        "st_primary_color": "0xFFFFFF",
+        "st_outline_color": "0x000000FF",
+        "st_width": 1080,
+        "st_height": 200,
+        "st_x": 0,
+        "st_y": 800,
+    }
+    vendor.create_video_by_tts(
+        voice="voice-test",
+        text="approved script",
+        avatar="avatar-test",
+        title="test",
+        aigc_flag=True,
+        subtitle=subtitle,
+    )
+    assert {key: transport.payload[key] for key in subtitle} == subtitle
+    assert transport.payload["avatar"] == "avatar-test"
+    assert transport.payload["text"] == "approved script"
+    assert transport.payload["aigc_flag"] == 1
+
+
+@pytest.mark.parametrize("mode", ["TTS", "AUDIO"])
+def test_invalid_subtitle_is_rejected_before_domain_database_access(mode: str) -> None:
+    from app.auth import CurrentUser
+    from app.oral import OralDomainError, create_oral_task
+
+    class NoDatabaseAccess:
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(f"unexpected database/actor access: {name}")
+
+    with pytest.raises(OralDomainError, match="字幕"):
+        create_oral_task(
+            conn=NoDatabaseAccess(),  # type: ignore[arg-type]
+            actor=CurrentUser("user-test", "tester", "Tester", "customer"),
+            identity_id="identity-test",
+            avatar_id="avatar-test",
+            voice_id="voice-test",
+            mode=mode,
+            title="test",
+            script_text="approved script",
+            audio_asset_id=None,
+            subtitle={"avatar": "unvalidated-avatar"},
+            idempotency_key="local-test-request",
+        )
+
+
+@pytest.mark.parametrize("subtitle", [{"avatar": "unvalidated-avatar"}, ["avatar"]])
+def test_legacy_invalid_subtitle_fails_worker_without_submission(subtitle: Any) -> None:
+    from app.oral_worker import OralWorkLease, perform_oral_work
+
+    vendor, transport = client({"code": 0, "task_id": "tts-task"})
+    fixture_lease = "local-test-lease"
+    lease = OralWorkLease(
+        kind="task_submit",
+        record_id="task-test",
+        worker_id="worker-test",
+        lease_token=fixture_lease,
+        attempt_count=1,
+        row={
+            "mode": "TTS",
+            "vendor_voice_id": "voice-test",
+            "vendor_avatar_id": "avatar-test",
+            "script_text": "approved script",
+            "title": "test",
+            "subtitle_json": json.dumps(subtitle),
+        },
+    )
+    result = perform_oral_work(lease, vendor=vendor, storage=None)  # type: ignore[arg-type]
+    assert result.outcome == "failed"
+    assert "字幕" in (result.message or "")
+    assert transport.payload == {}

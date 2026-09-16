@@ -2217,7 +2217,10 @@ async function fetchGenerationResultBlob(
       const bytes = Uint8Array.from(content, (character) =>
         character.charCodeAt(0),
       );
-      return new Blob([bytes], { type: "video/mp4" });
+      return await validateGenerationDownloadBlob(
+        new Blob([bytes], { type: "video/mp4" }),
+        errorPrefix,
+      );
     } catch (error) {
       throw new Error(`${errorPrefix}：内联视频数据无效。`, { cause: error });
     }
@@ -2237,10 +2240,60 @@ async function fetchGenerationResultBlob(
     if (!response.ok) {
       throw new Error(`${errorPrefix}（${response.status}）`);
     }
-    return await response.blob();
+    return await validateGenerationDownloadBlob(
+      await response.blob(),
+      errorPrefix,
+    );
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+async function validateGenerationDownloadBlob(
+  blob: Blob,
+  errorPrefix: string,
+): Promise<Blob> {
+  const invalid = () =>
+    new Error(`${errorPrefix}：返回的文件不是有效的 MP4，请刷新结果后重试。`);
+  const mime = blob.type.split(";", 1)[0].trim().toLowerCase();
+  if (
+    mime &&
+    !["video/mp4", "application/mp4", "application/octet-stream"].includes(mime)
+  ) {
+    throw invalid();
+  }
+  // 仅检查有界容器头以拦截错误页/伪装响应，不代表媒体可完整解码或画幅合格。
+  const header = await new Promise<ArrayBuffer>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) resolve(reader.result);
+      else reject(invalid());
+    };
+    reader.onerror = () => reject(invalid());
+    reader.onabort = () => reject(invalid());
+    reader.readAsArrayBuffer(blob.slice(0, 4096));
+  });
+  if (header.byteLength < 24) throw invalid();
+  const bytes = new Uint8Array(header);
+  const tag = (offset: number) =>
+    String.fromCharCode(...bytes.subarray(offset, offset + 4));
+  const boxSize = new DataView(header).getUint32(0);
+  if (
+    tag(4) !== "ftyp" ||
+    boxSize < 16 ||
+    boxSize > header.byteLength ||
+    (boxSize - 16) % 4 !== 0 ||
+    blob.size <= boxSize + 8
+  )
+    throw invalid();
+  const mp4Brand = (brand: string) =>
+    /^(iso[2-9m]|mp4[12]|avc1|dash|M4V |MSNV|cmf[cs])$/.test(brand);
+  let supported = mp4Brand(tag(8));
+  for (let offset = 16; offset < boxSize && !supported; offset += 4) {
+    supported = mp4Brand(tag(offset));
+  }
+  if (!supported) throw invalid();
+  return blob.slice(0, blob.size, "video/mp4");
 }
 
 export async function reconcileUncertainTask(

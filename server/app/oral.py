@@ -26,7 +26,7 @@ from fastapi import HTTPException
 
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
-from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain
+from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain, validate_oral_subtitle
 from app.internal_billing import finalize_oral_billing, reserve_oral_billing
 from app.media_routes import get_media_storage, storage_for_asset
 from app.media_tools import inspect_media_bytes
@@ -603,6 +603,10 @@ def create_oral_task(
     idempotency_key: str,
     vendor: HiflyClient | None = None,
 ) -> OralTaskCreated:
+    try:
+        subtitle = validate_oral_subtitle(subtitle)
+    except HiflyError as exc:
+        raise OralDomainError(str(exc)) from exc
     require_not_auditor(
         conn,
         actor=actor,
