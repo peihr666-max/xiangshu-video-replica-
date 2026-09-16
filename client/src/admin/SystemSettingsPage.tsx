@@ -7,6 +7,7 @@ import {
   updateControlRuntimeSettings,
 } from "../api";
 import { type SettingsBackend, SettingsPanel } from "../SettingsPanel";
+import { AdminEnvironmentSwitch } from "./AdminEnvironmentSwitch";
 import { BillingRatesManager } from "./BillingRatesManager";
 import { CustomerPricingManager } from "./CustomerPricingManager";
 import { H3AccountsManager } from "./H3AccountsManager";
@@ -66,6 +67,7 @@ export function SystemSettingsPage({
       {tab === "rates" ? <BillingRatesManager readOnly={readOnly} /> : null}
       {tab === "services" ? (
         <div className="admin-services">
+          <AdminEnvironmentSwitch readOnly={readOnly} />
           <header className="admin-services__header">
             <TabBar
               active={serviceTab}

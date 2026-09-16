@@ -370,7 +370,7 @@
     },
     "064_hifly_provider": {
       "file": "versions/064_hifly_provider.py",
-      "sha256": "e7e3f5a2f4a52e29611a0b8538b926b13c7f6c7542e56c5e45bad2ec9fe153d3"
+      "sha256": "8ac300613ac6ea2124bbd7561c84dc301c26aece6cd65fd3707ee03c9e790c08"
     },
     "065_oral_domain": {
       "file": "versions/065_oral_domain.py",
@@ -390,7 +390,7 @@
     },
     "069_provider_whitelist_widen": {
       "file": "versions/069_provider_whitelist_widen.py",
-      "sha256": "a6790c39bd58b2552fa981177ac96a30aded5c8f2a74bd8440d1766eef0ab41a"
+      "sha256": "88ed0020d8819a54b1d9bf3840b648c8904a13ffcee7c50249c266a09dc3966e"
     },
     "070_viral_video_library": {
       "file": "versions/070_viral_video_library.py",

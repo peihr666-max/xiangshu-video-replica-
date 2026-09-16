@@ -50,7 +50,10 @@ STAGE_ADMIN_SITE="$ROOT/admin-site-git-$SHORT_SHA-$STAMP"
 LOG="$ROOT/deploy-git-$SHORT_SHA-$STAMP.log"
 STATUS="$ROOT/deploy-git-$SHORT_SHA-$STAMP.status"
 NEW_IMAGE="video-replica-rehearsal-app:$SHORT_SHA-git"
-SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4 worker-viral)
+REQUIRED_SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4)
+OPTIONAL_SERVICES=(worker-viral)
+WORKER_SERVICES=(worker-1 worker-2 worker-3 worker-4)
+SERVICES=("${REQUIRED_SERVICES[@]}")
 ROLLOUT_STARTED=0
 
 exec > >(tee -a "$LOG") 2>&1
@@ -84,7 +87,7 @@ rollback() {
   mark ROLLING_BACK
   # Earlier images do not understand --viral-collection. Keep the new collector
   # stopped during rollback; a subsequent successful rollout restarts it.
-  if [[ "$ROLLOUT_STARTED" == "1" ]]; then
+  if [[ "$ROLLOUT_STARTED" == "1" ]] && printf '%s\n' "${SERVICES[@]}" | grep -Fxq worker-viral; then
     docker compose -f "$COMPOSE" stop worker-viral || true
   fi
   if [[ -f "$BACKUP/compose-before.yaml" ]]; then
@@ -156,6 +159,19 @@ done
 [[ ! -e "$BUILD_CTX" && ! -e "$STAGE_SITE" && ! -e "$STAGE_ADMIN_SITE" && ! -e "$BACKUP" ]]
 [[ "$(df -Pk "$ROOT" | awk 'NR == 2 {print $4}')" -gt 4194304 ]]
 docker compose -f "$COMPOSE" config --quiet
+mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)
+for service in "${REQUIRED_SERVICES[@]}"; do
+  printf '%s\n' "${CONFIGURED_SERVICES[@]}" | grep -Fxq "$service" || {
+    echo "PRECHECK_FAILED: compose is missing required service: $service" >&2
+    exit 1
+  }
+done
+for service in "${OPTIONAL_SERVICES[@]}"; do
+  if printf '%s\n' "${CONFIGURED_SERVICES[@]}" | grep -Fxq "$service"; then
+    SERVICES+=("$service")
+    WORKER_SERVICES+=("$service")
+  fi
+done
 curl -fsS --max-time 20 "$PUBLIC_ORIGIN/health?preflight=$STAMP" >/dev/null
 id "$SERVICE_USER" >/dev/null
 docker image inspect "$NODE_BUILD_IMAGE" >/dev/null 2>&1 || docker pull "$NODE_BUILD_IMAGE"
@@ -179,7 +195,8 @@ python3 "$SOURCE/scripts/customer_release_preflight.py" \
   --env-file "$CUSTOMER_ENV" \
   --service-user "$SERVICE_USER"
 docker run --rm -v "$SOURCE:/workspace" -w /workspace \
-  -e "VITE_API_BASE_URL=$PUBLIC_ORIGIN" "$NODE_BUILD_IMAGE" sh -lc \
+  -e "VITE_API_BASE_URL=$PUBLIC_ORIGIN" \
+  -e "VITE_CLOUD_ADMIN_ORIGIN=$PUBLIC_ORIGIN" "$NODE_BUILD_IMAGE" sh -lc \
   'npm ci --ignore-scripts && npm run build:all && npm run verify:customer-bundle'
 [[ -s "$SOURCE/client/dist/index.html" && -d "$SOURCE/client/dist/assets" ]]
 EXPECTED_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist/index.html" | head -n 1)
@@ -200,9 +217,13 @@ OLD_IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$OLD_IMAGE")
 OLD_IMAGE_DB_HEAD=$(docker image inspect -f '{{index .Config.Labels "video-replica.database-head"}}' "$OLD_IMAGE")
 [[ -n "$OLD_IMAGE_DB_HEAD" ]]
 [[ -z "$OLD_IMAGE_USER" || "$OLD_IMAGE_USER" =~ ^[A-Za-z0-9_.:-]+$ ]]
+BUILD_BASE_IMAGE="${VIDEO_REPLICA_BUILD_BASE_IMAGE:-$OLD_IMAGE}"
+docker image inspect "$BUILD_BASE_IMAGE" >/dev/null
+BUILD_BASE_IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$BUILD_BASE_IMAGE")
+[[ -z "$BUILD_BASE_IMAGE_USER" || "$BUILD_BASE_IMAGE_USER" =~ ^[A-Za-z0-9_.:-]+$ ]]
 for dependency_file in server/pyproject.toml server/uv.lock; do
   source_hash=$(dependency_manifest_hash "$SOURCE/$dependency_file" "$dependency_file")
-  image_hash=$(docker run --rm --entrypoint sh "$OLD_IMAGE" -c 'cat "$1"' sh "/opt/video-replica/$dependency_file" | dependency_manifest_hash - "$dependency_file")
+  image_hash=$(docker run --rm --entrypoint sh "$BUILD_BASE_IMAGE" -c 'cat "$1"' sh "/opt/video-replica/$dependency_file" | dependency_manifest_hash - "$dependency_file")
   [[ "$source_hash" == "$image_hash" ]] || {
     echo "PRECHECK_FAILED: Python dependency change requires a base-image release: $dependency_file" >&2
     exit 1
@@ -231,7 +252,10 @@ if [[ -d "$ADMIN_SITE" ]]; then
 fi
 CURRENT_HEAD_BEFORE=$(docker compose -f "$COMPOSE" exec -T db sh -lc \
   'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')
-[[ "$CURRENT_HEAD_BEFORE" == "$OLD_IMAGE_DB_HEAD" ]]
+if [[ "$CURRENT_HEAD_BEFORE" != "$OLD_IMAGE_DB_HEAD" && "$CURRENT_HEAD_BEFORE" != "$EXPECTED_DB_HEAD" ]]; then
+  echo "PRECHECK_FAILED: database revision is neither the active image head nor the target release head" >&2
+  exit 1
+fi
 printf '%s\n' "$CURRENT_HEAD_BEFORE" > "$BACKUP/database-revision-before.txt"
 docker compose -f "$COMPOSE" exec -T db sh -lc \
   'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$BACKUP/database-before.dump"
@@ -260,10 +284,10 @@ for forbidden_operator_path in server/app/backup.py server/scripts; do
   }
 done
 {
-  printf 'FROM %s\n' "$OLD_IMAGE"
+  printf 'FROM %s\n' "$BUILD_BASE_IMAGE"
   cat <<'DOCKERFILE'
 USER root
-RUN rm -rf /opt/video-replica/server/app /opt/video-replica/server/migrations
+RUN rm -rf /opt/video-replica/server/app /opt/video-replica/server/migrations /opt/video-replica/server/scripts
 COPY server/app /opt/video-replica/server/app
 COPY server/migrations /opt/video-replica/server/migrations
 COPY server/alembic.ini /opt/video-replica/server/alembic.ini
@@ -279,8 +303,8 @@ RUN command -v ffmpeg \
     && ! test -e /opt/video-replica/server/scripts/reconcile_customer_billing.py \
     && python -c "import pathlib, sys; forbidden = {'backup.py', 'sqlite_to_postgres.py', 'reconcile_customer_billing.py'}; found = [str(p) for p in pathlib.Path('/opt/video-replica/server').rglob('*') if p.is_file() and p.name in forbidden]; sys.exit('historical SQLite tooling in the customer image: ' + repr(found) if found else 0)"
 DOCKERFILE
-  if [[ -n "$OLD_IMAGE_USER" ]]; then
-    printf 'USER %s\n' "$OLD_IMAGE_USER"
+  if [[ -n "$BUILD_BASE_IMAGE_USER" ]]; then
+    printf 'USER %s\n' "$BUILD_BASE_IMAGE_USER"
   fi
 } > "$BUILD_CTX/Dockerfile"
 
@@ -321,7 +345,7 @@ for service in api-1 api-2; do
 done
 
 mark ROLL_WORKERS
-for service in worker-1 worker-2 worker-3 worker-4 worker-viral; do
+for service in "${WORKER_SERVICES[@]}"; do
   mark "ROLLING_$service"
   docker compose -f "$COMPOSE" up -d --no-deps "$service"
   wait_ready "$service"
