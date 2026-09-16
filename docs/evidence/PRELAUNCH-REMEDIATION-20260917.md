@@ -76,3 +76,13 @@ Owner / Reviewer：Codex 本任务 / 执行者自检、PR 门禁；独立评审�
 未测试项：生产/HA/COS/实际宿主反代/完整首装与故障演练
 Lore 提交 SHA：不适用；实现 8bbf6759，主线集成 aed51fd8；PR #131 已提交，远程检查以当前 head 为准
 ```
+
+
+## PR 自检补充：物理备份 TLS 通道
+
+PostgreSQL 的 HBA `all` 数据库关键字不匹配物理复制连接。新增回归先失败，随后显式增加
+TLS replication 入口和非 TLS replication 拒绝规则，保留 PITR/pg_basebackup 通道；
+HBA 不授予 REPLICATION 权限，仍要求专用备份角色。真实隔离 PG 的 IDENTIFY_SYSTEM
+在 verify-full 下成功，明文 replication 被拒绝；普通 SQL 的正确 CA/错误主机名/明文
+验证再次通过。最终部署专项增至 26 passed，Ruff/format 通过。这是全量之后新增的 1 项
+回归，不计入此前 2499 的全量唯一覆盖数字。随同一 PR 交付，未重复全量后端。

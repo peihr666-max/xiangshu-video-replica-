@@ -160,3 +160,5 @@ docker compose --env-file /etc/video-replica/compose.env \
 探针脚本来自已安装交付包，以只读 bind 挂载到镜像外固定路径；回滚到没有新探针模块的旧应用镜像时也能执行，无需为探针预先升级应用。
 
 旧镜像若没有 Node，升级镜像构建会明确失败：先用本包 bootstrap 构建含 Node 的新基底，再通过 `VIDEO_REPLICA_BUILD_BASE_IMAGE` 指定它；不在运行容器里临时安装依赖。
+
+PITR 的物理复制连接有独立 TLS-only HBA 规则，备份账号仍须按数据库规范授予 REPLICATION 权限；`all` 数据库规则不能替代 replication 条目。
