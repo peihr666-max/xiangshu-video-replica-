@@ -43,6 +43,7 @@ EXCLUDED_TABLES = frozenset({"alembic_version"})
 # a non-empty one is divergent state and must fail closed.
 PG_ONLY_TABLES: frozenset[str] = frozenset(
     {
+        "viral_script_cache",
         "h3_provider_accounts",
         "h3_provider_task_accounts",
         "admin_password_credentials",

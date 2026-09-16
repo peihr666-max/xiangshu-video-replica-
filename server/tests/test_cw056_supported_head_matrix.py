@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260914T0000_local_joint_merge"
+HEAD_REVISION = "20260915T1600_viral_copy_cache"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -100,15 +100,15 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
     "check_constraints": 294,
-    "columns": 1078,
+    "columns": 1084,
     "foreign_keys": 175,
     "identity_columns": 0,
     "jsonb_columns": 0,
     "partial_indexes": 29,
-    "primary_keys": 92,
+    "primary_keys": 93,
     "sequences": 4,
-    "tables": 92,
-    "timestamptz_columns": 39,
+    "tables": 93,
+    "timestamptz_columns": 41,
     "triggers": 27,
     "unique_constraints": 34,
 }
@@ -217,6 +217,7 @@ HEAD_TABLE_NAMES = (
     "viral_media_preparations",
     "viral_refresh_tasks",
     "viral_runtime_controls",
+    "viral_script_cache",
     "viral_video_favorites",
     "viral_video_visibility",
     "viral_videos",
@@ -231,7 +232,7 @@ HEAD_TABLE_NAMES = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "8cd5f4f9bebe47e375ec8c3b97305b10804c69ddba507dc63fb83d4c7998db4f"
+HEAD_SCHEMA_DIGEST = "2f2ca6228fd0cdda470e462d56e8f9cf98de1bc0b396ff5db64b002bdaff473a"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (
