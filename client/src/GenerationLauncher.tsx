@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   GenerationPriceQuote,
   GenerationRatio,
@@ -15,6 +16,8 @@ import {
 import "./generation-controls.css";
 
 type GenerationLauncherProps = {
+  finalControls?: ReactNode;
+  scriptVersionId?: string;
   projectId?: string;
   promptScope?: string;
   analysisVersionId: string;
@@ -63,6 +66,8 @@ type GenerationLauncherProps = {
 };
 
 export function GenerationLauncher({
+  finalControls,
+  scriptVersionId,
   projectId,
   promptScope,
   analysisVersionId,
@@ -209,9 +214,15 @@ export function GenerationLauncher({
         {!durationValid ? (
           <p className="settings-error">成片时长请选择 4 秒或 15 秒。</p>
         ) : null}
-        <button disabled={!canCompile} onClick={onCompilePrompt} type="button">
-          {busyAction === "compile" ? "正在编译" : "编译视频生成提示词"}
-        </button>
+        {finalControls ?? (
+          <button
+            disabled={!canCompile}
+            onClick={onCompilePrompt}
+            type="button"
+          >
+            {busyAction === "compile" ? "正在编译" : "编译视频生成提示词"}
+          </button>
+        )}
         <div className="generation-field">
           <span>视频生成提示词内容</span>
           <PromptEditor
@@ -223,6 +234,8 @@ export function GenerationLauncher({
               route: "replica",
               project_id: projectId ?? promptVersion?.project_id,
               analysis_version_id: analysisVersionId,
+              shot_card_version_id: shotCardVersionId,
+              script_version_id: scriptVersionId,
               first_frame_asset_id: firstFrameAssetId,
               duration_seconds: Number(outputDuration),
               ratio,

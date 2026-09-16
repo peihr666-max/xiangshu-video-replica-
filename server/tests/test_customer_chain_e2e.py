@@ -431,6 +431,8 @@ def _create_locked_prompt(
             "first_frame_asset_id": first_frame_asset_id,
             "output_duration_seconds": 4,
             "resolution": "768P",
+            "timeline_policy": "scale_confirmed",
+            "opening_action": "保持首帧姿态看镜头口播，再自然继续讲解。",
         },
     )
     assert compiled.status_code == 200, compiled.text

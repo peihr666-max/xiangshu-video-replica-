@@ -1482,3 +1482,8 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 ## 2026-09-16 ORAL-VIDEO-TTS-20260916
 
 视频口播流程与独立声音档案改造；局部 AUTOMATED_VERIFIED，未调用付费飞影链路、未合并部署。前端 1565 passed，口播/素材专项 205 passed，设计 QA passed；全量 PG 及远程提交状态见 [任务证据](evidence/ORAL-VIDEO-TTS-20260916.md)。基线 f0b45b2、分支 feat/oral-video-tts-20260916。仅本任务增量登记，不核销其他业务工作包。
+
+
+## 2026-09-17 REPLICA-FINAL-PROMPT-20260917
+
+ACTIVE / 验证中：最终提示词后置、确认文案绑定、首帧三图人工选择及文生/参考生视频链路核验。Owner Codex / 01a0aae7-8864-7c41-a255-4c8f62adc5e3，Reviewer 执行者自检与 PR 门禁；不声称独立代理评审。独立分支 fix/replica-final-prompt-20260917，从 origin/main@d95a8db4 创建 .worktrees/REPLICA-FINAL-PROMPT-20260917；共享 claim 已认领。没有执行真实付费出片、生产功能开关或部署。专项已通过，完整门禁在运行，未合并。[详细证据](evidence/REPLICA-FINAL-PROMPT-20260917.md)。

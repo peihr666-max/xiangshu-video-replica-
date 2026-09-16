@@ -119,6 +119,12 @@ H3_PROMPT_TEMPLATE_HASH = hashlib.sha256(
     ).encode()
 ).hexdigest()
 
+# Final replica compilation is a separate contract from the retained preview API.
+FINAL_REPLICA_TEMPLATE_VERSION = "h3.replica.final.v1"
+FINAL_REPLICA_TEMPLATE_HASH = hashlib.sha256(
+    b"h3.replica.final.v1:confirmed-script:frame-authority:real-cuts:explicit-time:human-opening"
+).hexdigest()
+
 # 拆解结果 motion 枚举到中文运动指令的确定性映射：渲染逻辑在代码里，
 # 不依赖分析模型把“行走”写成好句子——只要状态枚举正确，Prompt 必然
 # 携带正向运动指令。
@@ -210,7 +216,7 @@ logger = logging.getLogger(__name__)
 class ScriptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["original", "custom"]
+    source: Literal["original", "custom", "no_narration"]
     text: str = Field(max_length=8000)
     shot_card_version_id: str = Field(min_length=1)
 
@@ -224,6 +230,8 @@ class PromptCompileRequest(BaseModel):
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
     ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = "adaptive"
+    timeline_policy: Literal["preserve", "scale_confirmed"] = "preserve"
+    opening_action: str = Field(default="", max_length=1000)
 
 
 class PromptPreviewRequest(BaseModel):
@@ -276,6 +284,7 @@ class PromptContext(BaseModel):
     script_version_id: str | None = None
     optimization_task_id: str | None = None
     context_hash: str | None = None
+    final_prompt_version_id: str | None = None
 
 
 class GenerationBatchRequest(BaseModel):
@@ -998,13 +1007,21 @@ def version_stale_reasons(conn: BusinessConnection, *, row: sqlite3.Row) -> list
 
     frozen_template_version = payload.get("template_version")
     frozen_template_hash = payload.get("template_hash")
-    if (
-        frozen_template_version is not None
-        and frozen_template_version != H3_PROMPT_TEMPLATE_VERSION
-    ) or (frozen_template_hash is not None and frozen_template_hash != H3_PROMPT_TEMPLATE_HASH):
+    expected_version = (
+        FINAL_REPLICA_TEMPLATE_VERSION
+        if payload.get("final_composition")
+        else H3_PROMPT_TEMPLATE_VERSION
+    )
+    expected_hash = (
+        FINAL_REPLICA_TEMPLATE_HASH if payload.get("final_composition") else H3_PROMPT_TEMPLATE_HASH
+    )
+    if (frozen_template_version is not None and frozen_template_version != expected_version) or (
+        frozen_template_hash is not None and frozen_template_hash != expected_hash
+    ):
         reasons.append("TEMPLATE_SUPERSEDED")
 
-    frozen_script_id = payload.get("script_version_id")
+    source_context = payload.get("prompt_context") or {}
+    frozen_script_id = payload.get("script_version_id") or source_context.get("script_version_id")
     if isinstance(frozen_script_id, str):
         script = latest_version(conn, project_id=project_id, kind=SCRIPT_KIND)
         if script is None or frozen_script_id != str(script["id"]):
@@ -1012,7 +1029,9 @@ def version_stale_reasons(conn: BusinessConnection, *, row: sqlite3.Row) -> list
         else:
             reasons.extend(version_stale_reasons(conn, row=script))
 
-    frozen_shot_card_id = payload.get("shot_card_version_id")
+    frozen_shot_card_id = payload.get("shot_card_version_id") or source_context.get(
+        "shot_card_version_id"
+    )
     if isinstance(frozen_shot_card_id, str):
         shot_card = latest_version(conn, project_id=project_id, kind="shot_card")
         if shot_card is None or frozen_shot_card_id != str(shot_card["id"]):
@@ -1159,12 +1178,14 @@ def create_script_version(
             )
         shot_payload = json.loads(str(shot_card["payload_json"]))
         text = request.text.strip()
-        if not text:
+        if not text and request.source != "no_narration":
             raise generation_error(
                 422,
                 "SCRIPT_TEXT_REQUIRED",
                 "Script text cannot be blank.",
             )
+        if request.source == "no_narration" and text:
+            raise generation_error(422, "SCRIPT_SOURCE_CONFLICT", "无口播选项不能同时包含台词。")
         payload = {
             "schema_version": GENERATION_SCHEMA_VERSION,
             "source": request.source,
@@ -1293,13 +1314,34 @@ def compile_prompt_version(
 
         shot_payload = json.loads(str(shot_card["payload_json"]))
         source_duration_seconds = shot_timeline_duration(shot_payload)
-        timeline_scale_factor = request.output_duration_seconds / source_duration_seconds
-        prompt_text = compile_prompt_text(
-            script_payload=script_payload,
+        from app.h3_prompts import compile_replica_final_text, dialogue, prompt_issues
+
+        source_frame_id = first_frame_sources.get("source_frame_selection_version_id")
+        source_frame_time = -1.0  # Historical selections may not include a source timestamp.
+        if source_frame_id:
+            source_frame = require_version(
+                conn,
+                version_id=str(source_frame_id),
+                project_id=project_id,
+                kind="source_frame_selection",
+            )
+            source_frame_payload = json.loads(str(source_frame["payload_json"]))
+            timestamp = source_frame_payload.get("timestamp_seconds")
+            if isinstance(timestamp, int | float):
+                source_frame_time = float(timestamp)
+        timeline_scale_factor = (
+            request.output_duration_seconds / source_duration_seconds
+            if request.timeline_policy == "scale_confirmed"
+            else 1.0
+        )
+        prompt_text = compile_replica_final_text(
             shot_payload=shot_payload,
-            source_duration_seconds=source_duration_seconds,
-            duration_seconds=request.output_duration_seconds,
-            resolution=request.resolution,
+            script_text=str(script_payload["full_text"]),
+            source_duration=source_duration_seconds,
+            duration=request.output_duration_seconds,
+            timeline_policy=request.timeline_policy,
+            source_frame_time=source_frame_time,
+            opening_action=request.opening_action,
         )
         if len(prompt_text) > MAX_GENERATION_PROMPT_CHARS:
             raise generation_error(
@@ -1307,13 +1349,25 @@ def compile_prompt_version(
                 "PROMPT_TEXT_TOO_LONG",
                 "Generation prompt must not exceed 7000 characters.",
             )
+        issues = prompt_issues(
+            prompt_text,
+            mode="I2VA",
+            duration=request.output_duration_seconds,
+            labels=["<Picture 1>"],
+        )
+        if issues:
+            raise generation_error(422, issues[0].code, issues[0].message)
+        if dialogue(prompt_text) != "".join(str(script_payload["full_text"]).split()):
+            raise generation_error(
+                409, "DIALOGUE_MISMATCH", "最终稿中存在未确认的台词，请检查分镜和开场方案。"
+            )
         payload = {
             "schema_version": GENERATION_SCHEMA_VERSION,
             "status": "SAVED",
             "prompt_text": prompt_text,
             "content_hash": content_hash(prompt_text),
-            "template_version": H3_PROMPT_TEMPLATE_VERSION,
-            "template_hash": H3_PROMPT_TEMPLATE_HASH,
+            "template_version": FINAL_REPLICA_TEMPLATE_VERSION,
+            "template_hash": FINAL_REPLICA_TEMPLATE_HASH,
             "source_analysis_version_id": shot_payload.get("source_analysis_version_id"),
             "script_version_id": request.script_version_id,
             "shot_card_version_id": request.shot_card_version_id,
@@ -1321,7 +1375,11 @@ def compile_prompt_version(
             "first_frame_uri": str(first_frame["storage_uri"]),
             "source_duration_seconds": source_duration_seconds,
             "timeline_scale_factor": timeline_scale_factor,
-            "timeline_policy": "linear_scale_to_output.v1",
+            "timeline_policy": request.timeline_policy,
+            "source_frame_time": source_frame_time,
+            "opening_action": request.opening_action,
+            "final_composition": True,
+            "confirmed_script_text": str(script_payload["full_text"]),
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
             "ratio": request.ratio,
@@ -2073,13 +2131,93 @@ def create_generation_batch(
                         409, "PROMPT_CONTEXT_CHANGED", "素材或生成参数已改变，请核对提示词。"
                     )
 
+                for key, kind in (
+                    ("analysis_version_id", "analysis"),
+                    ("shot_card_version_id", "shot_card"),
+                    ("script_version_id", SCRIPT_KIND),
+                ):
+                    if snapshot.get(key):
+                        source = require_version(
+                            conn, version_id=snapshot[key], project_id=project_id, kind=kind
+                        )
+                        require_latest_version(
+                            conn,
+                            row=source,
+                            project_id=project_id,
+                            kind=kind,
+                            code="PROMPT_STALE",
+                            message="优化稿来源已更新，请重新合成最终提示词。",
+                        )
+                        if getattr(context, key) not in (None, snapshot[key]):
+                            raise generation_error(
+                                409, "PROMPT_CONTEXT_CHANGED", "优化稿与确认来源不同。"
+                            )
+
             for version_id, kind in (
                 (context.analysis_version_id, "analysis"),
                 (context.shot_card_version_id, "shot_card"),
                 (context.script_version_id, SCRIPT_KIND),
             ):
                 if version_id is not None:
-                    require_version(conn, version_id=version_id, project_id=project_id, kind=kind)
+                    source_version = require_version(
+                        conn, version_id=version_id, project_id=project_id, kind=kind
+                    )
+                    require_latest_version(
+                        conn,
+                        row=source_version,
+                        project_id=project_id,
+                        kind=kind,
+                        code="PROMPT_STALE",
+                        message="文案或分镜已更新，请重新合成最终提示词。",
+                    )
+            final_payload: dict[str, Any] = {}
+            if context.final_prompt_version_id:
+                final_version = require_version(
+                    conn,
+                    version_id=context.final_prompt_version_id,
+                    project_id=project_id,
+                    kind=H3_PROMPT_KIND,
+                )
+                if version_stale_reasons(conn, row=final_version):
+                    raise generation_error(409, "PROMPT_STALE", "最终稿的来源已变化，请重新合成。")
+                final_payload = json.loads(str(final_version["payload_json"]))
+                if not final_payload.get("final_composition"):
+                    raise generation_error(409, "FINAL_PROMPT_REQUIRED", "请先完成最终提示词合成。")
+                for key in (
+                    "first_frame_asset_id",
+                    "output_duration_seconds",
+                    "resolution",
+                    "ratio",
+                ):
+                    if final_payload.get(key) != getattr(request, key):
+                        raise generation_error(
+                            409,
+                            "PROMPT_PARAMETERS_MISMATCH",
+                            "首帧或参数已变化，请重新合成最终稿。",
+                        )
+                from app.h3_prompts import dialogue
+
+                final_script = require_version(
+                    conn,
+                    version_id=final_payload["script_version_id"],
+                    project_id=project_id,
+                    kind=SCRIPT_KIND,
+                )
+                protected = json.loads(str(final_script["payload_json"]))["full_text"]
+                if "".join(protected.split()) != dialogue(request.prompt_text):
+                    raise generation_error(
+                        409,
+                        "DIALOGUE_MISMATCH",
+                        "提示词台词与确认文案不同，请先更新确认文案并重新合成。",
+                    )
+                final_issues = prompt_issues(
+                    request.prompt_text,
+                    mode="I2VA",
+                    duration=request.output_duration_seconds,
+                    labels=["<Picture 1>"],
+                )
+                if final_issues:
+                    raise generation_error(422, final_issues[0].code, final_issues[0].message)
             prompt = insert_version(
                 conn,
                 project_id=project_id,
@@ -2088,12 +2226,19 @@ def create_generation_batch(
                 created_by_user_id=actor.id,
                 commit=False,
                 payload={
+                    **final_payload,
                     **sources,
                     "schema_version": GENERATION_SCHEMA_VERSION,
                     "status": "LOCKED",
                     "prompt_text": request.prompt_text,
                     "content_hash": content_hash(request.prompt_text),
                     "prompt_context": context.model_dump(mode="json"),
+                    "script_version_id": final_payload.get("script_version_id")
+                    or context.script_version_id,
+                    "shot_card_version_id": final_payload.get("shot_card_version_id")
+                    or context.shot_card_version_id,
+                    "source_analysis_version_id": final_payload.get("source_analysis_version_id")
+                    or context.analysis_version_id,
                     "first_frame_asset_id": request.first_frame_asset_id,
                     "output_duration_seconds": request.output_duration_seconds,
                     "resolution": request.resolution,
@@ -2900,9 +3045,7 @@ def require_confirmed_first_frame(
         isinstance(selection_payload, dict) and selection_payload.get("quality_override") is True
     )
     manual_review_confirmed = (
-        isinstance(candidate_payload, dict)
-        and candidate_payload.get("review_mode") == "HUMAN_CONFIRMATION"
-        and isinstance(selection_payload, dict)
+        isinstance(selection_payload, dict)
         and selection_payload.get("review_mode") == "HUMAN_CONFIRMATION"
         and bool(selection["created_by_user_id"])
         and selection_payload.get("reviewed_by_user_id") == selection["created_by_user_id"]

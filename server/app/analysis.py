@@ -218,8 +218,6 @@ class VideoAnalysisProvider(Protocol):
 
     def analyze(self, *, video_uri: str, duration_seconds: float) -> ProviderResponse: ...
 
-    def repair_json(self, *, invalid_json: str, error: str) -> ProviderResponse: ...
-
 
 class AnalysisProviderFailed(RuntimeError):
     def __init__(
@@ -288,13 +286,11 @@ class ApilioGemini:
         base_url: str = APILIO_DEFAULT_BASE_URL,
         model: str = APILIO_GEMINI_MODEL,
         transport: ApilioChatTransport | None = None,
-        text_ai_config: tuple[str, str, str] | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.transport = transport or UrllibApilioChatTransport()
-        self.text_ai_config = text_ai_config
 
     def analyze(self, *, video_uri: str, duration_seconds: float) -> ProviderResponse:
         if not is_https_video_url(video_uri):
@@ -327,7 +323,7 @@ class ApilioGemini:
         context: dict[str, Any],
         media: list[dict[str, Any]],
     ) -> ProviderResponse:
-        from app.h3_prompts import RULES, mode_rules
+        from app.h3_prompts import RULES
 
         if not is_https_video_url(video_uri):
             raise AnalysisProviderFailed(
@@ -351,7 +347,7 @@ class ApilioGemini:
                 "max_tokens": 16000,
                 "response_format": {"type": "json_object"},
                 "messages": [
-                    {"role": "system", "content": instruction + "\n" + mode_rules(context["mode"])},
+                    {"role": "system", "content": instruction},
                     {
                         "role": "user",
                         "content": [
@@ -364,41 +360,6 @@ class ApilioGemini:
             }
         )
         return ProviderResponse(text=text, raw=raw)
-
-    def repair_json(self, *, invalid_json: str, error: str) -> ProviderResponse:
-        from fastapi import HTTPException
-
-        from app.billing_meter import meter_call
-        from app.script_rewrite import ConfirmedRewriteResponseError, request_deepseek_text
-
-        if self.text_ai_config is None:
-            raise HTTPException(
-                503,
-                detail={
-                    "code": "DEEPSEEK_NOT_CONFIGURED",
-                    "message": "分析结果修复需要配置文本 AI · DeepSeek。",
-                    "retryable": False,
-                },
-            )
-        base_url, api_key, model = self.text_ai_config
-        confirmed_failure = None
-        # A separate service preserves legacy Apilio cost snapshots and tariffs.
-        # Complete HTTP responses still incur supplier usage if text is invalid.
-        with meter_call("analysis_repair_deepseek"):
-            try:
-                text = request_deepseek_text(
-                    base_url=base_url,
-                    api_key=api_key,
-                    model=model,
-                    source_text=invalid_json,
-                    instructions=error,
-                    purpose="json_repair",
-                )
-            except ConfirmedRewriteResponseError as exc:
-                confirmed_failure = exc
-        if confirmed_failure is not None:
-            raise confirmed_failure
-        return ProviderResponse(text=text, raw={"provider": "deepseek", "model": model})
 
     def _complete(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         raw_body, _ = self.transport.post(
@@ -427,14 +388,10 @@ class ApilioGemini:
 @dataclass(init=False)
 class FakeGemini:
     analysis_json: str | None = None
-    repair_json_text: str | None = None
-    repair_calls: int = 0
     requires_https_video_url = False
 
-    def __init__(self, analysis_json: str | None = None, repair_json: str | None = None) -> None:
+    def __init__(self, analysis_json: str | None = None) -> None:
         self.analysis_json = analysis_json
-        self.repair_json_text = repair_json
-        self.repair_calls = 0
 
     def analyze(self, *, video_uri: str, duration_seconds: float) -> ProviderResponse:
         text = self.analysis_json or json.dumps(
@@ -443,22 +400,6 @@ class FakeGemini:
         return ProviderResponse(
             text=text,
             raw={"provider": "fake_gemini", "text": text},
-        )
-
-    def repair_json(self, *, invalid_json: str, error: str) -> ProviderResponse:
-        self.repair_calls += 1
-        if self.repair_json_text is None:
-            text = json.dumps(_default_analysis_payload(10), ensure_ascii=True, sort_keys=True)
-        else:
-            text = self.repair_json_text
-        return ProviderResponse(
-            text=text,
-            raw={
-                "provider": "fake_gemini",
-                "repaired_from": invalid_json,
-                "error": error,
-                "text": text,
-            },
         )
 
 
@@ -683,6 +624,7 @@ def create_analysis_version(
     asset_uri: str,
     created_by_user_id: str,
     result: AnalysisResult,
+    commit: bool = True,
 ) -> sqlite3.Row:
     return insert_version(
         conn,
@@ -695,6 +637,7 @@ def create_analysis_version(
             asset_uri=asset_uri,
             result=result,
         ),
+        commit=commit,
     )
 
 
@@ -778,6 +721,7 @@ def create_shot_card_version(
     analysis_version: sqlite3.Row,
     created_by_user_id: str,
     shots: list[ShotCard],
+    commit: bool = True,
 ) -> sqlite3.Row:
     source_payload = json.loads(str(analysis_version["payload_json"]))
     analysis_payload = source_payload["analysis"]
@@ -803,6 +747,7 @@ def create_shot_card_version(
         kind=SHOT_CARD_KIND,
         created_by_user_id=created_by_user_id,
         payload=payload,
+        commit=commit,
     )
 
 

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import {
   type AnalysisVersion,
   type CharacterReferenceSelection,
@@ -10,23 +9,31 @@ import {
   type GenerationPriceQuote,
   type GenerationRatio,
   getGenerationPriceQuote,
+  getLatestGenerationPrompt,
   getLatestProjectAnalysis,
-  getLatestProjectShotCards,
+  getLatestScriptVersion,
   type Project,
   type ProjectMainCharacter,
-  type PromptPreviewResult,
-  previewGenerationPrompt,
-  readAnalysisH3Prompt,
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
   saveGenerationPrompt,
-  saveShotCards,
   selectCharacterReferences,
 } from "./api";
 import { CharacterSelection } from "./CharacterSelection";
 import { FirstFrameSelection } from "./FirstFrameSelection";
-import { PromptMarkdown } from "./PromptMarkdown";
 import { SourceFrameSelection } from "./SourceFrameSelection";
+import {
+  type FinalReplicaSnapshot,
+  PromptEditor,
+  ReplicaFinalPromptControls,
+  replicaInputKey,
+} from "./studio/PromptEditor";
+import { readAppliedOptimization } from "./studio/usePromptOptimization";
+import {
+  clearIdempotencyRecord,
+  restoreIdempotencyRecord,
+  restoreOrCreateIdempotencyRecord,
+} from "./useGenerationDrafts";
 
 type ProjectDetailFlowProps = {
   currentUserId?: string;
@@ -77,9 +84,6 @@ export function ProjectDetailFlow({
   const [analysisVersion, setAnalysisVersion] =
     useState<AnalysisVersion | null>(null);
   const [analysisError, setAnalysisError] = useState("");
-  const [preview, setPreview] = useState<PromptPreviewResult | null>(null);
-  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState("");
   const [characterSelection, setCharacterSelection] =
     useState<ProjectMainCharacter | null>(null);
   const [sourceFrameSelection, setSourceFrameSelection] =
@@ -89,8 +93,9 @@ export function ProjectDetailFlow({
   const [referenceError, setReferenceError] = useState("");
   const [firstFrameSelection, setFirstFrameSelection] =
     useState<AnalysisVersion | null>(null);
-  const [originalScript, setOriginalScript] = useState("");
   const [scriptText, setScriptText] = useState("");
+  const scriptEdited = useRef(false);
+  const restoredScript = useRef(false);
   const [firstFrameGenerationBusy, setFirstFrameGenerationBusy] =
     useState(false);
   const [generationPhase, setGenerationPhase] =
@@ -117,9 +122,9 @@ export function ProjectDetailFlow({
   const [revisedPromptText, setRevisedPromptText] = useState<string | null>(
     null,
   );
-  const finalPromptText =
-    revisedPromptText ??
-    (readAnalysisH3Prompt(analysisVersion) || preview?.prompt_text || "");
+  const finalPromptText = revisedPromptText ?? "";
+  const [finalSnapshot, setFinalSnapshot] =
+    useState<FinalReplicaSnapshot | null>(null);
 
   const [referenceRetryCount, setReferenceRetryCount] = useState(0);
   const upstreamBusyRef = useRef<Set<string>>(new Set());
@@ -139,9 +144,17 @@ export function ProjectDetailFlow({
     ? readFirstFrameSelectionPayload(firstFrameSelection)
     : null;
   const firstFrameAssetId = firstFramePayload?.first_frame_asset_id ?? null;
+  const finalInput = {
+    projectId: project.id,
+    scriptText,
+    firstFrameAssetId: firstFrameAssetId ?? "",
+    duration: generationDuration,
+    resolution: "768P" as const,
+    ratio: generationRatio,
+  };
+  const finalReady = finalSnapshot?.inputKey === replicaInputKey(finalInput);
   const isUpstreamBusy = upstreamBusyRef.current.size > 0;
   const isBusy = generationPhase === "running" || isUpstreamBusy;
-  const scriptWasEdited = scriptText.trim() !== originalScript.trim();
   submissionContextRef.current = JSON.stringify({
     projectId: project.id,
     firstFrameAssetId,
@@ -259,28 +272,37 @@ export function ProjectDetailFlow({
     setPriceQuoteRevision((value) => value + 1);
   }
 
-  // 第一段提示词预览：进入页面即由拆解结果自动编译，不依赖首帧。
   useEffect(() => {
     let active = true;
-    setIsPreviewLoading(true);
-    setPreviewError("");
-    previewGenerationPrompt(project.id)
-      .then((result) => {
-        if (active) {
-          setPreview(result);
+    scriptEdited.current = false;
+    restoredScript.current = false;
+    setScriptText("");
+    void Promise.resolve()
+      .then(() => getLatestScriptVersion(project.id))
+      .then((state) => {
+        if (active && state?.version && !state.stale && !scriptEdited.current) {
+          restoredScript.current = true;
+          setScriptText(String(state.version.payload.full_text ?? ""));
         }
       })
-      .catch((error: unknown) => {
-        if (active) {
-          const reason = error instanceof Error ? error.message : "请稍后重试";
-          setPreviewError(`提示词预览暂不可用（${reason}）。`);
+      .catch(() => {});
+    setRevisedPromptText(null);
+    setFinalSnapshot(null);
+    void Promise.resolve()
+      .then(() => getLatestGenerationPrompt(project.id))
+      .then((state) => {
+        if (
+          active &&
+          !state.stale &&
+          state.version?.payload.final_composition
+        ) {
+          const text = String(state.version.payload.prompt_text ?? "");
+          setRevisedPromptText((current) =>
+            current === null ? text : current,
+          );
         }
       })
-      .finally(() => {
-        if (active) {
-          setIsPreviewLoading(false);
-        }
-      });
+      .catch(() => {});
     return () => {
       active = false;
     };
@@ -293,8 +315,9 @@ export function ProjectDetailFlow({
       return;
     }
     const payload = readAnalysisPayload(analysisVersion);
-    setOriginalScript(payload ? payload.original_script : "");
-    setScriptText(payload ? payload.original_script : "");
+    if (!scriptEdited.current && !restoredScript.current) {
+      setScriptText(payload ? payload.original_script : "");
+    }
   }, [analysisVersion]);
 
   // 人物参考全自动匹配：角色与源画面确认后服务端自动创建推荐集
@@ -392,43 +415,6 @@ export function ProjectDetailFlow({
     [],
   );
 
-  async function handleSavePrompt(text: string) {
-    await saveGenerationPrompt(project.id, {
-      name: `反推提示词 ${new Date().toLocaleString("zh-CN")}`,
-      prompt_text: text,
-    });
-    setRevisedPromptText(text);
-    setPreview((current) =>
-      current ? { ...current, prompt_text: text } : current,
-    );
-  }
-
-  async function ensureShotCardVersion(): Promise<string> {
-    const latest = await getLatestProjectShotCards(project.id);
-    if (
-      latest &&
-      analysisVersion &&
-      String(latest.payload?.source_analysis_version_id ?? "") ===
-        String(analysisVersion.id)
-    ) {
-      return latest.id;
-    }
-    const shots = analysisVersion
-      ? (readAnalysisPayload(analysisVersion)?.shots ?? null)
-      : null;
-    if (!shots || !analysisVersion) {
-      throw new Error("拆解结果缺少镜头数据，请先检查拆解结果。");
-    }
-    const saved = await saveShotCards(analysisVersion.id, shots);
-    return saved.id;
-  }
-
-  function defaultDurationSeconds(): number {
-    const raw = sourceVideoDurationSeconds();
-    const duration = typeof raw === "number" && raw > 0 ? Math.round(raw) : 10;
-    return Math.max(4, Math.min(15, duration));
-  }
-
   function sourceVideoDurationSeconds(): number {
     const raw = analysisVersion
       ? readAnalysisPayload(analysisVersion)?.duration_seconds
@@ -454,6 +440,10 @@ export function ProjectDetailFlow({
       );
       return;
     }
+    if (!finalReady || !finalSnapshot) {
+      setGenerationError("请先确认文案与首帧并合成最终提示词。");
+      return;
+    }
     const operation = submissionOperationRef.current + 1;
     submissionOperationRef.current = operation;
     const sourceFingerprint = submissionContextRef.current;
@@ -466,13 +456,17 @@ export function ProjectDetailFlow({
     setGenerationMessage("");
     try {
       let envelope = idempotencyEnvelopeRef.current;
-      const frozenRequestKey = detailRequestKey(project, sourceFingerprint);
+      const frozenRequestKey = `detail.submission/${currentUserId ?? project.owner_user_id}/${detailRequestKey(project, sourceFingerprint)}`;
+      const persisted = restoreIdempotencyRecord(frozenRequestKey);
       if (!envelope || envelope.sourceFingerprint !== sourceFingerprint) {
-        envelope = frozenDetailRequests.get(frozenRequestKey) ?? null;
+        envelope =
+          frozenDetailRequests.get(frozenRequestKey) ??
+          (persisted
+            ? { sourceFingerprint, request: persisted.request }
+            : null);
         idempotencyEnvelopeRef.current = envelope;
       }
       if (!envelope || envelope.sourceFingerprint !== sourceFingerprint) {
-        const shotCardVersionId = await ensureShotCardVersion();
         const finalText = finalPromptText;
         if (!finalText.trim()) throw new Error("请先填写提示词。");
         const duration = generationDuration;
@@ -486,7 +480,17 @@ export function ProjectDetailFlow({
             prompt_text: finalText,
             prompt_context: {
               source: "manual",
-              shot_card_version_id: shotCardVersionId,
+              ...readAppliedOptimization(
+                `${currentUserId ?? project.owner_user_id}:${project.id}`,
+                finalText,
+                {
+                  script_version_id: finalSnapshot.scriptVersionId,
+                  shot_card_version_id: finalSnapshot.shotCardVersionId,
+                },
+              ),
+              shot_card_version_id: finalSnapshot.shotCardVersionId,
+              script_version_id: finalSnapshot.scriptVersionId,
+              final_prompt_version_id: finalSnapshot.versionId,
             },
             first_frame_asset_id: firstFrameAssetId,
             output_duration_seconds: duration,
@@ -498,6 +502,8 @@ export function ProjectDetailFlow({
           },
         };
         idempotencyEnvelopeRef.current = envelope;
+        const { idempotency_key: key, ...body } = envelope.request;
+        restoreOrCreateIdempotencyRecord(frozenRequestKey, body, null, key);
         frozenDetailRequests.set(frozenRequestKey, envelope);
       }
       if (!isCurrent()) {
@@ -511,6 +517,9 @@ export function ProjectDetailFlow({
       if (frozenDetailRequests.get(frozenRequestKey) === envelope) {
         frozenDetailRequests.delete(frozenRequestKey);
       }
+      const completed = restoreIdempotencyRecord(frozenRequestKey);
+      if (completed?.key === envelope.request.idempotency_key)
+        clearIdempotencyRecord(frozenRequestKey, completed);
       if (!isCurrent()) return;
       setGenerationPhase("done");
       setGenerationMessage("生成任务已创建，正在前往任务记录…");
@@ -582,7 +591,7 @@ export function ProjectDetailFlow({
       </p>
     );
   })();
-  const outputDurationSeconds = defaultDurationSeconds();
+  const outputDurationSeconds = generationDuration;
   const sourceDurationSeconds = sourceVideoDurationSeconds();
   const scriptCharacterCount = countSpeechCharacters(scriptText);
   const suggestedScriptMin = outputDurationSeconds * 4;
@@ -614,36 +623,13 @@ export function ProjectDetailFlow({
         </p>
       ) : null}
 
-      <fieldset className="flow-step" disabled={generationPhase === "running"}>
-        <legend>① 解析提示词</legend>
-        {isPreviewLoading ? (
-          <p className="status-note">正在编译提示词预览…</p>
-        ) : null}
-        {previewError ? <p className="status-note">{previewError}</p> : null}
-        {preview ? (
-          <PromptMarkdown
-            scope={`${currentUserId ?? project.owner_user_id}:${project.id}`}
-            onChange={setRevisedPromptText}
-            promptContext={{
-              route: "replica",
-              project_id: project.id,
-              first_frame_asset_id: firstFrameAssetId || undefined,
-              duration_seconds: generationDuration,
-              ratio: generationRatio,
-            }}
-            meta={`成片 ${preview.output_duration_seconds} 秒 · ${preview.resolution} · 口播来源：${
-              preview.script_source === "script_version"
-                ? "已保存口播稿"
-                : "拆解原稿"
-            }`}
-            onSave={
-              readOnly || generationPhase === "running"
-                ? undefined
-                : handleSavePrompt
-            }
-            text={finalPromptText}
-          />
-        ) : null}
+      <fieldset className="flow-step">
+        <legend>① 原片拆解</legend>
+        <p>
+          {analysisVersion
+            ? readAnalysisPayload(analysisVersion)?.summary
+            : "正在读取分析结果…"}
+        </p>
       </fieldset>
 
       <fieldset
@@ -709,13 +695,15 @@ export function ProjectDetailFlow({
         <legend>④ 自定义文案</legend>
         <div className="flow-script">
           <p className="flow-hint">
-            已带入拆解原文，可直接修改；不修改则沿用原文。提交时会把当前内容重新编译进视频
-            Prompt。
+            已带入拆解原文，可直接修改。确认文案和首帧后，请在最后一步合成提示词并核对；提交时原样使用最终正文。
           </p>
           <textarea
             aria-label="自定义文案"
             disabled={readOnly || generationPhase === "running"}
-            onChange={(event) => setScriptText(event.target.value)}
+            onChange={(event) => {
+              scriptEdited.current = true;
+              setScriptText(event.target.value);
+            }}
             value={scriptText}
           />
           <p className="status-note">
@@ -815,16 +803,51 @@ export function ProjectDetailFlow({
                 </select>
               </label>
             </div>
-            {scriptWasEdited ? (
-              <p className="status-note">
-                将以当前自定义文案重新编译视频 Prompt；第一步保存过的旧 Prompt
-                不会覆盖本次文案。
-              </p>
-            ) : revisedPromptText ? (
-              <p className="status-note">
-                将以你在第一段编辑后的提示词文本提交。
-              </p>
-            ) : null}
+            <ReplicaFinalPromptControls
+              input={finalInput}
+              value={finalPromptText}
+              snapshot={finalSnapshot}
+              onPrepared={setFinalSnapshot}
+              onChange={setRevisedPromptText}
+              readOnly={readOnly || isBusy}
+            />
+            <PromptEditor
+              scope={`${currentUserId ?? project.owner_user_id}:${project.id}`}
+              value={finalPromptText}
+              onChange={setRevisedPromptText}
+              readOnly={readOnly || isBusy}
+              context={{
+                route: "replica",
+                project_id: project.id,
+                analysis_version_id: analysisVersion?.id,
+                shot_card_version_id: finalSnapshot?.shotCardVersionId,
+                script_version_id: finalSnapshot?.scriptVersionId,
+                first_frame_asset_id: firstFrameAssetId ?? undefined,
+                duration_seconds: generationDuration,
+                ratio: generationRatio,
+              }}
+            />
+            <button
+              type="button"
+              disabled={!finalReady || readOnly}
+              onClick={() => {
+                void saveGenerationPrompt(project.id, {
+                  name: "复刻最终提示词",
+                  prompt_text: finalPromptText,
+                  base_prompt_version_id: finalSnapshot?.versionId,
+                })
+                  .then(() =>
+                    setGenerationMessage("最终提示词已保存到我的提示词。"),
+                  )
+                  .catch((error: unknown) =>
+                    setGenerationError(
+                      error instanceof Error ? error.message : "保存失败",
+                    ),
+                  );
+              }}
+            >
+              另存到我的提示词
+            </button>
             {renderPaidWarning()}
             {generationMessage ? (
               <p className="setup-success" role="status">
@@ -832,7 +855,7 @@ export function ProjectDetailFlow({
               </p>
             ) : null}
             <button
-              disabled={!canStart}
+              disabled={!canStart || !finalReady}
               onClick={() => void handleStartGeneration()}
               type="button"
             >

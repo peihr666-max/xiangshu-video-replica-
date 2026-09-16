@@ -7,6 +7,114 @@ from app.generation import GenerationBatchRequest
 from app.h3_prompts import GenerationContext, analysis_prompt_result, prompt_issues
 
 
+def test_replica_final_prompt_uses_confirmed_script_frame_and_real_cuts() -> None:
+    from app.h3_prompts import compile_replica_final_text, dialogue
+
+    shots = [
+        {
+            "start_time": 0,
+            "end_time": 2,
+            "segment_kind": "ACTION_BEAT",
+            "wardrobe_pose_detail": "红衣站立",
+            "spoken_text": "欢迎看房",
+            "action": "抬手",
+            "scene_lighting": "左侧柔光",
+            "motion": {
+                "subject_motion_state": "WALKING",
+                "subject_direction": "toward_camera",
+                "camera_motion": "PULL_BACK",
+                "relative_motion": "主体占比保持不变",
+            },
+        },
+        {"start_time": 2, "end_time": 4, "segment_kind": "ACTION_BEAT", "action": "指向庭院"},
+    ]
+    text = compile_replica_final_text(
+        shot_payload={"shots": shots},
+        script_text="今天带你看庭院",
+        duration=4,
+        source_duration=4,
+        timeline_policy="preserve",
+        source_frame_time=0,
+    )
+    assert dialogue(text) == "今天带你看庭院"
+    assert "欢迎看房" not in text and "红衣" not in text
+    assert text.count("[Shot ") == 1
+    assert "PULL_BACK" in text and "toward_camera" in text and "左侧柔光" in text
+    assert not prompt_issues(text, mode="I2VA", duration=4, labels=["<Picture 1>"])
+
+
+def test_final_prompt_requires_explicit_timing_and_start_alignment() -> None:
+    from fastapi import HTTPException
+
+    from app.h3_prompts import compile_replica_final_text
+
+    base = dict(
+        shot_payload={"shots": [{"start_time": 0, "end_time": 15}]},
+        script_text="",
+        duration=4,
+        source_duration=15,
+        timeline_policy="preserve",
+        source_frame_time=0,
+    )
+    with pytest.raises(HTTPException) as exc:
+        compile_replica_final_text(**base)
+    assert exc.value.detail["code"] == "TIMELINE_CONFIRMATION_REQUIRED"
+    base.update(timeline_policy="scale_confirmed", source_frame_time=7)
+    with pytest.raises(HTTPException) as exc:
+        compile_replica_final_text(**base)
+    assert exc.value.detail["code"] == "FIRST_FRAME_ALIGNMENT_REQUIRED"
+
+
+@pytest.mark.parametrize("source_time", [7, -1])
+def test_sitting_frame_requires_and_uses_human_opening_plan(source_time: float) -> None:
+    from app.h3_prompts import compile_replica_final_text, dialogue
+
+    text = compile_replica_final_text(
+        shot_payload={
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 4,
+                    "action": "从站立开始坐下",
+                    "motion": {"subject_motion_state": "WALKING"},
+                }
+            ]
+        },
+        script_text="今天介绍[庭院]",
+        duration=4,
+        source_duration=4,
+        timeline_policy="preserve",
+        source_frame_time=source_time,
+        opening_action="从首帧坐姿开始，坐着转头看向庭院。",
+    )
+    assert "从站立开始坐下" not in text and "WALKING" not in text
+    assert "从首帧坐姿开始" in text
+    assert dialogue(text) == "今天介绍[庭院]"
+
+
+def test_optimizer_protects_plain_dialogue_and_explicit_silence() -> None:
+    import json
+
+    from app.prompt_optimizer import validate_result
+
+    result, status = validate_result(
+        json.dumps(
+            {
+                "prompt_text": "integrated_multimodal_description: [Shot 1] <d>修改后的话</d>\n"
+                "overall_soundscape: N/A\nnon_diegetic_music: N/A",
+                "warnings": [],
+            }
+        ),
+        snapshot={
+            "prompt_text": "台词：原稿",
+            "protected_dialogue": "原稿",
+            "context": {"mode": "T2VA", "duration_seconds": 4, "generation_assets": []},
+        },
+    )
+    assert status == "FAILED"
+    assert any(w["code"] == "DIALOGUE_CHANGED" for w in result["warnings"])
+
+
 def test_final_text_and_legacy_version_are_exclusive() -> None:
     base = dict(
         quantity=1,
@@ -151,7 +259,7 @@ def test_bad_json_never_triggers_paid_repair() -> None:
     provider = FakeGemini(analysis_json="bad")
     with pytest.raises(AnalysisProviderFailed):
         analyze_video(video_uri="fake", video_duration_seconds=8, provider=provider)
-    assert provider.repair_calls == 0
+    assert not hasattr(provider, "repair_json")
 
 
 def test_rule_fields_match_parser_enums() -> None:

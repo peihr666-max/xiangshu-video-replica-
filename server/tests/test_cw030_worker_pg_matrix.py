@@ -1114,6 +1114,62 @@ def test_pg_first_frame_quality_transport_records_parent_cost(pg_state: str, mon
     )
 
 
+def test_analysis_publication_is_atomic_and_repeat_completion_is_noop(pg_state, monkeypatch):
+    from app import analysis_routes
+    from app.analysis import FakeGemini, analyze_video
+
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="atomic-source")
+    _exec(
+        pg_state,
+        "INSERT INTO analysis_tasks(id,project_id,asset_id,created_by_user_id,duration_seconds,"
+        "status,locked_by,attempt) VALUES('atomic-analysis','proj-1','asset-ref','u1',4,"
+        "'RUNNING','atomic-worker',1)",
+    )
+    work = analysis_routes.AnalysisTaskWork(
+        lease=analysis_routes.AnalysisTaskLease(
+            id="atomic-analysis",
+            project_id="proj-1",
+            asset_id="asset-ref",
+            created_by_user_id="u1",
+            duration_seconds=4,
+            worker_id="atomic-worker",
+        ),
+        provider=FakeGemini(),
+        video_uri="fake",
+        asset_uri="fake://sf-uploads/reference.mp4",
+    )
+    result = analyze_video(video_uri="fake", video_duration_seconds=4, provider=FakeGemini())
+    original_audit = analysis_routes.write_audit
+
+    def unavailable_audit(*args, **kwargs):
+        raise RuntimeError("publication interrupted")
+
+    monkeypatch.setattr(analysis_routes, "write_audit", unavailable_audit)
+    with pytest.raises(RuntimeError, match="publication interrupted"):
+        with pg_transaction() as raw:
+            analysis_routes.complete_analysis_task(
+                BusinessConnection.postgres(raw),
+                work=work,
+                result=result,
+            )
+    assert (
+        _one(pg_state, "SELECT COUNT(*) FROM versions WHERE kind IN ('analysis', 'shot_card')") == 0
+    )
+    assert _one(pg_state, "SELECT status FROM analysis_tasks") == "RUNNING"
+    monkeypatch.setattr(analysis_routes, "write_audit", original_audit)
+    for _ in range(2):
+        with pg_transaction() as raw:
+            analysis_routes.complete_analysis_task(
+                BusinessConnection.postgres(raw),
+                work=work,
+                result=result,
+            )
+    assert _one(pg_state, "SELECT status FROM analysis_tasks") == "SUCCEEDED"
+    assert _one(pg_state, "SELECT COUNT(*) FROM versions WHERE kind='analysis'") == 1
+    assert _one(pg_state, "SELECT COUNT(*) FROM versions WHERE kind='shot_card'") == 1
+
+
 def test_pg_analysis_keeps_known_call_cost_when_repair_fails(pg_state: str) -> None:
     from app.analysis import ProviderResponse
     from app.usage_billing import accept_operation
@@ -2192,13 +2248,6 @@ def test_first_frame_human_review_records_user_without_fake_qc_pass(
     with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
         actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
-        if not manual_review:
-            with pytest.raises(HTTPException) as exc:
-                first_frames.confirm_first_frame(
-                    conn, project_id="proj-1", first_frame_asset_id="manual-frame", actor=actor
-                )
-            assert exc.value.detail["code"] == "FIRST_FRAME_QUALITY_NOT_VERIFIED"
-            return
         row = first_frames.confirm_first_frame(
             conn, project_id="proj-1", first_frame_asset_id="manual-frame", actor=actor
         )
@@ -2496,10 +2545,6 @@ def _analysis_with_deepseek(monkeypatch):
     monkeypatch.setattr(analysis_routes, "SettingsRepository", lambda conn: repository)
     monkeypatch.setattr("app.script_rewrite.SettingsRepository", lambda conn: repository)
     provider = analysis_routes.get_video_analysis_provider(Mock())
-    # Explicit legacy repair tests retain the separately configured text provider.
-    from app.script_rewrite import load_script_rewrite_configuration
-
-    provider.text_ai_config = load_script_rewrite_configuration(Mock())
     return provider, configs
 
 
@@ -2529,30 +2574,6 @@ def test_analysis_factory_does_not_repair_invalid_json_or_switch_visual_provider
     assert "gemini" in json.loads(provider.transport.post.call_args.kwargs["body"])["model"]
 
 
-@pytest.mark.parametrize(
-    "status,retryable", [(401, False), (403, False), (429, True), (503, True), (302, False)]
-)
-def test_deepseek_repair_http_errors_are_redacted_and_do_not_fall_back(
-    monkeypatch, status, retryable
-):
-    from types import SimpleNamespace
-    from unittest.mock import Mock
-
-    provider, _ = _analysis_with_deepseek(monkeypatch)
-    provider.transport = Mock()
-    monkeypatch.setattr(
-        "curl_cffi.requests.post",
-        lambda *a, **k: SimpleNamespace(status_code=status, content=b"secret"),
-    )
-    with pytest.raises(HTTPException) as failure:
-        provider.repair_json(invalid_json="broken", error="invalid")
-    assert failure.value.detail["http_status"] == status
-    assert failure.value.detail["retryable"] is retryable
-    assert "secret" not in str(failure.value.detail)
-    assert "text-test-key" not in str(failure.value.detail)
-    provider.transport.post.assert_not_called()
-
-
 def test_analysis_factory_does_not_require_unused_text_ai_configuration(monkeypatch):
     from unittest.mock import Mock
 
@@ -2564,59 +2585,7 @@ def test_analysis_factory_does_not_require_unused_text_ai_configuration(monkeypa
     provider = analysis_routes.get_video_analysis_provider(Mock())
     assert isinstance(provider, ApilioGemini)
     assert provider.api_key == "vision-test-key"
-    assert provider.text_ai_config is None
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}',
-        b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
-        b"not json",
-    ],
-)
-def test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge(
-    pg_state, monkeypatch, content
-):
-    from types import SimpleNamespace
-
-    from app.billing_catalog import SERVICES
-    from app.billing_meter import billing_context
-    from app.usage_billing import accept_operation
-
-    _seed_base(pg_state)
-    _exec(
-        pg_state,
-        "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
-        "VALUES('analysis',true,0,1),('analysis_repair',false,NULL,99)",
-    )
-    with pg_transaction() as raw:
-        accept_operation(
-            BusinessConnection.postgres(raw),
-            user_id="u1",
-            service="analysis",
-            source_id="repair-cost",
-            units=1,
-        )
-    provider, _ = _analysis_with_deepseek(monkeypatch)
-    monkeypatch.setattr(
-        "curl_cffi.requests.post", lambda *a, **k: SimpleNamespace(status_code=200, content=content)
-    )
-    with billing_context("repair-cost"):
-        if b'"stop"' in content:
-            provider.repair_json(invalid_json="invalid", error="invalid")
-        else:
-            with pytest.raises(HTTPException):
-                provider.repair_json(invalid_json="invalid", error="invalid")
-    row = _rows(
-        pg_state,
-        "SELECT provider,usage,cost_fen FROM billing_attempts "
-        "WHERE service='analysis_repair_deepseek'",
-    )[0]
-    assert row["provider"] == "deepseek"
-    assert float(row["usage"]) == 1
-    assert row["cost_fen"] is None, "do not reuse legacy Apilio tariff"
-    assert not SERVICES["analysis_repair_deepseek"].customer_charge_allowed
+    assert not hasattr(provider, "repair_json")
 
 
 def test_rewrite_instructions_persist_and_conflicting_retry_is_rejected(pg_state, monkeypatch):

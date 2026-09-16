@@ -187,13 +187,18 @@ export type GenerationVersionState = Omit<
   "version"
 > & { version: GenerationVersion | null };
 export type ScriptVersionInput = components["schemas"]["ScriptRequest"];
-export type PromptCompileInput =
-  components["schemas"]["PromptCompileRequest"] & {
-    ratio?: GenerationRatio;
-  };
+export type PromptCompileInput = Omit<
+  components["schemas"]["PromptCompileRequest"],
+  "timeline_policy" | "opening_action"
+> & {
+  ratio?: GenerationRatio;
+  timeline_policy?: "preserve" | "scale_confirmed";
+  opening_action?: string;
+};
 export type PromptRevisionInput =
   components["schemas"]["PromptRevisionRequest"];
 export type PromptContext = {
+  final_prompt_version_id?: string | null;
   source?: "analysis" | "manual" | "ai" | "imported";
   analysis_version_id?: string | null;
   shot_card_version_id?: string | null;
@@ -2434,6 +2439,7 @@ export async function renameProject(
 export async function createVideoUploadIntent(
   projectId: string,
   file: File,
+  purpose: "replica" | "script" = "replica",
 ): Promise<UploadIntent> {
   const sha256 = await sha256ForUpload(file);
   return requestApiJson<UploadIntent>(
@@ -2443,6 +2449,7 @@ export async function createVideoUploadIntent(
       method: "POST",
       body: JSON.stringify({
         project_id: projectId,
+        purpose,
         filename: file.name,
         // Derive from the extension so a generic/empty file.type (e.g.
         // application/octet-stream from some file managers) is normalized.
@@ -2927,6 +2934,7 @@ export async function startVideoAnalysis(
   projectId: string,
   assetId: string,
   generationContext?: PromptGenerationContext,
+  forceReanalysis = false,
 ): Promise<AnalysisTask> {
   const errorPrefix = "启动视频拆解失败";
   try {
@@ -2939,8 +2947,14 @@ export async function startVideoAnalysis(
         // existing versions are loaded separately when the workspace opens.
         body: JSON.stringify({
           asset_id: assetId,
-          reuse_existing: false,
-          generation_context: generationContext,
+          reuse_existing: !forceReanalysis,
+          generation_context: generationContext
+            ? {
+                route: "replica",
+                project_id: projectId,
+                source_asset_id: assetId,
+              }
+            : undefined,
         }),
       },
     );
@@ -4014,7 +4028,7 @@ async function pollFirstFrameTask(
   taskId: string,
   onTaskUpdate: FirstFrameTaskObserver,
 ): Promise<FirstFrameTask> {
-  // 两轮生成加质检的最坏耗时约 30 分钟；超时后任务仍在云端继续，
+  // 供应商生成和归档的等待上限为 30 分钟；超时后任务仍在云端继续，
   // 重新进入项目会通过 active-or-latest 接上。
   const deadline = Date.now() + 30 * 60_000;
   while (Date.now() < deadline) {

@@ -1956,6 +1956,10 @@ describe("AnalysisWorkspace workflow gates", () => {
         payload: {
           status: "LOCKED",
           prompt_text: "锁定的 Prompt",
+          final_composition: true,
+          confirmed_script_text: "原始口播稿",
+          script_version_id: "script-2",
+          ratio: "adaptive",
           shot_card_version_id: "shot-card-2",
           first_frame_asset_id: "first-frame-1",
           first_frame_selection_version_id: "first-frame-selection-1",
@@ -2189,6 +2193,10 @@ describe("AnalysisWorkspace workflow gates", () => {
         payload: {
           status: "LOCKED",
           prompt_text: "锁定的 Prompt",
+          final_composition: true,
+          confirmed_script_text: "原始口播稿",
+          script_version_id: "script-2",
+          ratio: "adaptive",
           shot_card_version_id: "shot-card-2",
           first_frame_asset_id: "first-frame-1",
           first_frame_selection_version_id: "first-frame-selection-1",
