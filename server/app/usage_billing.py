@@ -499,17 +499,15 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
         "AND o.service='link_resolution' AND o.state='PENDING')"
     )
     # Select terminal candidates in SQL; old active tasks must not starve newer completions.
-    # 只兜底超过 30 分钟仍 PENDING 的操作：正常路径在任务进入终态时已由
-    # finalize_*_billing 同步结算，窗口期内的 PENDING 属于在途，不应被对账抢跑。
-    # SUCCEEDED 不再要求 actual_output_seconds 非空——上游不回传成片秒数时该列为
-    # NULL，旧条件会让这些操作永远选不中、用户预留被永久冻结。结算口径由
-    # finalize_internal_billing 内部的约定秒数兜底，并以 reserved_credits 封顶。
+    # 可对账性由「租约到期」或「任务已进入终态」决定（见上方 link receipt 的 lease 收敛），
+    # 不设墙钟宽限期——否则刚进入终态的操作会被无谓推迟数十分钟。
+    # SKIP LOCKED 让多实例各自认领不同行，避免同一批候选被并发重复扫描。
     operations = conn.execute(
         """SELECT o.id,o.service,o.source_id FROM billing_operations o WHERE o.state='PENDING'
-        AND o.created_at < now()-interval '30 minutes'
         AND (
-          EXISTS(SELECT 1 FROM generation_tasks t WHERE t.id=o.source_id AND t.status IN
-            ('FAILED','CANCELLED','SUCCEEDED'))
+          EXISTS(SELECT 1 FROM generation_tasks t WHERE t.id=o.source_id AND (t.status IN
+            ('FAILED','CANCELLED') OR (t.status='SUCCEEDED' AND t.actual_output_seconds IS
+            NOT NULL)))
           OR EXISTS(SELECT 1 FROM oral_tasks t WHERE t.id=o.source_id AND (t.status IN
             ('FAILED','CANCELLED') OR (t.status='SUCCEEDED' AND t.duration_sec IS NOT NULL
             AND t.result_asset_id IS NOT NULL)))
