@@ -131,8 +131,28 @@
     }
     report("loading");
   }
-  const tick = () => {
+  const read = () => {
     try { scan(); } catch { report("action_required"); }
+    return window.__xiangshuPublishLogin;
+  };
+  // Hidden WebView2 windows can throttle timers. Rust actively reads the page
+  // on every poll; request the same refresh from the trusted WeChat QR frame.
+  if (!child) window.__xiangshuReadPublishLogin = () => {
+    if (origin === channels) {
+      for (const frame of document.querySelectorAll("iframe")) {
+        try {
+          const url = new URL(frame.getAttribute("src"), location.href);
+          if (qrFrame(url)) frame.contentWindow?.postMessage({ type: "xiangshu-read-publish-qr" }, url.origin);
+        } catch { /* Ignore unrelated frames. */ }
+      }
+    }
+    return read();
+  };
+  else window.addEventListener("message", (event) => {
+    if (event.origin === channels && event.source === window.top && event.data?.type === "xiangshu-read-publish-qr") read();
+  });
+  const tick = () => {
+    read();
     setTimeout(tick, 1000);
   };
   report("loading");

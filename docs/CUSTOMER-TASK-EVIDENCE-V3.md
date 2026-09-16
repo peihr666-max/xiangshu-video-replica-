@@ -1464,3 +1464,7 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 ## 2026-09-16 ORAL-VIDEO-TTS-20260916
 
 视频口播流程与独立声音档案改造；局部 AUTOMATED_VERIFIED，未调用付费飞影链路、未合并部署。前端 1565 passed，口播/素材专项 205 passed，设计 QA passed；全量 PG 及远程提交状态见 [任务证据](evidence/ORAL-VIDEO-TTS-20260916.md)。基线 f0b45b2、分支 feat/oral-video-tts-20260916。仅本任务增量登记，不核销其他业务工作包。
+
+## PUBLISH-INLINE-QR-20260916
+
+个人中心三平台内嵌扫码增量，独立分支 `fix/publish-inline-qr-20260916`，基线 `f0b45b2`，Owner 当前 Codex；Reviewer 执行者自检及 PR 门禁。点击无账号的平台直接在当前面板加载二维码，桌面扫码窗口默认隐藏，成功后直接加入对应平台列表；已有账号平台仅切换列表。本地完整 Linux 静态门（1582 前端测试）及 PostgreSQL 2389 passed / 1 既有 skipped 通过，三平台实际取码和组件浏览器验证通过。实现提交 `d6564d7`，提交 Draft PR；未合并部署、未声称手机真实登录验收。详见[独立证据](evidence/PUBLISH-INLINE-QR-20260916.md)。

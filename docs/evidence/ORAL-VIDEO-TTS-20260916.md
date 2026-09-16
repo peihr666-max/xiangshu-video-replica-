@@ -74,11 +74,13 @@ Lore 提交 SHA：使用本证据所在 PR 的 head，提交后登记于共享 c
 
 ## 集成与评审
 
-开工时已核对任务登记、共享 claim、worktree、远程分支和开放 PR，从最新 origin/main 建立唯一任务分支。提交前再次 fetch，origin/main 仍为基线 f0b45b2；不存在其他任务提交混入本分支。
+开工时已核对任务登记、共享 claim、worktree、远程分支和开放 PR，从最新 origin/main 建立唯一任务分支。首次提交前 origin/main 为基线 f0b45b2。PR #126 创建后 main 合入 #123（3e120752），本任务在原分支合并该 main；仅两份公共任务记录发生追加位置冲突，已逐项保留双方记录，没有覆盖其他任务成果。
 
 UI-TYPOGRAPHY-BRAND / PROMPT-OPTIMIZE 并行任务涉及同名大文件，本任务仅修改口播相关函数，增加独立 oral.css；未修改其分支、全局排版、提示词编辑器、生成 worker 或计费逻辑。公共业务总账由集成人按真实 PR 状态回填，本证据不把其他工作包改为完成。
 
-本地实现和证据已提交到唯一任务分支。远程认证受阻：GitHub 连接返回 403 / account suspended，本地 Git Credential Manager 没有可用 GitHub 凭据；未创建远程 PR，CI 三门禁与独立评审未完成。已保存 [待提交 PR 正文](oral-video-tts/PR-DRAFT.md)。未合并、部署或对外发布。
+本地实现和证据已推送到唯一任务分支，对应 [PR #126](https://github.com/peihr666-max/xiangshu-video-replica-/pull/126)。GitHub 连接器不可用，但指定仓库与所有者后成功使用现有 Git Credential Manager 凭据完成 push 与 GitHub REST 核验，远程认证阻塞已解除。CI 三门禁与独立评审待核验；[PR 正文存档](oral-video-tts/PR-DRAFT.md) 保留实现和验证边界。未合并、部署或对外发布。
 
 
 收尾资源核验：本任务 PostgreSQL 与质量容器已停止并自动删除；所有补验容器均已自动删除。最终 docker ps / volume 按 oral-tts 前缀检查为空。未删除复用镜像、其他任务容器或其他 worktree；5216 预览服务继续保留。
+
+合并 main #123 后追加复验：前端 Biome、TypeScript 与 103 个测试文件全部通过（1572 passed，25.35s）；秘密扫描、git diff --check 和证据内部链接检查通过。此次主分支增量未改动服务端，沿用本任务已完成的全量服务端证据，不重复执行全量 PG。

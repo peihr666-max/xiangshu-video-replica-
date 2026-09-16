@@ -114,7 +114,11 @@ export function LocalPublishAccountsPanel({
           const account = status.account;
           currentLogin.current = null;
           setLoginId(null);
-          setRefresh((value) => value + 1);
+          setPlatform(account.platform);
+          setAccounts((previous) => [
+            account,
+            ...previous.filter((item) => item.id !== account.id),
+          ]);
           notifyRef.current(
             `已连接 ${publishPlatformNames[account.platform]} · ${account.username}`,
           );
@@ -137,8 +141,17 @@ export function LocalPublishAccountsPanel({
       clearTimeout(timer);
     };
   }, [loginId, user.id, retryPoll]);
-  async function start(account?: LocalPublishAccount) {
-    if (pending.current) return;
+  async function start(
+    account?: LocalPublishAccount,
+    selectedPlatform = platform,
+  ) {
+    if (
+      pending.current ||
+      currentLogin.current ||
+      review ||
+      user.role === "auditor"
+    )
+      return;
     pending.current = true;
     setBusy(true);
     setError("");
@@ -150,7 +163,7 @@ export function LocalPublishAccountsPanel({
     try {
       const id = await startLocalPublishLogin(
         user.id,
-        account?.platform ?? platform,
+        account?.platform ?? selectedPlatform,
         account?.id,
       );
       if (current !== generation.current) {
@@ -164,6 +177,14 @@ export function LocalPublishAccountsPanel({
     } finally {
       pending.current = false;
       if (current === generation.current) setBusy(false);
+    }
+  }
+  function selectPlatform(selected: PublishPlatform) {
+    setPlatform(selected);
+    setError("");
+    setRemoving(null);
+    if (!accounts.some((account) => account.platform === selected)) {
+      void start(undefined, selected);
     }
   }
   async function cancel(): Promise<boolean> {
@@ -225,7 +246,7 @@ export function LocalPublishAccountsPanel({
   return (
     <Panel>
       <h2>发布账号管理</h2>
-      <p>使用官方二维码扫码登录，用户名从平台读取。</p>
+      <p>选择平台，在下方扫描官方二维码，确认后账号将显示在对应标签下。</p>
       {!native && !review && (
         <p role="status">
           网页端账号的登录状态加密保存在服务器，可在个人中心解绑。
@@ -238,8 +259,8 @@ export function LocalPublishAccountsPanel({
             <Button
               key={value}
               aria-pressed={platform === value}
-              disabled={busy || Boolean(loginId)}
-              onClick={() => setPlatform(value)}
+              disabled={loading || busy || Boolean(loginId)}
+              onClick={() => selectPlatform(value)}
             >
               <PlatformLogo platform={value} />
               {publishPlatformNames[value]}
@@ -259,31 +280,45 @@ export function LocalPublishAccountsPanel({
       )}
       {native && <p>桌面端账号的登录状态分别保存在本机。</p>}
       {loading && <p role="status">正在读取发布账号…</p>}
-      {accounts.map((account) => (
-        <div className="studio-publish-account" key={account.id}>
-          <PlatformLogo platform={account.platform} size={32} />
-          <span>
-            {publishPlatformNames[account.platform]} · {account.username}
-            <small>账号 ID：{account.platform_user_id}</small>
-          </span>
-          <small>
-            {native ? "本机已连接" : "云端已连接"} · 最后验证{" "}
-            {new Date(account.verified_at * 1000).toLocaleString("zh-CN")}
-          </small>
-          <Button
-            disabled={busy || Boolean(loginId) || user.role === "auditor"}
-            onClick={() => void start(account)}
+      {!loading &&
+        !loginId &&
+        !busy &&
+        !accounts.some((account) => account.platform === platform) && (
+          <p>
+            尚未连接{publishPlatformNames[platform]}
+            账号，点击平台或扫码添加账号。
+          </p>
+        )}
+      {accounts
+        .filter((account) => account.platform === platform)
+        .map((account) => (
+          <div
+            className="studio-publish-account publish-account"
+            key={account.id}
           >
-            验证或重新登录
-          </Button>
-          <Button
-            disabled={busy || Boolean(loginId) || user.role === "auditor"}
-            onClick={() => setRemoving(account)}
-          >
-            解绑
-          </Button>
-        </div>
-      ))}
+            <PlatformLogo platform={account.platform} size={32} />
+            <span>
+              {publishPlatformNames[account.platform]} · {account.username}
+              <small>账号 ID：{account.platform_user_id}</small>
+            </span>
+            <small>
+              {native ? "本机已连接" : "云端已连接"} · 最后验证{" "}
+              {new Date(account.verified_at * 1000).toLocaleString("zh-CN")}
+            </small>
+            <Button
+              disabled={busy || Boolean(loginId) || user.role === "auditor"}
+              onClick={() => void start(account)}
+            >
+              验证或重新登录
+            </Button>
+            <Button
+              disabled={busy || Boolean(loginId) || user.role === "auditor"}
+              onClick={() => setRemoving(account)}
+            >
+              解绑
+            </Button>
+          </div>
+        ))}
       {loginId ? (
         <section
           className="publish-login"
@@ -310,14 +345,15 @@ export function LocalPublishAccountsPanel({
               : (loginStatus.message ?? loginMessages[loginStatus.phase])}
           </p>
           <div className="publish-login__actions">
-            {native && (
-              <Button
-                disabled={busy || loginStatus.phase === "closed"}
-                onClick={() => void focus()}
-              >
-                打开官方窗口
-              </Button>
-            )}
+            {native &&
+              (loginStatus.phase === "action_required" || pollPaused) && (
+                <Button
+                  disabled={busy || loginStatus.phase === "closed"}
+                  onClick={() => void focus()}
+                >
+                  打开官方窗口
+                </Button>
+              )}
             {pollPaused && (
               <Button
                 disabled={busy}

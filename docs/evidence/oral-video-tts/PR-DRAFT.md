@@ -10,4 +10,4 @@
 
 证据：`docs/evidence/ORAL-VIDEO-TTS-20260916.md`、`docs/evidence/oral-video-tts/visual-review.md`。
 
-本文件仅为待提交 PR 正文。当前 GitHub 连接返回账号停用且本地无可用 Git 凭据，尚未创建远程 PR。
+本文件为 [PR #126](https://github.com/peihr666-max/xiangshu-video-replica-/pull/126) 的实现与验证正文存档。远程认证已通过仓库所有者凭据恢复；main #123 引入的两份公共记录冲突在原任务分支保留双方内容后解决。
