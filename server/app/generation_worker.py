@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app import content_store
 from app.analysis import VideoAnalysisProvider
 from app.analysis_routes import (
     acquire_analysis_task,
@@ -181,10 +182,16 @@ def _cleanup_audio_objects(
         ).fetchall()
     for row in rows:
         try:
-            storage.delete_object(
-                str(row["audio_object_key"]), actor_id="script-from-audio-cleanup"
-            )
             with connection() as conn:
+                # The gate re-reads references at delete time. A refusal means the
+                # bytes belong to a surviving reference (registry or another asset),
+                # in which case only this task's now-stale column is cleared.
+                content_store.delete_object_if_unreferenced(
+                    conn,
+                    storage,
+                    str(row["audio_object_key"]),
+                    actor_id="script-from-audio-cleanup",
+                )
                 conn.execute(
                     "UPDATE script_from_audio_tasks SET audio_object_key=NULL "
                     "WHERE id=%s AND audio_object_key=%s "
@@ -1742,6 +1749,41 @@ def run_pg_collection_once(*, worker_id: str, storage: StorageAdapter) -> int:
     return 1 + settled + settle_collection_charges()
 
 
+# Content-addressable storage only ever *schedules* byte removal: dropping a
+# reference to zero sets ``reclaim_after``, and something has to come back later
+# and finish the job. Without this sweep the registry grows forever and deleted
+# assets leak their bytes permanently. It runs on an interval rather than every
+# round because the grace window is 24h — there is no reason to pay for the scan
+# more often than that, and ``FOR UPDATE SKIP LOCKED`` already keeps concurrent
+# workers from fighting over the same row.
+CONTENT_RECLAIM_INTERVAL_SECONDS = 3600.0
+_last_content_reclaim_at = 0.0
+
+
+def reclaim_expired_content_objects_throttled(storage: StorageAdapter) -> dict[str, int]:
+    """Run the reclaim sweep at most once per hour per worker process."""
+    global _last_content_reclaim_at
+    now = time.monotonic()
+    if now - _last_content_reclaim_at < CONTENT_RECLAIM_INTERVAL_SECONDS:
+        return {}
+    _last_content_reclaim_at = now
+    try:
+        with pg_transaction() as raw_conn:
+            conn = BusinessConnection.postgres(raw_conn)
+            result = content_store.reclaim_expired_content_objects(conn, storage)
+    except Exception:  # noqa: BLE001 - reclaiming is maintenance, never block work
+        logger.warning("content reclaim sweep failed", exc_info=True)
+        return {}
+    if result.get("deleted") or result.get("failed"):
+        logger.info(
+            "content reclaim sweep deleted=%s failed=%s skipped=%s",
+            result["deleted"],
+            result["failed"],
+            result["skipped"],
+        )
+    return result
+
+
 def run_pg_worker_round(
     *, worker_id: str, max_tasks: int | None = None, viral_collection: bool = False
 ) -> int:
@@ -1751,6 +1793,7 @@ def run_pg_worker_round(
         with pg_transaction() as raw_conn:
             conn = BusinessConnection.postgres(raw_conn)
             asset_storage = get_media_storage(conn)
+        reclaim_expired_content_objects_throttled(asset_storage)
         if viral_collection:
             return run_pg_collection_once(worker_id=worker_id, storage=asset_storage)
         return run_pg_worker_once(

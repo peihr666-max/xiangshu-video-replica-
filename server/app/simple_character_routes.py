@@ -23,6 +23,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from app import content_store
 from app.async_compat import reject_legacy_sync_operation
 from app.auth import AuthenticatedUser, Database
 from app.character_asset_review import cleanup_publication_objects
@@ -73,7 +74,9 @@ InjectedImageProvider = Annotated[ImageProvider, Depends(get_image_provider)]
 
 def _best_effort_delete_task_input(storage: StorageAdapter, storage_uri: str) -> None:
     try:
-        storage.delete_object(storage_object_ref_from_uri(storage_uri).key, actor_id=None)
+        content_store.delete_object_outside_content_namespace(
+            storage, storage_object_ref_from_uri(storage_uri).key
+        )
     except (OSError, StorageBackendUnavailable, StoragePermissionError, ValueError):
         logger.warning("unable to clean temporary character task input", exc_info=True)
 

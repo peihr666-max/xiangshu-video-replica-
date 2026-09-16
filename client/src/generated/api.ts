@@ -7845,6 +7845,13 @@ export interface components {
       };
       /** Expires At */
       expires_at: string;
+      /**
+       * Upload Required
+       * @default true
+       */
+      upload_required?: boolean;
+      /** Reused From Asset Id */
+      reused_from_asset_id?: string | null;
     };
     /** OralBillingReconcileRequest */
     OralBillingReconcileRequest: {

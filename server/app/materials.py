@@ -19,6 +19,12 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import CurrentUser
+from app.content_store import (
+    delete_object_outside_content_namespace,
+    find_content_object,
+    retain_content_object,
+    retain_existing_content_object,
+)
 from app.db_portable import BusinessConnection
 from app.media import MAX_UPLOAD_BYTES, UPLOAD_INTENT_EXPIRES_IN
 from app.media_tools import (
@@ -138,6 +144,12 @@ class MaterialUploadIntentResponse(BaseModel):
     url: str
     headers: dict[str, str]
     expires_at: str
+    # False when the same bytes are already registered for this owner: the asset
+    # is created complete and the client must skip both the transfer and the
+    # /complete call. Defaults to True so every existing construction keeps the
+    # old behaviour.
+    upload_required: bool = True
+    reused_from_asset_id: str | None = None
 
 
 class MaterialUpdateRequest(BaseModel):
@@ -694,6 +706,122 @@ def require_material(
     return resolved.items[0]
 
 
+def _reuse_registered_material(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    storage: StorageAdapter,
+    request: MaterialUploadIntentRequest,
+    media_type: MaterialMediaType,
+) -> MaterialUploadIntentResponse | None:
+    """Reuse bytes this owner already registered, skipping the transfer entirely.
+
+    Returns None when there is nothing to reuse, so the caller falls through to
+    the normal upload intent. The lookup is deliberately scoped to the owner:
+    an identical file uploaded by another customer must never be served from
+    their object, because a material is typically private footage, a voice
+    recording or a portrait.
+    """
+    if not request.sha256:
+        return None
+    existing = find_content_object(
+        conn,
+        sha256=request.sha256,
+        size_bytes=request.size_bytes,
+        provider=storage.provider,
+        bucket=storage.bucket,
+        scope="user",
+        owner_user_id=actor.id,
+    )
+    if existing is None:
+        return None
+    # The registry can outlive the object (manual deletion, lifecycle expiry).
+    # Only skip the transfer when the bytes are actually still there.
+    if storage.head_object(existing.object_key) is None:
+        return None
+    content = retain_existing_content_object(conn, existing.id)
+    source = conn.execute(
+        "SELECT id, metadata_json FROM assets WHERE content_object_id = %s "
+        "ORDER BY created_at LIMIT 1",
+        (content.id,),
+    ).fetchone()
+    source_metadata = _metadata(source["metadata_json"]) if source is not None else {}
+    asset_id = str(uuid4())
+    metadata: dict[str, Any] = {
+        "upload_status": "READY",
+        "object_key": content.object_key,
+        "original_filename": request.filename,
+        "requested_size_bytes": request.size_bytes,
+        "requested_content_type": request.content_type,
+        "expected_sha256": request.sha256,
+        "content_deduplicated": True,
+    }
+    if request.audio_purpose is not None:
+        metadata["audio_purpose"] = request.audio_purpose
+        metadata["duration_seconds"] = request.duration_seconds
+    elif "duration_seconds" in source_metadata:
+        # Carry the probing work over from the upload that stored these bytes;
+        # re-probing would cost a download and a media-tool invocation.
+        metadata["duration_seconds"] = source_metadata["duration_seconds"]
+    reused_from = None if source is None else str(source["id"])
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO assets (
+                id, project_id, kind, storage_uri, sha256, size_bytes,
+                content_type, metadata_json, created_by_user_id, content_object_id
+            ) VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                asset_id,
+                ASSET_KIND_FOR_MEDIA[media_type],
+                content.storage_uri,
+                request.sha256,
+                request.size_bytes,
+                request.content_type,
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                actor.id,
+                content.id,
+            ),
+        )
+        if request.title or request.group:
+            _upsert_preference(
+                conn,
+                actor_id=actor.id,
+                source_type="asset",
+                source_id=asset_id,
+                title=request.title,
+                group=request.group,
+                hidden=False,
+            )
+        write_audit(
+            conn,
+            actor=actor,
+            action="studio.material.upload_deduplicated",
+            entity_type="asset",
+            entity_id=asset_id,
+            metadata={
+                "media_type": media_type,
+                "size_bytes": request.size_bytes,
+                "reused_from_asset_id": reused_from,
+                "sha256_prefix": request.sha256[:12],
+                "scope": "user",
+            },
+            commit=False,
+        )
+    return MaterialUploadIntentResponse(
+        material_id=f"asset:{asset_id}",
+        asset_id=asset_id,
+        storage_key=content.object_key,
+        method="",
+        url="",
+        headers={},
+        expires_at="",
+        upload_required=False,
+        reused_from_asset_id=reused_from,
+    )
+
+
 def create_material_upload_intent(
     conn: BusinessConnection,
     *,
@@ -718,6 +846,15 @@ def create_material_upload_intent(
         audio_purpose=request.audio_purpose,
         duration_seconds=request.duration_seconds,
     )
+    reuse = _reuse_registered_material(
+        conn,
+        actor=actor,
+        storage=storage,
+        request=request,
+        media_type=media_type,
+    )
+    if reuse is not None:
+        return reuse
     asset_id = str(uuid4())
     object_key = f"materials/{actor.id}/{asset_id}/original{safe_suffix}"
     intent = storage.create_upload_intent(
@@ -925,6 +1062,7 @@ def persist_material_upload(
     *,
     actor: CurrentUser,
     probed: ProbedMaterialUpload,
+    storage: StorageAdapter | None = None,
 ) -> MaterialItem:
     conn.execute(
         "SELECT id FROM assets WHERE id=%s FOR UPDATE", (probed.prepared.asset_id,)
@@ -948,18 +1086,42 @@ def persist_material_upload(
             audio_purpose=metadata.get("audio_purpose"),
             duration_seconds=probed.duration_seconds,
         )
+    # Register the bytes so a later upload of the same file can reuse them
+    # instead of transferring them again. Materials stay user-scoped on purpose:
+    # two customers uploading an identical file must never resolve to one object,
+    # because a material is often a person's own footage, voice or portrait.
+    ref = storage_object_ref_from_uri(probed.storage_uri)
+    content, deduplicated = retain_content_object(
+        conn,
+        sha256=probed.sha256,
+        size_bytes=probed.size_bytes,
+        content_type=prepared.content_type,
+        provider=ref.provider,
+        bucket=ref.bucket,
+        object_key=ref.key,
+        scope="user",
+        owner_user_id=actor.id,
+    )
+    # A concurrent upload of the same bytes won the registration, so this asset
+    # points at the object that already existed and the copy this request just
+    # transferred is an orphan. Deleting it is best-effort: leaving it costs
+    # storage but never breaks a reference, and upload_cleanup reaps it later.
+    orphan_key = ref.key if ref.key != content.object_key else None
+    metadata["content_deduplicated"] = deduplicated
     with conn:
         conn.execute(
             """
             UPDATE assets
-            SET storage_uri = %s, sha256 = %s, size_bytes = %s, metadata_json = %s
+            SET storage_uri = %s, sha256 = %s, size_bytes = %s, metadata_json = %s,
+                content_object_id = %s
             WHERE id = %s
             """,
             (
-                probed.storage_uri,
+                content.storage_uri,
                 probed.sha256,
                 probed.size_bytes,
                 json.dumps(metadata, ensure_ascii=False, sort_keys=True),
+                content.id,
                 prepared.asset_id,
             ),
         )
@@ -969,10 +1131,16 @@ def persist_material_upload(
             action="studio.material.upload_complete",
             entity_type="asset",
             entity_id=prepared.asset_id,
-            metadata={"media_type": prepared.media_type, "size_bytes": probed.size_bytes},
+            metadata={
+                "media_type": prepared.media_type,
+                "size_bytes": probed.size_bytes,
+                "content_deduplicated": deduplicated,
+            },
             commit=False,
         )
         result = require_material(conn, actor=actor, material_id=f"asset:{prepared.asset_id}")
+    if orphan_key is not None and storage is not None:
+        delete_object_outside_content_namespace(storage, orphan_key, actor_id=actor.id)
     return result
 
 

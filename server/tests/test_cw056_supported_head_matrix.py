@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260915T1200_browser_accounts"
+HEAD_REVISION = "20260916T1400_content_objects"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -99,16 +99,16 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
-    "check_constraints": 296,
-    "columns": 1096,
-    "foreign_keys": 178,
+    "check_constraints": 300,
+    "columns": 1111,
+    "foreign_keys": 179,
     "identity_columns": 0,
     "jsonb_columns": 0,
-    "partial_indexes": 29,
-    "primary_keys": 95,
+    "partial_indexes": 32,
+    "primary_keys": 96,
     "sequences": 4,
-    "tables": 95,
-    "timestamptz_columns": 43,
+    "tables": 96,
+    "timestamptz_columns": 46,
     "triggers": 27,
     "unique_constraints": 36,
 }
@@ -159,6 +159,7 @@ HEAD_TABLE_NAMES = (
     "character_sheet_tasks",
     "character_versions",
     "characters",
+    "content_objects",
     "customer_api_keys",
     "customer_authorization_evidence",
     "customer_batch_visibility",
@@ -234,7 +235,16 @@ HEAD_TABLE_NAMES = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "f24a011d2285257aa0912a9ae9e4fce9217224260171eb5efc63d94007022680"
+# 链尾已改为 20260916T1400_content_objects，且父级从 20260914T0000_local_joint_merge
+# 重挂到 main 已合入的 20260915T1600_viral_copy_cache（PR #120）——两分支曾同父，
+# 不重挂会让 alembic 看到两个 head。故下列字面量是**两段迁移叠加后**的实测值
+# （空库→新 head，postgres:16，见 scripts/ci/migration_manifest.py --print-schema）：
+# 相对 20260914T0000 的合计增量：tables/primary_keys +2（viral_script_cache、
+# content_objects）、foreign_keys +2、columns +21、timestamptz_columns +4。
+# 其中 content_objects 一段：check_constraints +4（size_bytes>0 / scope /
+# ref_count>=0 / scope_owner）、partial_indexes +3（user 与 global 两条唯一部分索引
+# + 回收索引）；unique_constraints 不变，因为两条唯一性都用部分索引表达而非 UNIQUE。
+HEAD_SCHEMA_DIGEST = "bd46c0f858a43683ff4c4a48456b1a142e58be04635bff8ef2473170a6849d11"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

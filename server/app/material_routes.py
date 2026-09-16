@@ -84,7 +84,9 @@ def create_upload_intent(
             request=request,
         )
         is_customer = actor.role == "customer"
-    if storage.provider == "local":
+    # A deduplicated intent carries no transfer: handing the client a local
+    # upload URL would invite it to re-upload bytes that already exist.
+    if storage.provider == "local" and intent.upload_required:
         intent = intent.model_copy(
             update={"url": f"/api/studio/materials/uploads/{intent.asset_id}/content"}
         )
@@ -148,7 +150,7 @@ def complete_upload(
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
     with db.write() as (conn, actor):
-        return persist_material_upload(conn, actor=actor, probed=probed)
+        return persist_material_upload(conn, actor=actor, probed=probed, storage=storage)
 
 
 @router.patch("/{material_id}", response_model=MaterialItem)

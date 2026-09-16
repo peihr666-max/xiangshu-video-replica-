@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app import content_store
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
 from app.hifly import HiflyClient, HiflyError, HiflySubmissionUncertain, validate_oral_subtitle
@@ -1051,7 +1052,9 @@ def _archive_oral_result(
     if updated.rowcount != 1:
         conn.rollback()
         try:
-            storage.delete_object(stored.key, actor_id=str(row["owner_user_id"]))
+            content_store.delete_object_outside_content_namespace(
+                storage, stored.key, actor_id=str(row["owner_user_id"])
+            )
         except Exception:  # noqa: BLE001 - orphan cleanup is best effort
             logger.warning("oral result rollback cleanup failed")
         return
@@ -1208,7 +1211,9 @@ def refresh_voice_clone(
             if updated.rowcount != 1:
                 conn.rollback()
                 try:
-                    storage.delete_object(stored.key, actor_id=actor.id)
+                    content_store.delete_object_outside_content_namespace(
+                        storage, stored.key, actor_id=actor.id
+                    )
                 except Exception:  # noqa: BLE001 - orphan cleanup is best effort
                     logger.warning("oral voice demo rollback cleanup failed")
                 return record

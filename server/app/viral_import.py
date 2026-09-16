@@ -14,6 +14,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from app import content_store
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
 from app.permissions import insert_audit, require_not_auditor, require_project_access
@@ -274,15 +275,15 @@ class ViralImportOutcome:
 def discard_viral_import_outcome(
     storage: StorageAdapter, *, outcome: ViralImportOutcome, actor_id: str
 ) -> None:
-    """Delete a private project copy that never received a committed asset row."""
-    try:
-        storage.delete_object(outcome.stored.key, actor_id=actor_id)
-    except Exception as exc:
-        logger.warning(
-            "viral import cleanup deferred for %s: %s",
-            outcome.stored.key,
-            type(exc).__name__,
-        )
+    """Retained for its call sites; no longer deletes anything.
+
+    This used to delete the private project copy an import had just written when
+    the asset row failed to commit. Imports no longer write a copy — the outcome
+    points at the shared cache object — so there is nothing here that this task
+    owns, and deleting it would destroy a video every other import depends on.
+    The bytes are released (if ever) through ``content_objects.ref_count``.
+    """
+    return None
 
 
 def _time_text(value: datetime) -> str:
@@ -412,23 +413,20 @@ def perform_viral_import_task(work: ViralImportWork) -> ViralImportOutcome:
         raise RuntimeError("viral replica import requires video media")
     source = storage_object_ref_from_uri(media.storage_uri)
     require_storage_match(work.storage, source)
-    extension = "mp3" if media.kind == "audio" else "mp4"
-    if media.kind == "audio" and media.content_type.split(";", 1)[0] in {
-        "audio/mp4",
-        "audio/x-m4a",
-    }:
-        extension = "m4a"
-    destination = (
-        f"projects/{work.lease.project_id}/viral-imports/{work.lease.id}/"
-        f"attempt-{work.lease.attempt}/source.{extension}"
-    )
-    stored = work.storage.copy_object(source.key, destination)
+    # The project no longer receives its own copy of the video. The media cache
+    # already holds exactly one immutable object per (platform, video_id), and
+    # every importing project now points at it, so ten imports of one viral
+    # video cost one video's worth of bytes instead of ten. Verification
+    # therefore re-reads the shared object rather than a copy: the same size and
+    # digest checks still apply, they simply have no duplicate left to compare.
+    stored = work.storage.head_object(source.key)
+    if stored is None:
+        raise RuntimeError("viral import source object is missing")
     if (
         stored.size != media.size
         or not stored.sha256
         or (media.sha256 and stored.sha256 != media.sha256)
     ):
-        work.storage.delete_object(destination, actor_id=work.lease.owner_user_id)
         raise RuntimeError("viral import storage verification failed")
     return ViralImportOutcome(
         stored=stored,
@@ -442,19 +440,36 @@ def complete_viral_import_task(
 ) -> None:
     _require_lease(conn, lease)
     _require_project_owner(conn, lease)
+    # Register the shared bytes before pointing an asset at them. `pinned=True`
+    # records that the media cache owns this object, not the asset graph: no
+    # number of project deletions may force a re-download of a collected video.
+    # `deduplicated` is True when an earlier import of the same platform video
+    # already registered it, which is the signal that this project stored
+    # nothing new.
+    content, deduplicated = content_store.retain_content_object(
+        conn,
+        sha256=outcome.stored.sha256,
+        size_bytes=outcome.stored.size,
+        content_type=outcome.stored.content_type,
+        provider=outcome.stored.provider,
+        bucket=outcome.stored.bucket,
+        object_key=outcome.stored.key,
+        scope="global",
+        pinned=True,
+    )
     asset_id = str(uuid4())
     conn.execute(
         """
         INSERT INTO assets (
             id, project_id, kind, storage_uri, sha256, size_bytes,
-            content_type, created_by_user_id, metadata_json
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            content_type, created_by_user_id, metadata_json, content_object_id
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             asset_id,
             lease.project_id,
             "reference_audio" if outcome.media_kind == "audio" else "reference_video",
-            outcome.stored.uri,
+            content.storage_uri,
             outcome.stored.sha256,
             outcome.stored.size,
             outcome.stored.content_type,
@@ -465,10 +480,13 @@ def complete_viral_import_task(
                     "platform": lease.platform,
                     "video_id": lease.video_id,
                     "import_task_id": lease.id,
+                    "shared_content": True,
+                    "content_deduplicated": deduplicated,
                 },
                 ensure_ascii=False,
                 sort_keys=True,
             ),
+            content.id,
         ),
     )
     result = {

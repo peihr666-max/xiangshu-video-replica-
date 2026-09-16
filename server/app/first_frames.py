@@ -20,6 +20,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app import content_store
 from app.analysis import APILIO_GEMINI_MODEL, insert_version
 from app.auth import CurrentUser
 from app.character_reference_matching import (
@@ -2983,7 +2984,9 @@ def delete_created_first_frames(
 ) -> None:
     for _, storage_key in created_assets:
         try:
-            storage.delete_object(storage_key, actor_id=actor_id)
+            content_store.delete_object_outside_content_namespace(
+                storage, storage_key, actor_id=actor_id
+            )
         except (OSError, StorageBackendUnavailable):
             pass
 

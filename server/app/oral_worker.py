@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import psycopg
 
+from app import content_store
 from app.db_portable import BusinessConnection
 from app.generation import (
     ensure_user_queue_cursor,
@@ -959,7 +960,9 @@ def discard_uncommitted_oral_asset(
     if result.stored is None:
         return
     try:
-        storage.delete_object(result.stored.key, actor_id=actor_id)
+        content_store.delete_object_outside_content_namespace(
+            storage, result.stored.key, actor_id=actor_id
+        )
     except Exception:  # noqa: BLE001 - do not hide the original fencing failure
         logger.warning("failed to clean up uncommitted oral worker asset")
 

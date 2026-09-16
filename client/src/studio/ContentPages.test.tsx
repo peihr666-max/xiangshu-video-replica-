@@ -30,6 +30,7 @@ const {
   createMaterialUploadIntent,
   uploadMaterial,
   completeMaterialUpload,
+  putMaterial,
   updateMaterial,
   hideMaterial,
   downloadMaterialAsset,
@@ -57,6 +58,7 @@ const {
   createMaterialUploadIntent: vi.fn(),
   uploadMaterial: vi.fn(),
   completeMaterialUpload: vi.fn(),
+  putMaterial: vi.fn(),
   updateMaterial: vi.fn(),
   hideMaterial: vi.fn(),
   downloadMaterialAsset: vi.fn(),
@@ -92,6 +94,7 @@ vi.mock("../api", () => ({
   createMaterialUploadIntent,
   uploadMaterial,
   completeMaterialUpload,
+  putMaterial,
   updateMaterial,
   hideMaterial,
   downloadMaterialAsset,
@@ -105,6 +108,13 @@ vi.mock("../api", () => ({
   resolveMaterials,
   createGenerationTaskPreviewUrl,
 }));
+// 组件现在统一走 putMaterial。默认实现沿用旧的「传输 → 完成」两步，
+// 这样既有用例针对 uploadMaterial / completeMaterialUpload 打的桩仍然生效；
+// 需要覆盖复用路径的用例可以直接给 putMaterial 打桩。
+putMaterial.mockImplementation(async (intent, file, onProgress) => {
+  await uploadMaterial(intent, file, onProgress);
+  return completeMaterialUpload(intent.asset_id);
+});
 
 class IntersectionObserverStub {
   observe() {}

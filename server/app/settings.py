@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
 from pydantic import BaseModel
 
+from app import content_store
 from app.db_portable import BusinessConnection
 from app.storage import (
     CloudStorageAdapter,
@@ -759,7 +760,9 @@ class StorageProviderTester:
         finally:
             if adapter is not None and cleanup_required:
                 try:
-                    adapter.delete_object(test_key, actor_id="settings-diagnostic")
+                    content_store.delete_object_outside_content_namespace(
+                        adapter, test_key, actor_id="settings-diagnostic"
+                    )
                 except Exception as exc:
                     cleanup_error = exc
                     logger.error("Storage connection test cleanup failed for provider %s", provider)

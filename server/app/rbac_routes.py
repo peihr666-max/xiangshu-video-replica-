@@ -20,6 +20,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from app import content_store
 from app.auth import (
     AuthenticatedUser,
     CurrentUser,
@@ -729,7 +730,7 @@ def delete_project(
 
     assets = conn.execute(
         """
-        SELECT id, storage_uri, sha256, size_bytes
+        SELECT id, storage_uri, sha256, size_bytes, content_object_id
         FROM assets
         WHERE project_id = %s
         """,
@@ -742,28 +743,42 @@ def delete_project(
         ).fetchone()[0]
     )
 
-    # Best-effort object cleanup: the operator is discarding the whole project,
-    # so an unavailable backend (e.g. cloud credentials removed) must not block
-    # the delete. Failures are counted and surfaced through the audit log.
-    storage_cleanup_failed_count = 0
+    # Object bytes are removed *only* by the reclaim sweeper in app.content_store,
+    # which re-reads the reference count under a lock before touching storage.
+    # This route's job is therefore narrower than it used to be: drop this
+    # project's references, and delete bytes directly only for legacy rows the
+    # registry cannot speak for.
+    #
+    # The registry branch is what fixes a real leak: an asset whose project_id is
+    # NULL (material-library and character uploads are exactly that) is a live
+    # reference, but `project_id <> %s` evaluates NULL against a value and never
+    # matched it, so the old check reported "not shared" and deleted an object
+    # another asset was still using. Counting cannot fail that way.
+    registry_assets = 0
+    legacy_deletable_uris: list[str] = []
     shared_storage_object_count = 0
     for asset in assets:
-        shared_reference = conn.execute(
-            "SELECT 1 FROM assets WHERE storage_uri = %s AND project_id <> %s LIMIT 1",
-            (str(asset["storage_uri"]), project_id),
-        ).fetchone()
-        if shared_reference is not None:
+        if asset["content_object_id"] is not None:
+            registry_assets += 1
+            continue
+        uri = str(asset["storage_uri"])
+        if content_store.object_referenced_by_another_asset(
+            conn,
+            storage_uri=uri,
+            excluding_asset_ids=[str(asset["id"])],
+        ):
             shared_storage_object_count += 1
             continue
-        try:
-            storage = storage_for_asset(conn, str(asset["storage_uri"]))
-            storage.delete_object(
-                storage_key_from_uri(str(asset["storage_uri"])), actor_id=actor.id
-            )
-        except (HTTPException, StorageBackendUnavailable, OSError, ValueError):
-            storage_cleanup_failed_count += 1
+        legacy_deletable_uris.append(uri)
 
+    released_to_zero = 0
     with conn:
+        # Released before the cascade removes the rows, in the same transaction,
+        # so a failed project delete cannot leave the count already decremented.
+        released_to_zero = content_store.release_assets_content_objects(
+            conn,
+            asset_ids=[str(asset["id"]) for asset in assets],
+        )
         # character_reference_selections references versions with ON DELETE
         # RESTRICT, so it must be cleared before the cascade removes versions.
         conn.execute(
@@ -771,6 +786,27 @@ def delete_project(
             (project_id,),
         )
         conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+
+    # Best-effort object cleanup: the operator is discarding the whole project,
+    # so an unavailable backend (e.g. cloud credentials removed) must not block
+    # the delete. Failures are counted and surfaced through the audit log.
+    # Runs after the commit so no storage I/O happens inside a write transaction.
+    storage_cleanup_failed_count = 0
+    for uri in dict.fromkeys(legacy_deletable_uris):
+        try:
+            storage = storage_for_asset(conn, uri)
+            # Re-checked here rather than trusted from the planning loop above: the
+            # commit between the two is a window in which another asset can start
+            # pointing at the same object, and this read is what closes it.
+            content_store.delete_object_if_unreferenced(
+                conn,
+                storage,
+                storage_key_from_uri(uri),
+                actor_id=actor.id,
+            )
+        except (HTTPException, StorageBackendUnavailable, OSError, ValueError):
+            storage_cleanup_failed_count += 1
+
     write_audit(
         conn,
         actor=actor,
@@ -782,6 +818,8 @@ def delete_project(
             "deleted_versions_count": versions_count,
             "storage_cleanup_failed_count": storage_cleanup_failed_count,
             "shared_storage_object_count": shared_storage_object_count,
+            "content_object_assets": registry_assets,
+            "content_objects_released_to_zero": released_to_zero,
         },
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
