@@ -179,7 +179,8 @@ python3 "$SOURCE/scripts/customer_release_preflight.py" \
   --env-file "$CUSTOMER_ENV" \
   --service-user "$SERVICE_USER"
 docker run --rm -v "$SOURCE:/workspace" -w /workspace \
-  -e "VITE_API_BASE_URL=$PUBLIC_ORIGIN" "$NODE_BUILD_IMAGE" sh -lc \
+  -e "VITE_API_BASE_URL=$PUBLIC_ORIGIN" \
+  -e "VITE_CLOUD_ADMIN_ORIGIN=$PUBLIC_ORIGIN" "$NODE_BUILD_IMAGE" sh -lc \
   'npm ci --ignore-scripts && npm run build:all && npm run verify:customer-bundle'
 [[ -s "$SOURCE/client/dist/index.html" && -d "$SOURCE/client/dist/assets" ]]
 EXPECTED_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist/index.html" | head -n 1)

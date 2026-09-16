@@ -4879,6 +4879,47 @@ button.activation-generator__submit {
   align-self: flex-start;
   margin-top: auto;
 }
+.admin-shell--control .admin-environment-switch {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 22px;
+}
+.admin-shell--control .admin-environment-switch__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.admin-shell--control .admin-environment-switch__heading h2,
+.admin-shell--control .admin-environment-switch__heading p {
+  margin: 0;
+}
+.admin-shell--control .admin-environment-switch__heading p {
+  margin-top: 8px;
+}
+.admin-shell--control .admin-environment-switch__options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.admin-shell--control .admin-environment-switch__options > button {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  min-width: 0;
+  text-align: left;
+}
+.admin-shell--control .admin-environment-switch__options > button small {
+  max-width: 100%;
+  color: #a9a49a;
+  overflow-wrap: anywhere;
+}
+.admin-shell--control .admin-environment-switch__options > button.is-active {
+  border-color: #b58a35;
+  background: #3a2f1c;
+  color: #f0cf8b;
+}
 .billing-rates-editor__actions {
   justify-content: flex-end;
 }
@@ -4888,8 +4929,12 @@ button.activation-generator__submit {
     flex-direction: column;
   }
   .admin-shell--control .admin-services :is(.provider-grid, .runtime-fields),
-  .admin-shell--control .admin-services__switches {
+  .admin-shell--control .admin-services__switches,
+  .admin-shell--control .admin-environment-switch__options {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .admin-shell--control .admin-environment-switch__heading {
+    flex-direction: column;
   }
   .admin-shell--control .admin-services .provider-card {
     padding: 18px;

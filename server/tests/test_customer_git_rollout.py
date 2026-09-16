@@ -42,6 +42,13 @@ def test_customer_git_rollout_builds_web_and_preserves_database_rollback_evidenc
     assert "VIDEO_REPLICA_SETTINGS_KEY" not in script
 
 
+def test_customer_git_rollout_injects_the_cloud_admin_origin() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert 'PUBLIC_ORIGIN="https://video.zszhj.cn"' in script
+    assert '-e "VITE_CLOUD_ADMIN_ORIGIN=$PUBLIC_ORIGIN"' in script
+
+
 def test_customer_git_rollout_ignores_only_root_package_version_metadata() -> None:
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 
