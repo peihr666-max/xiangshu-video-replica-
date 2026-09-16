@@ -98,9 +98,22 @@ def test_compose_declares_exactly_the_rollout_topology() -> None:
     services = set(re.findall(r"(?m)^  ([a-z0-9-]+):\s*$", section))
     assert services == {*ROLLOUT_SERVICES, "db", "migrate"}
     rollout = ROLLOUT.read_text(encoding="utf-8")
-    services_line = re.search(r"(?m)^SERVICES=\(([^)]*)\)", rollout)
-    assert services_line is not None
-    assert services_line.group(1).split() == list(ROLLOUT_SERVICES)
+    # worker-viral is declared by the customer compose but is not always present
+    # in older stacks, so the rollout script keeps it in an optional list and only
+    # appends it once `docker compose config --services` reports it. The required
+    # plus optional lists must still cover exactly the closed rollout inventory.
+    required_line = re.search(r"(?m)^REQUIRED_SERVICES=\(([^)]*)\)", rollout)
+    assert required_line is not None
+    optional_line = re.search(r"(?m)^OPTIONAL_SERVICES=\(([^)]*)\)", rollout)
+    assert optional_line is not None
+    assert required_line.group(1).split() + optional_line.group(1).split() == list(ROLLOUT_SERVICES)
+    # Optional services are only rolled when the target compose declares them.
+    assert (
+        'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)'
+        in rollout
+    )
+    assert "OPTIONAL_SERVICES=(" in rollout
+    assert 'SERVICES+=("$service")' in rollout
 
 
 def test_migrate_is_the_only_schema_ddl_role() -> None:
