@@ -1,6 +1,6 @@
 # Customer Edition Task Evidence Record V3
 
-> 2026-09-17 PRELAUNCH-REMEDIATION：上线评审 R02—R06 修复通过本地完整质量门与失败补验；R01/#130、R07/#129、R08/#126 已合入主线并整合。仅代码修复，不变更生产验收等级。见[独立证据](evidence/PRELAUNCH-REMEDIATION-20260917.md)。
+> 2026-09-17 PRELAUNCH-REMEDIATION：上线评审 R02—R06 修复通过本地完整质量门与失败补验；R01/#130、R07/#129、R08/#126 已合入主线并整合。已提交 [PR #131](https://github.com/peihr666-max/xiangshu-video-replica-/pull/131)。仅代码修复，不变更生产验收等级。见[独立证据](evidence/PRELAUNCH-REMEDIATION-20260917.md)。
 
 ## 2026-09-15 MATERIAL-CACHE / R90 浏览器持久缓存
 

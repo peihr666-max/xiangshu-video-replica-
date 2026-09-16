@@ -56,7 +56,7 @@ Reviewer：执行者代码自检及 PR 门禁；独立人工评审待 PR，不�
 - 外部授权：仅修复、验证和提交 PR；未操作生产、未调用付费 Provider/COS/ZPay，未合并 PR。
 - 未测试项：实际 Linux 宿主 Nginx 原始 peer、真实私有 COS/PG HA、完整首装/灰度/故障切换。
   默认单宿主 Compose 与离线 TLS 测试不能替代 staging/真实链路，更不代表 PRODUCTION_GO。
-- 提交/PR：实现提交 `8bbf6759`、主线集成 `aed51fd8`；PR 创建后登记。
+- 提交/PR：实现提交 `8bbf6759`、主线集成 `aed51fd8`；[PR #131](https://github.com/peihr666-max/xiangshu-video-replica-/pull/131) 已提交 Draft，远程三门禁完成后转正式评审。
 - 资源清理：本任务容器均 `--rm`；测试容器及其匿名卷已清理，无任务命名卷；未操作其他任务资源。编译产物/缓存均在 E 盘。
 
 
@@ -74,5 +74,5 @@ Owner / Reviewer：Codex 本任务 / 执行者自检、PR 门禁；独立评审�
 迁移与回滚：无新迁移；代码可通过正常 PR revert；数据库只支持前向兼容回滚
 外部授权记录：用户授权修复后提交 PR；未操作真实付费链路或生产
 未测试项：生产/HA/COS/实际宿主反代/完整首装与故障演练
-Lore 提交 SHA：不适用；实现 8bbf6759，主线集成 aed51fd8；PR 创建后登记
+Lore 提交 SHA：不适用；实现 8bbf6759，主线集成 aed51fd8；PR #131 已提交，远程检查以当前 head 为准
 ```
