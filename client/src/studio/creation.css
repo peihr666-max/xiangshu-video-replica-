@@ -1173,6 +1173,7 @@
   grid-row: 1;
 }
 .creation-video-workspace .creation-reference-preview-button {
+  --image-preview-height: 96px;
   grid-column: 1 / -1;
   grid-row: 2;
   padding: 0;
@@ -1563,6 +1564,7 @@
   padding: 6px;
 }
 .creation-video-workspace--split .creation-frame-row button > .video-preview {
+  --image-preview-height: 160px;
   height: 160px;
 }
 .creation-video-workspace--split .creation-video-composer textarea {
@@ -1590,6 +1592,7 @@
 .creation-video-workspace--split
   .creation-video-preview
   .video-preview.creation-preview-media {
+  --image-preview-height: clamp(300px, 50dvh, 620px);
   height: clamp(300px, 50dvh, 620px);
   max-height: none;
   min-height: 0;

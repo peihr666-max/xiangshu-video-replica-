@@ -3171,6 +3171,7 @@ export function VideoPage() {
                                 ? { ...asset, kind: "image", url: asset.poster }
                                 : undefined
                           }
+                          aspectRatio={state.draft.ratio}
                           alt={asset.kind === "audio" ? "音频预览" : asset.name}
                         />
                       </button>
@@ -3287,7 +3288,12 @@ export function VideoPage() {
                     onClick={() => openPicker("first-frame")}
                     type="button"
                   >
-                    <Media asset={firstFrame} alt="首帧" presentation="video" />
+                    <Media
+                      asset={firstFrame}
+                      alt="首帧"
+                      presentation="video"
+                      aspectRatio={state.draft.ratio}
+                    />
                     <span>首帧（选填）</span>
                   </button>
                   {firstFrameId && (
@@ -3315,7 +3321,12 @@ export function VideoPage() {
                     onClick={() => openPicker("tail-frame")}
                     type="button"
                   >
-                    <Media asset={tailFrame} alt="尾帧" presentation="video" />
+                    <Media
+                      asset={tailFrame}
+                      alt="尾帧"
+                      presentation="video"
+                      aspectRatio={state.draft.ratio}
+                    />
                     <span>尾帧（可选）</span>
                   </button>
                   {state.draft.tailFrameId && (
@@ -3484,12 +3495,20 @@ export function VideoPage() {
                 }
                 alt="参考画布"
                 className="creation-preview-media"
+                aspectRatio={state.draft.ratio}
                 presentation="video"
               />
             ) : (
-              <Empty
-                title="还没有参考素材"
-                description="设置参考素材与参数后再生成视频。"
+              <Media
+                alt="还没有参考素材"
+                className="creation-preview-media"
+                aspectRatio={state.draft.ratio}
+                fallback={
+                  <Empty
+                    title="还没有参考素材"
+                    description="设置参考素材与参数后再生成视频。"
+                  />
+                }
               />
             )
           ) : firstFrame ? (
@@ -3497,12 +3516,20 @@ export function VideoPage() {
               asset={firstFrame}
               alt="首帧预览"
               className="creation-preview-media"
+              aspectRatio={state.draft.ratio}
               presentation="video"
             />
           ) : (
-            <Empty
-              title="当前为文生视频"
-              description="添加首帧后会在这里显示图生预览。"
+            <Media
+              alt="当前为文生视频"
+              className="creation-preview-media"
+              aspectRatio={state.draft.ratio}
+              fallback={
+                <Empty
+                  title="当前为文生视频"
+                  description="添加首帧后会在这里显示图生预览。"
+                />
+              }
             />
           )}
           {videoTask && (

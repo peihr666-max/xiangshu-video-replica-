@@ -6,6 +6,48 @@ import { VideoPreview } from "./VideoPreview";
 afterEach(() => vi.restoreAllMocks());
 
 describe("VideoPreview", () => {
+  it("uses the selected frame ratio for loaded and empty images", () => {
+    const { container, rerender } = render(
+      <VideoPreview frameRatio="9:16" alt="首帧" />,
+    );
+    expect(container.firstElementChild).toHaveStyle({ aspectRatio: "0.5625" });
+    rerender(
+      <VideoPreview frameRatio="16:9" poster="/square.jpg" alt="首帧" />,
+    );
+    const image = screen.getByRole("img", { name: "首帧" });
+    Object.defineProperties(image, {
+      naturalWidth: { value: 800 },
+      naturalHeight: { value: 800 },
+    });
+    fireEvent.load(image);
+    expect(container.firstElementChild).toHaveStyle({
+      aspectRatio: String(16 / 9),
+    });
+    rerender(<VideoPreview frameRatio="1:1" poster="/square.jpg" alt="首帧" />);
+    expect(container.firstElementChild).toHaveStyle({ aspectRatio: "1" });
+    fireEvent.error(image);
+    expect(container.firstElementChild).toHaveStyle({ aspectRatio: "1" });
+  });
+
+  it("uses native dimensions only in automatic mode and resets them for a new source", () => {
+    const { container, rerender } = render(
+      <VideoPreview frameRatio="adaptive" poster="/wide.jpg" alt="自动预览" />,
+    );
+    const image = screen.getByRole("img", { name: "自动预览" });
+    Object.defineProperties(image, {
+      naturalWidth: { value: 1600 },
+      naturalHeight: { value: 900 },
+    });
+    fireEvent.load(image);
+    expect(container.firstElementChild).toHaveStyle({
+      aspectRatio: String(16 / 9),
+    });
+    rerender(
+      <VideoPreview frameRatio="adaptive" poster="/new.jpg" alt="自动预览" />,
+    );
+    expect(container.firstElementChild).toHaveStyle({ aspectRatio: "0.5625" });
+  });
+
   it("keeps the player and external ref stable when a signed URL refreshes", () => {
     const ref = createRef<HTMLVideoElement>();
     const { rerender } = render(

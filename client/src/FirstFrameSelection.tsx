@@ -741,6 +741,11 @@ export function FirstFrameSelection({
             {payload.candidates.map((candidate, index) => (
               <FirstFrameOption
                 candidate={candidate}
+                aspectRatio={
+                  isHistoryVersion
+                    ? (payload.aspect_ratio ?? "source")
+                    : aspectRatio
+                }
                 manualReview={payload.review_mode === "HUMAN_CONFIRMATION"}
                 checked={selectedAssetId === candidate.asset_id}
                 disabled={
@@ -822,6 +827,7 @@ function firstFrameTaskStageLabel(task: FirstFrameTask | null): string {
 
 function FirstFrameOption({
   candidate,
+  aspectRatio,
   manualReview = false,
   checked,
   disabled,
@@ -832,6 +838,7 @@ function FirstFrameOption({
   readOnly,
 }: {
   candidate: FirstFrameCandidate;
+  aspectRatio: string;
   manualReview?: boolean;
   checked: boolean;
   disabled: boolean;
@@ -857,17 +864,13 @@ function FirstFrameOption({
         type="radio"
         value={candidate.asset_id}
       />
-      {previewUrl ? (
-        <VideoPreview
-          alt={`首帧候选 ${index + 1}`}
-          onPosterError={onPreviewError}
-          poster={previewUrl}
-        />
-      ) : (
-        <span className="source-frame-placeholder">
-          {readOnly ? "预览不可用" : "预览加载失败，请重新生成"}
-        </span>
-      )}
+      <VideoPreview
+        frameRatio={aspectRatio}
+        alt={`首帧候选 ${index + 1}`}
+        onPosterError={onPreviewError}
+        poster={previewUrl}
+        fallback={readOnly ? "预览不可用" : "预览加载失败，请重新生成"}
+      />
       <span>
         <strong>首帧候选 {index + 1}</strong>
         <small>{candidate.content_type}</small>

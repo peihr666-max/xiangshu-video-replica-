@@ -18,6 +18,9 @@ import {
 import type { StudioAsset } from "./types";
 
 describe("V1.4 交接合同", () => {
+  it("新草稿默认使用竖屏生成比例", () => {
+    expect(createDraft().ratio).toBe("9:16");
+  });
   it("提取原文不冒充二创结果，历史人工稿仍可编辑", () => {
     const script = { ...createDraft().script, original: "原文", text: "原文" };
     expect(hasCopyResult(script)).toBe(false);

@@ -280,21 +280,33 @@ export function Media({
   onError,
   presentation,
   onPlay,
+  aspectRatio,
+  fallback,
 }: {
   presentation?: "video";
+  aspectRatio?: string;
+  fallback?: ReactNode;
   onPlay?: () => void;
   asset?: StudioAsset;
   alt: string;
   className?: string;
   onError?: (failedUrl?: string) => void;
 }) {
-  const [failedSource, setFailedSource] = useState<string>();
   if (!asset)
     return (
-      <div className={`studio-media studio-media--empty ${className}`}>
-        <Icon name="image" size={44} />
-        <span>{alt}</span>
-      </div>
+      <VideoPreview
+        className={`studio-media studio-media--empty ${className}`}
+        frameRatio={aspectRatio ?? "9:16"}
+        alt={alt}
+        fallback={
+          fallback ?? (
+            <>
+              <Icon name="image" size={44} />
+              <span>{alt}</span>
+            </>
+          )
+        }
+      />
     );
   if (asset.kind === "audio")
     return (
@@ -315,10 +327,17 @@ export function Media({
         )}
       </div>
     );
-  if (asset.kind === "video" || presentation === "video")
+  if (
+    asset.kind === "video" ||
+    asset.kind === "image" ||
+    presentation === "video"
+  )
     return (
       <VideoPreview
         onPlay={onPlay}
+        frameRatio={
+          aspectRatio ?? (asset.kind === "image" ? "9:16" : undefined)
+        }
         className={`studio-media ${className}`}
         controls
         src={asset.kind === "video" ? asset.url : undefined}
@@ -339,28 +358,7 @@ export function Media({
         }
       />
     );
-  const src = asset.url;
-  const failed = Boolean(src && failedSource === src);
-  return (
-    <figure className={`studio-media ${className}`}>
-      {src && !failed ? (
-        <img
-          src={src}
-          alt={alt}
-          onError={() => {
-            setFailedSource(src);
-            onError?.(src);
-          }}
-          loading="lazy"
-        />
-      ) : (
-        <div className="studio-media--empty">
-          <Icon name="image" size={36} />
-          <span>{failed ? "图片暂不可用" : alt}</span>
-        </div>
-      )}
-    </figure>
-  );
+  return null;
 }
 
 /** Localized short time for task timestamps: 今天/昨天 HH:mm, then MM-DD

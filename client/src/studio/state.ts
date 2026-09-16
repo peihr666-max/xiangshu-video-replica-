@@ -176,7 +176,7 @@ export function createDraft(): StudioDraft {
     promptEdited: false,
     referenceIds: [],
     resolution: "768P",
-    ratio: "16:9",
+    ratio: "9:16",
     duration: 8,
     count: 1,
     frameConfirmed: false,
