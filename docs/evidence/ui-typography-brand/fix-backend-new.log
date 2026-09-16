@@ -18,11 +18,11 @@ content = b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}'
         pg_state, monkeypatch, content
     ):
         from types import SimpleNamespace
-    
+
         from app.billing_catalog import SERVICES
         from app.billing_meter import billing_context
         from app.usage_billing import accept_operation
-    
+
         _seed_base(pg_state)
         _exec(
             pg_state,
@@ -53,12 +53,12 @@ content = b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}'
             "WHERE service='analysis_repair_deepseek'",
         )[0]
 
-tests/test_cw030_worker_pg_matrix.py:2621: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2621:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 tests/test_cw030_worker_pg_matrix.py:185: in _rows
     found = pg.execute(sql, params).fetchall()
             ^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 self = <psycopg.Connection [BAD] at 0x74aa44b56900>
 query = "SELECT provider,usage_amount,cost_fen FROM billing_attempts WHERE service='analysis_repair_deepseek'"
@@ -77,7 +77,7 @@ params = (), prepare = None, binary = False
             cur = self.cursor()
             if binary:
                 cur.format = BINARY
-    
+
             if isinstance(query, Template):
                 if params is not None:
                     raise TypeError(
@@ -111,11 +111,11 @@ content = b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length
         pg_state, monkeypatch, content
     ):
         from types import SimpleNamespace
-    
+
         from app.billing_catalog import SERVICES
         from app.billing_meter import billing_context
         from app.usage_billing import accept_operation
-    
+
         _seed_base(pg_state)
         _exec(
             pg_state,
@@ -146,12 +146,12 @@ content = b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length
             "WHERE service='analysis_repair_deepseek'",
         )[0]
 
-tests/test_cw030_worker_pg_matrix.py:2621: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2621:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 tests/test_cw030_worker_pg_matrix.py:185: in _rows
     found = pg.execute(sql, params).fetchall()
             ^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 self = <psycopg.Connection [BAD] at 0x74aa449d0230>
 query = "SELECT provider,usage_amount,cost_fen FROM billing_attempts WHERE service='analysis_repair_deepseek'"
@@ -170,7 +170,7 @@ params = (), prepare = None, binary = False
             cur = self.cursor()
             if binary:
                 cur.format = BINARY
-    
+
             if isinstance(query, Template):
                 if params is not None:
                     raise TypeError(
@@ -208,11 +208,11 @@ content = b'not json'
         pg_state, monkeypatch, content
     ):
         from types import SimpleNamespace
-    
+
         from app.billing_catalog import SERVICES
         from app.billing_meter import billing_context
         from app.usage_billing import accept_operation
-    
+
         _seed_base(pg_state)
         _exec(
             pg_state,
@@ -243,12 +243,12 @@ content = b'not json'
             "WHERE service='analysis_repair_deepseek'",
         )[0]
 
-tests/test_cw030_worker_pg_matrix.py:2621: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2621:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 tests/test_cw030_worker_pg_matrix.py:185: in _rows
     found = pg.execute(sql, params).fetchall()
             ^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 self = <psycopg.Connection [BAD] at 0x74aa449d30e0>
 query = "SELECT provider,usage_amount,cost_fen FROM billing_attempts WHERE service='analysis_repair_deepseek'"
@@ -267,7 +267,7 @@ params = (), prepare = None, binary = False
             cur = self.cursor()
             if binary:
                 cur.format = BINARY
-    
+
             if isinstance(query, Template):
                 if params is not None:
                     raise TypeError(

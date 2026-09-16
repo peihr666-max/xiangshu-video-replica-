@@ -7,9 +7,9 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57d8d550>
 
     def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_state, monkeypatch):
         from types import SimpleNamespace
-    
+
         from app.usage_billing import accept_operation
-    
+
         _seed_base(pg_state)
         _configure_deepseek(monkeypatch)
         _seed_script_rewrite_task(pg_state, task_id="sr-truncated")
@@ -54,11 +54,11 @@ purpose = 'rewrite'
     @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
     def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
         from types import SimpleNamespace
-    
+
         import app.script_rewrite as rewrite
-    
+
         requests = []
-    
+
         def respond(url, **_kwargs):
             assert _kwargs["timeout"] == 240
             assert _kwargs["stream"] is False
@@ -67,7 +67,7 @@ purpose = 'rewrite'
             return SimpleNamespace(status_code=200, content=json.dumps(
                     {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
                 ).encode())
-    
+
         monkeypatch.setattr("curl_cffi.requests.post", respond)
 >       result = rewrite.request_deepseek_text(
             base_url="https://api.deepseek.com",
@@ -78,8 +78,8 @@ purpose = 'rewrite'
             purpose=purpose,
         )
 
-tests/test_cw030_worker_pg_matrix.py:2388: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 base_url = 'https://api.deepseek.com', api_key = 'fake'
 model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
@@ -109,11 +109,11 @@ purpose = 'analysis'
     @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
     def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
         from types import SimpleNamespace
-    
+
         import app.script_rewrite as rewrite
-    
+
         requests = []
-    
+
         def respond(url, **_kwargs):
             assert _kwargs["timeout"] == 240
             assert _kwargs["stream"] is False
@@ -122,7 +122,7 @@ purpose = 'analysis'
             return SimpleNamespace(status_code=200, content=json.dumps(
                     {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
                 ).encode())
-    
+
         monkeypatch.setattr("curl_cffi.requests.post", respond)
 >       result = rewrite.request_deepseek_text(
             base_url="https://api.deepseek.com",
@@ -133,8 +133,8 @@ purpose = 'analysis'
             purpose=purpose,
         )
 
-tests/test_cw030_worker_pg_matrix.py:2388: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 base_url = 'https://api.deepseek.com', api_key = 'fake'
 model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
@@ -164,11 +164,11 @@ purpose = 'title'
     @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
     def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
         from types import SimpleNamespace
-    
+
         import app.script_rewrite as rewrite
-    
+
         requests = []
-    
+
         def respond(url, **_kwargs):
             assert _kwargs["timeout"] == 240
             assert _kwargs["stream"] is False
@@ -177,7 +177,7 @@ purpose = 'title'
             return SimpleNamespace(status_code=200, content=json.dumps(
                     {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
                 ).encode())
-    
+
         monkeypatch.setattr("curl_cffi.requests.post", respond)
 >       result = rewrite.request_deepseek_text(
             base_url="https://api.deepseek.com",
@@ -188,8 +188,8 @@ purpose = 'title'
             purpose=purpose,
         )
 
-tests/test_cw030_worker_pg_matrix.py:2388: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 base_url = 'https://api.deepseek.com', api_key = 'fake'
 model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
@@ -219,11 +219,11 @@ purpose = 'prompt'
     @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
     def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
         from types import SimpleNamespace
-    
+
         import app.script_rewrite as rewrite
-    
+
         requests = []
-    
+
         def respond(url, **_kwargs):
             assert _kwargs["timeout"] == 240
             assert _kwargs["stream"] is False
@@ -232,7 +232,7 @@ purpose = 'prompt'
             return SimpleNamespace(status_code=200, content=json.dumps(
                     {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
                 ).encode())
-    
+
         monkeypatch.setattr("curl_cffi.requests.post", respond)
 >       result = rewrite.request_deepseek_text(
             base_url="https://api.deepseek.com",
@@ -243,8 +243,8 @@ purpose = 'prompt'
             purpose=purpose,
         )
 
-tests/test_cw030_worker_pg_matrix.py:2388: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 base_url = 'https://api.deepseek.com', api_key = 'fake'
 model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
@@ -274,9 +274,9 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57d8cb60>
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         from threading import Event, Thread
         from time import monotonic
-    
+
         import app.script_rewrite as rewrite
-    
+
         stop = Event()
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self):
@@ -289,10 +289,10 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57d8cb60>
                         self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
-    
+
             def log_message(self, *args):
                 pass
-    
+
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
@@ -305,8 +305,8 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57d8cb60>
                     api_key="fake", model="test-model", source_text="原文",
                 )
 
-tests/test_cw030_worker_pg_matrix.py:2435: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2435:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 base_url = 'http://127.0.0.1:33405', api_key = 'fake', model = 'test-model'
 source_text = '原文', ip_profile_snapshot = None, instructions = ''
@@ -343,12 +343,12 @@ pg_state = 'postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_te
 >       assert _one(pg_state, "SELECT locked_until > now()+interval '250 seconds' FROM script_rewrite_tasks WHERE id='sr-deadline'")
                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-tests/test_cw030_worker_pg_matrix.py:2456: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:2456:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 tests/test_cw030_worker_pg_matrix.py:191: in _one
     row = pg.execute(sql, params).fetchone()
           ^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 self = <psycopg.Connection [BAD] at 0x76de553c8290>
 query = "SELECT locked_until > now()+interval '250 seconds' FROM script_rewrite_tasks WHERE id='sr-deadline'"
@@ -367,7 +367,7 @@ params = (), prepare = None, binary = False
             cur = self.cursor()
             if binary:
                 cur.format = BINARY
-    
+
             if isinstance(query, Template):
                 if params is not None:
                     raise TypeError(
