@@ -20,7 +20,7 @@ done
 [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || usage
 
 ROOT="/opt/video-replica-candidate"
-REPO_URL="${VIDEO_REPLICA_GIT_REPO_URL:-https://github.com/phlong026/xiangshu-video-replica.git}"
+REPO_URL="${VIDEO_REPLICA_GIT_REPO_URL:-https://github.com/peihr666-max/xiangshu-video-replica-}"
 SOURCE="$ROOT/releases/$RELEASE_SHA"
 SITE="/www/wwwroot/video.zszhj.cn"
 # CW-019: the admin console is an independent build artifact (client/dist-admin,
@@ -36,7 +36,11 @@ ADMIN_SITE="${SITE}-admin"
 # (deploy/customer/compose.yaml — the single default delivery package), not an
 # unregistered /opt/video-replica-candidate host file. Legacy hosts may still
 # redirect via CUSTOMER_COMPOSE=, but no longer need to.
-COMPOSE="${CUSTOMER_COMPOSE:-$SOURCE/deploy/customer/compose.yaml}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# Installed, reviewed topology is independent of the not-yet-fetched release.
+COMPOSE="${CUSTOMER_COMPOSE:-$SCRIPT_DIR/customer/compose.yaml}"
+COMPOSE_ENV="${CUSTOMER_COMPOSE_ENV:-/etc/video-replica/compose.env}"
+IMAGE_OVERRIDE="$ROOT/app-image.override.json"
 CUSTOMER_ENV="/etc/video-replica/customer.env"
 SERVICE_USER="video-replica"
 PUBLIC_ORIGIN="https://video.zszhj.cn"
@@ -54,8 +58,42 @@ REQUIRED_SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4)
 OPTIONAL_SERVICES=(worker-viral worker-publish)
 WORKER_SERVICES=(worker-1 worker-2 worker-3 worker-4)
 SERVICES=("${REQUIRED_SERVICES[@]}")
+ROLLBACK_SERVICES=("${REQUIRED_SERVICES[@]}")
 ROLLOUT_STARTED=0
+IMAGE_SWITCHED=0
+umask 077
 
+compose() {
+  local files=(-f "$COMPOSE")
+  if [[ -f "$IMAGE_OVERRIDE" ]]; then
+    files+=(-f "$IMAGE_OVERRIDE")
+  fi
+  docker compose --env-file "$COMPOSE_ENV" "${files[@]}" "$@"
+}
+
+write_image_override() {
+  python3 - "$@" <<'PY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+image = sys.argv[2]
+services = sys.argv[3:]
+if not services or any(not re.fullmatch(r"[a-z0-9-]+", s) for s in services):
+    raise SystemExit("invalid application service inventory")
+temporary = path.with_suffix(".tmp")
+with temporary.open("w", encoding="utf-8") as stream:
+    os.chmod(temporary, 0o600)
+    json.dump({"services": {s: {"image": image} for s in services}}, stream)
+    stream.write("\n")
+temporary.replace(path)
+PY
+}
+
+mkdir -p "$ROOT"
 exec > >(tee -a "$LOG") 2>&1
 
 mark() {
@@ -66,7 +104,7 @@ wait_ready() {
   local service="$1"
   for _ in $(seq 1 90); do
     local cid state
-    cid=$(docker compose -f "$COMPOSE" ps -q "$service")
+    cid=$(compose ps -q "$service")
     if [[ -n "$cid" ]]; then
       state=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid")
       if [[ "$state" == "healthy" || "$state" == "running" ]]; then
@@ -85,17 +123,21 @@ rollback() {
   trap - ERR
   printf 'DEPLOY_FAILED exit=%s line=%s command=%q\n' "$code" "$failed_line" "$failed_command"
   mark ROLLING_BACK
-  # Earlier images do not understand --viral-collection. Keep the new collector
-  # stopped during rollback; a subsequent successful rollout restarts it.
-  if [[ "$ROLLOUT_STARTED" == "1" ]] && printf '%s\n' "${SERVICES[@]}" | grep -Fxq worker-viral; then
-    docker compose -f "$COMPOSE" stop worker-viral || true
+  # Stop only newly introduced optional roles; restore those previously running.
+  if [[ "$ROLLOUT_STARTED" == "1" ]]; then
+    for service in "${OPTIONAL_SERVICES[@]}"; do
+      if printf '%s\n' "${SERVICES[@]}" | grep -Fxq "$service" &&
+         ! printf '%s\n' "${ROLLBACK_SERVICES[@]}" | grep -Fxq "$service"; then
+        compose stop "$service" || true
+      fi
+    done
   fi
-  # Likewise app.publish_worker only exists from PUBLISH-DELIVERY-20260917 on.
-  if [[ "$ROLLOUT_STARTED" == "1" ]] && printf '%s\n' "${SERVICES[@]}" | grep -Fxq worker-publish; then
-    docker compose -f "$COMPOSE" stop worker-publish || true
-  fi
-  if [[ -f "$BACKUP/compose-before.yaml" ]]; then
-    cp -a "$BACKUP/compose-before.yaml" "$COMPOSE"
+  if [[ "$IMAGE_SWITCHED" == "1" ]]; then
+    if [[ -f "$BACKUP/image-before.json" ]]; then
+      cp -a "$BACKUP/image-before.json" "$IMAGE_OVERRIDE"
+    else
+      rm -f -- "$IMAGE_OVERRIDE"
+    fi
   fi
   if [[ -f "$BACKUP/site-before.tar.gz" ]]; then
     find "$SITE" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
@@ -109,7 +151,16 @@ rollback() {
     tar -xzf "$BACKUP/admin-site-before.tar.gz" -C "$ADMIN_SITE"
   fi
   if [[ "$ROLLOUT_STARTED" == "1" ]]; then
-    docker compose -f "$COMPOSE" up -d --no-deps api-1 api-2 worker-1 worker-2 worker-3 worker-4 || true
+    if ! compose up -d --no-deps "${ROLLBACK_SERVICES[@]}"; then
+      mark FAILED_ROLLBACK_INCOMPLETE
+      exit "$code"
+    fi
+    for service in "${ROLLBACK_SERVICES[@]}"; do
+      if ! wait_ready "$service"; then
+        mark FAILED_ROLLBACK_INCOMPLETE
+        exit "$code"
+      fi
+    done
   fi
   mark FAILED_ROLLED_BACK
   printf 'ROLLBACK_IMAGE=%s\nDATABASE_BACKUP=%s\nDATABASE_HEAD_LEFT_FORWARD_COMPATIBLE=%s\n' \
@@ -156,14 +207,16 @@ print(hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":"))
 
 cd "$ROOT"
 mark PREFLIGHT
-for command in git docker curl python3; do
+for command in git docker curl python3 flock; do
   require_command "$command"
 done
-[[ -f "$COMPOSE" && -d "$SITE" && -r "$CUSTOMER_ENV" ]]
+exec 9>"$ROOT/deploy.lock"
+flock -n 9 || { echo "PRECHECK_FAILED: another rollout is running" >&2; exit 1; }
+[[ -f "$COMPOSE" && -r "$COMPOSE_ENV" && -d "$SITE" && -r "$CUSTOMER_ENV" ]]
 [[ ! -e "$BUILD_CTX" && ! -e "$STAGE_SITE" && ! -e "$STAGE_ADMIN_SITE" && ! -e "$BACKUP" ]]
 [[ "$(df -Pk "$ROOT" | awk 'NR == 2 {print $4}')" -gt 4194304 ]]
-docker compose -f "$COMPOSE" config --quiet
-mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)
+compose config --quiet
+mapfile -t CONFIGURED_SERVICES < <(compose config --services)
 for service in "${REQUIRED_SERVICES[@]}"; do
   printf '%s\n' "${CONFIGURED_SERVICES[@]}" | grep -Fxq "$service" || {
     echo "PRECHECK_FAILED: compose is missing required service: $service" >&2
@@ -213,10 +266,19 @@ EXPECTED_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist/index.html" |
 EXPECTED_ADMIN_ASSET=$(grep -oE 'assets/[^" ]+\.js' "$SOURCE/client/dist-admin/index.html" | head -n 1)
 [[ -n "$EXPECTED_ADMIN_ASSET" ]]
 
-API_CONTAINER=$(docker compose -f "$COMPOSE" ps -q api-1)
-DB_CONTAINER=$(docker compose -f "$COMPOSE" ps -q db)
+API_CONTAINER=$(compose ps -q api-1)
+DB_CONTAINER=$(compose ps -q db)
 [[ -n "$API_CONTAINER" && -n "$DB_CONTAINER" ]]
 OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' "$API_CONTAINER")
+for service in "${OPTIONAL_SERVICES[@]}"; do
+  if printf '%s\n' "${SERVICES[@]}" | grep -Fxq "$service"; then
+    cid=$(compose ps -q "$service")
+    if [[ -n "$cid" ]]; then
+      [[ "$(docker inspect -f '{{.Config.Image}}' "$cid")" == "$OLD_IMAGE" ]]
+      ROLLBACK_SERVICES+=("$service")
+    fi
+  fi
+done
 OLD_IMAGE_USER=$(docker image inspect -f '{{.Config.User}}' "$OLD_IMAGE")
 OLD_IMAGE_DB_HEAD=$(docker image inspect -f '{{index .Config.Labels "video-replica.database-head"}}' "$OLD_IMAGE")
 [[ -n "$OLD_IMAGE_DB_HEAD" ]]
@@ -242,26 +304,29 @@ EXPECTED_DB_HEAD=$(printf '%s\n' "$HEADS_OUTPUT" | awk '/\(head\)/ {print $1}' |
 mark BACKUP
 mkdir -p "$BACKUP"
 cp -a "$COMPOSE" "$BACKUP/compose-before.yaml"
+if [[ -f "$IMAGE_OVERRIDE" ]]; then
+  cp -a "$IMAGE_OVERRIDE" "$BACKUP/image-before.json"
+fi
 # CW-032: pin the exact topology artifact this release rolled out with.
 sha256sum "$COMPOSE" > "$BACKUP/compose.sha256"
 printf '%s\n' "$OLD_IMAGE" > "$BACKUP/previous-image.txt"
 printf '%s\n' "$RELEASE_SHA" > "$BACKUP/release-sha.txt"
 printf '%s\n' "$RELEASE_TREE" > "$BACKUP/release-tree.txt"
-docker compose -f "$COMPOSE" ps > "$BACKUP/compose-before.txt"
+compose ps > "$BACKUP/compose-before.txt"
 tar -czf "$BACKUP/site-before.tar.gz" -C "$SITE" .
 # CW-019: archive the admin artifact as well. Absent on the first release that
 # introduces dist-admin; rollback() keys off this file's existence.
 if [[ -d "$ADMIN_SITE" ]]; then
   tar -czf "$BACKUP/admin-site-before.tar.gz" -C "$ADMIN_SITE" .
 fi
-CURRENT_HEAD_BEFORE=$(docker compose -f "$COMPOSE" exec -T db sh -lc \
+CURRENT_HEAD_BEFORE=$(compose exec -T db sh -lc \
   'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')
 if [[ "$CURRENT_HEAD_BEFORE" != "$OLD_IMAGE_DB_HEAD" && "$CURRENT_HEAD_BEFORE" != "$EXPECTED_DB_HEAD" ]]; then
   echo "PRECHECK_FAILED: database revision is neither the active image head nor the target release head" >&2
   exit 1
 fi
 printf '%s\n' "$CURRENT_HEAD_BEFORE" > "$BACKUP/database-revision-before.txt"
-docker compose -f "$COMPOSE" exec -T db sh -lc \
+compose exec -T db sh -lc \
   'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$BACKUP/database-before.dump"
 [[ -s "$BACKUP/database-before.dump" ]]
 docker exec -i "$DB_CONTAINER" pg_restore --list < "$BACKUP/database-before.dump" >/dev/null
@@ -298,6 +363,7 @@ COPY server/alembic.ini /opt/video-replica/server/alembic.ini
 COPY scripts/customer_release_preflight.py /opt/video-replica/scripts/customer_release_preflight.py
 RUN command -v ffmpeg \
     && command -v ffprobe \
+    && command -v node \
     && chmod 0755 /opt/video-replica/scripts/customer_release_preflight.py \
     && python -m compileall -q /opt/video-replica/server/app /opt/video-replica/server/migrations \
     && cd /opt/video-replica/server \
@@ -324,38 +390,34 @@ IMAGE_DB_HEAD=$(printf '%s\n' "$HEADS_OUTPUT" | awk '/\(head\)/ {print $1}' | ta
 [[ "$HEAD_COUNT" == "1" && "$IMAGE_DB_HEAD" == "$EXPECTED_DB_HEAD" ]]
 
 mark MIGRATE
-python3 - "$COMPOSE" "$OLD_IMAGE" "$NEW_IMAGE" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-old = sys.argv[2]
-new = sys.argv[3]
-text = path.read_text(encoding="utf-8")
-if old not in text:
-    raise SystemExit("current image is not present in compose.yaml")
-path.write_text(text.replace(old, new), encoding="utf-8")
-PY
-docker compose -f "$COMPOSE" config --quiet
-docker compose -f "$COMPOSE" run --rm --no-deps api-1 \
+MIGRATION_SERVICE=api-1
+IMAGE_SERVICES=("${SERVICES[@]}")
+if printf '%s\n' "${CONFIGURED_SERVICES[@]}" | grep -Fxq migrate; then
+  IMAGE_SERVICES+=(migrate)
+  MIGRATION_SERVICE=migrate
+fi
+write_image_override "$IMAGE_OVERRIDE" "$NEW_IMAGE" "${IMAGE_SERVICES[@]}"
+IMAGE_SWITCHED=1
+compose config --quiet
+compose run --rm --no-deps "$MIGRATION_SERVICE" \
   sh -lc 'cd /opt/video-replica/server && alembic upgrade head'
 
 mark ROLL_API
 ROLLOUT_STARTED=1
 for service in api-1 api-2; do
   mark "ROLLING_$service"
-  docker compose -f "$COMPOSE" up -d --no-deps "$service"
+  compose up -d --no-deps "$service"
   wait_ready "$service"
 done
 
 mark ROLL_WORKERS
 for service in "${WORKER_SERVICES[@]}"; do
   mark "ROLLING_$service"
-  docker compose -f "$COMPOSE" up -d --no-deps "$service"
+  compose up -d --no-deps "$service"
   wait_ready "$service"
 done
 
-CURRENT_DB_HEAD=$(docker compose -f "$COMPOSE" exec -T api-1 \
+CURRENT_DB_HEAD=$(compose exec -T api-1 \
   sh -lc 'cd /opt/video-replica/server && alembic current' \
   | awk '/\(head\)/ {print $1}' | tail -n 1)
 [[ "$CURRENT_DB_HEAD" == "$IMAGE_DB_HEAD" ]]
@@ -377,7 +439,7 @@ cp -a "$STAGE_ADMIN_SITE"/. "$ADMIN_SITE"/
 
 mark VERIFY
 for service in "${SERVICES[@]}"; do
-  cid=$(docker compose -f "$COMPOSE" ps -q "$service")
+  cid=$(compose ps -q "$service")
   [[ -n "$cid" ]]
   [[ "$(docker inspect -f '{{.Config.Image}}' "$cid")" == "$NEW_IMAGE" ]]
   [[ "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$cid")" == "$RELEASE_SHA" ]]
@@ -394,7 +456,7 @@ grep -q "$EXPECTED_ASSET" <<< "$CUSTOMER_HTML"
 # script still reported SUCCESS.
 ADMIN_HTML=$(curl -fsS --max-time 20 "$PUBLIC_ORIGIN/admin/?release=$SHORT_SHA")
 grep -q "$EXPECTED_ADMIN_ASSET" <<< "$ADMIN_HTML"
-docker compose -f "$COMPOSE" exec -T api-1 sh -lc \
+compose exec -T api-1 sh -lc \
   "cd /opt/video-replica/server && python -c 'from app.main import app; assert \"/api/control/customer-sessions/live\" in app.openapi()[\"paths\"]'"
 
 trap - ERR

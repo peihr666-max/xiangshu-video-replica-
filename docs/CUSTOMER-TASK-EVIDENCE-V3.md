@@ -1,5 +1,7 @@
 # Customer Edition Task Evidence Record V3
 
+> 2026-09-17 PRELAUNCH-REMEDIATION：上线评审 R02—R06 修复通过本地完整质量门与失败补验；R01/#130、R07/#129、R08/#126 已合入主线并整合。已提交 [PR #131](https://github.com/peihr666-max/xiangshu-video-replica-/pull/131)。仅代码修复，不变更生产验收等级。见[独立证据](evidence/PRELAUNCH-REMEDIATION-20260917.md)。
+
 ## 2026-09-15 MATERIAL-CACHE / R90 浏览器持久缓存
 
 缓存 API 24 项新增回归覆盖授权、账号/版本隔离、容量、校验、超时、并发及清理竞争，完整 API 134 项通过；页面新增 5 项回归，完整 ContentPages 90 项通过。有效 RED 后实现，最终完整前端 100 文件 1544 项通过；TypeScript/Biome/秘密扫描及独立交叉评审通过。真实既有视频从 Blob 完整播放 4.458333 秒，清理后容量由 15.3 MB 归零，45 条云端素材保留，已打开视频播放至结束无媒体错误。原始日志和浏览器观察仅留本机。该项为本机验证，不代表离线素材库或全部历史素材验收；详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)。
