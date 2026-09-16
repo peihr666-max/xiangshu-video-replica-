@@ -261,6 +261,7 @@ class FirstFrameGenerationWork:
     project_appearance: ProjectAppearanceSpec
     effective_prompt: str
     aspect_ratio: str | None = None
+    replace_scene: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,6 +280,7 @@ class FirstFrameGenerationPlan:
     project_appearance: ProjectAppearanceSpec
     effective_prompt: str
     aspect_ratio: str | None = None
+    replace_scene: bool = False
 
 
 @dataclass(frozen=True)
@@ -1716,6 +1718,7 @@ def prepare_first_frame_generation(
     character_version_id: str | None = None,
     character_reference_selection_id: str | None = None,
     aspect_ratio: str | None = None,
+    replace_scene: bool = False,
 ) -> FirstFrameGenerationPlan:
     require_not_auditor(
         conn,
@@ -1788,6 +1791,7 @@ def prepare_first_frame_generation(
         character_name=character_inputs.character_name,
         reference_roles=character_inputs.reference_asset_roles,
         project_appearance=project_appearance,
+        replace_scene=replace_scene,
     )
 
     return FirstFrameGenerationPlan(
@@ -1803,6 +1807,7 @@ def prepare_first_frame_generation(
         project_appearance=project_appearance,
         effective_prompt=effective_prompt,
         aspect_ratio=aspect_ratio,
+        replace_scene=replace_scene,
     )
 
 
@@ -1833,6 +1838,7 @@ def load_first_frame_generation_work(
         project_appearance=plan.project_appearance,
         effective_prompt=effective_prompt,
         aspect_ratio=plan.aspect_ratio,
+        replace_scene=plan.replace_scene,
     )
 
 
@@ -2095,10 +2101,14 @@ def complete_first_frame_generation(
             "provider": provider.provider_name,
             "model": work.model,
             "aspect_ratio": work.aspect_ratio,
+            "replace_scene": work.replace_scene,
             "prompt": work.effective_prompt,
             "review_mode": "HUMAN_CONFIRMATION",
             "reconstruction_mode": FIRST_FRAME_RECONSTRUCTION_MODE,
-            "character_contract": first_frame_character_contract(work.character_inputs),
+            "character_contract": {
+                **first_frame_character_contract(work.character_inputs),
+                "preserve_scene": not work.replace_scene,
+            },
             "project_appearance": work.project_appearance.as_payload(),
             "project_character_appearance_version_id": str(appearance_version["id"]),
             "candidates": stored.candidates,
@@ -2741,6 +2751,7 @@ def normalize_prompt(
     character_name: str,
     reference_roles: list[str] | None = None,
     project_appearance: ProjectAppearanceSpec | None = None,
+    replace_scene: bool = False,
 ) -> str:
     clean = (prompt or "").strip()
     clean = clean.replace(FIRST_FRAME_NO_TEXT_CONSTRAINT, "").strip()
@@ -2749,6 +2760,22 @@ def normalize_prompt(
         source_analysis_version_id=None,
         source_timestamp_seconds=None,
     )
+    if replace_scene:
+        if appearance.appearance_source != "SCENE_LOOK":
+            raise first_frame_error(
+                422, "FIRST_FRAME_SCENE_LOOK_REQUIRED", "请先选择含目标背景的场景形象，再替换场景。"
+            )
+        return (
+            f"将源画面的主要人物完整替换为所选场景形象“{character_name}”。\n"
+            "第 1 张源画面提供人物姿态、动作、机位、画幅和主体占比；保留这些空间关系。\n"
+            "第 2 张场景参考图是人物身份、服装造型与目标环境的唯一外观依据。"
+            "使用场景参考图的背景替换原背景，结合源画面的透视重建自然完整场景；"
+            "光照、人物阴影与目标环境一致，不保留与目标场景冲突的原建筑或道具。\n"
+            "完整重构人物的头脸、头发、身体、服装与肢体连接，不能只换脸。"
+            "不得增加其他人物，不复制参考板分格线、边框或多面板布局；"
+            "禁止模糊补边、缩图留白和拼贴。输出一张完整画面。\n"
+            f"{FIRST_FRAME_NO_TEXT_CONSTRAINT}"
+        )
     if appearance.appearance_source == "SCENE_LOOK":
         server_template = (
             f"将第 1 张原视频源画面中的唯一人物，替换为用户选中的场景形象“{character_name}”。\n"

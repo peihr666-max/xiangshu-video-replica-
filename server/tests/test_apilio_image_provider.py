@@ -563,6 +563,49 @@ def test_scene_prompt_uses_images_even_without_scene_text():
     assert "后台自动匹配" not in prompt
 
 
+def test_scene_replacement_uses_target_background_without_preservation_conflict():
+    from app.first_frames import (
+        _apply_scene_look_snapshot,
+        derive_project_appearance_spec,
+        normalize_prompt,
+    )
+
+    appearance = _apply_scene_look_snapshot(
+        derive_project_appearance_spec(
+            analysis_payload={}, source_analysis_version_id=None, source_timestamp_seconds=None
+        ),
+        character_snapshot={
+            "persona_snapshot_json": {
+                "name": "庭院形象",
+                "appearance_constraints_json": {"appearance_type": "scene"},
+            }
+        },
+        character_version_id="scene-version",
+    )
+    prompt = normalize_prompt(
+        None,
+        character_name="庭院形象",
+        reference_roles=["scene_image"],
+        project_appearance=appearance,
+        replace_scene=True,
+    )
+    assert "场景参考图的背景" in prompt
+    assert "替换原背景" in prompt
+    assert "原有字幕" not in prompt
+    assert "背景、道具和光照；这些内容保持不变" not in prompt
+    assert "分格线" in prompt
+
+
+def test_scene_replacement_requires_authored_scene_look():
+    from fastapi import HTTPException
+
+    from app.first_frames import normalize_prompt
+
+    with pytest.raises(HTTPException) as error:
+        normalize_prompt(None, character_name="角色", replace_scene=True)
+    assert error.value.detail["code"] == "FIRST_FRAME_SCENE_LOOK_REQUIRED"
+
+
 def test_scene_provider_timeout_does_not_resubmit_paid_generation():
     from types import SimpleNamespace
 

@@ -131,6 +131,29 @@ describe("FirstFrameSelection", () => {
     vi.mocked(generateFirstFrames).mockResolvedValue(candidatesVersion);
   });
 
+  it("restores the saved scene setting with the candidate version", async () => {
+    vi.mocked(getLatestProjectFirstFrames).mockResolvedValue({
+      version: {
+        ...candidatesVersion,
+        payload: { ...candidatesVersion.payload, replace_scene: true },
+      },
+      stale: false,
+    });
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        simplified
+      />,
+    );
+    await screen.findByRole("button", { name: "不满意，再生成一批（3张）" });
+    expect(screen.getByLabelText("场景设置")).toHaveValue("replace");
+    expect(
+      screen.queryByText("画幅或场景已更改，请重新生成后确认首帧。"),
+    ).toBeNull();
+  });
+
   it("sends the selected image aspect ratio in simplified mode", async () => {
     render(
       <FirstFrameSelection
@@ -151,6 +174,38 @@ describe("FirstFrameSelection", () => {
       expect(generateFirstFrames).toHaveBeenCalledWith(
         "project-1",
         expect.objectContaining({ aspect_ratio: "9:16" }),
+        expect.any(Function),
+      ),
+    );
+  });
+
+  it("invalidates adopted output when scene changes and sends replacement setting", async () => {
+    const onSelectionChange = vi.fn();
+    render(
+      <FirstFrameSelection
+        projectId="project-1"
+        referenceSelection={referenceSelection}
+        sourceFrameSelectionId="source-selection-1"
+        simplified
+        onSelectionChange={onSelectionChange}
+      />,
+    );
+    await screen.findByRole("button", { name: "不满意，再生成一批（3张）" });
+    onSelectionChange.mockClear();
+    fireEvent.change(screen.getByLabelText("场景设置"), {
+      target: { value: "replace" },
+    });
+    expect(onSelectionChange).toHaveBeenCalledWith(null);
+    expect(
+      screen.getByRole("button", { name: "满意，确认使用这张" }),
+    ).toBeDisabled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "不满意，再生成一批（3张）" }),
+    );
+    await waitFor(() =>
+      expect(generateFirstFrames).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({ replace_scene: true }),
         expect.any(Function),
       ),
     );

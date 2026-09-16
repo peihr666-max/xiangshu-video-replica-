@@ -247,6 +247,12 @@ export type StudioDraft = {
   /** 当前脚本是否包含尚未发布为项目版本的本地编辑，包括主动清空。 */
   scriptEdited?: boolean;
   prompt: string;
+  /** 复刻准备保留拆解依据，最终提示词独立存于 prompt。 */
+  replicaSourcePrompt?: string;
+  /** 新提示词对应的项目、来源、文案与拆解内容，供交接前校验。 */
+  replicaPromptBasis?: string;
+  /** 内容准备变更后，须显式交接最新提示词与采用首帧。 */
+  replicaPreparationPending?: boolean;
   /** 当前 Prompt 是否包含尚未保存为项目版本的本地编辑，包括主动清空。 */
   promptEdited?: boolean;
   referenceIds: string[];
