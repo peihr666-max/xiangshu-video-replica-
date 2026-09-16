@@ -73,7 +73,7 @@ from app.storage import (
 SCRIPT_KIND = "script"
 H3_PROMPT_KIND = "h3_prompt"
 GENERATION_SCHEMA_VERSION = "c.generation.v1"
-H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v6"
+H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v7"
 H3_PROMPT_TEMPLATE_SPEC = (
     (
         "intro",
@@ -85,17 +85,24 @@ H3_PROMPT_TEMPLATE_SPEC = (
         "严格延续已确认首帧中的完整人物身份、脸部、发型、肤色、身形比例、上下装、鞋履与手部，"
         "保持场景和光线连续；不得退化为局部换脸，不得恢复原视频人物的身体或服装，不得身份漂移。",
     ),
+    # v7 新增：整体风格锚点（视觉风格/主色调/节奏/运镜语言基调）。内容由
+    # build_style_clause() 按拆解结果动态拼接，任一字段缺失就跳过该子句，
+    # 全部缺失（旧镜头卡）时 compile_prompt_text() 直接跳过整段，不留空行。
+    ("style", "{style_clause}"),
     (
         "shot",
-        "[{start:.1f}-{end:.1f}s] {shot_type}，{composition}，{camera_motion}；"
-        "主体：已确认首帧中的人物（身份与完整外观均以该图为准）；"
+        "[{start}-{end}] {shot_type}，{composition}，{camera_motion}；"
+        "主体：已确认首帧中的人物（身份与完整外观均以该图为准{wardrobe_clause}）；"
         "人物动作：{motion_clause}；场景：{scene}，转场：{transition}。"
         "口播意图：{spoken}",
     ),
     ("script", "口播意图：{full_text}"),
+    # v7：outro 更名为 audio，audio_clause 由 build_audio_clause() 汇总
+    # 各镜头的 ambient_sound/music_style_hint；旧镜头卡没有这些字段时
+    # audio_clause 为空串，行为退化为原 outro 常量文案（不劣化）。
     (
-        "outro",
-        "环境音与音乐保持自然；不要增加无关人物，不要身份突变、肢体异常或画面闪烁。",
+        "audio",
+        "{audio_clause}环境音与音乐保持自然；不要增加无关人物，不要身份突变、肢体异常或画面闪烁。",
     ),
     (
         "narration_sync",
@@ -141,6 +148,11 @@ MOTION_CAMERA_MOTION_LABELS = {
     "PAN": "镜头横摇",
     "TILT": "镜头纵摇",
     "FOLLOW": "镜头跟随主体",
+    "ORBIT": "镜头环绕主体",
+    "CRANE_UP": "镜头升高",
+    "CRANE_DOWN": "镜头降低",
+    "ZOOM_IN": "镜头光学变焦推近",
+    "ZOOM_OUT": "镜头光学变焦拉远",
 }
 PROMPT_STATUSES = {"SAVED", "LOCKED", "USED"}
 TERMINAL_STATUSES = {"FAILED", "CANCELLED"}
@@ -7145,6 +7157,77 @@ def shot_camera_motion_text(shot: Mapping[str, Any]) -> str:
     return str(shot.get("camera_motion", ""))
 
 
+def _format_shot_timestamp(seconds: float) -> str:
+    """秒数转 MM:SS.mmm，对齐 MiniMax H3 官方提示词指南的时间戳格式。"""
+    total_ms = round(max(0.0, seconds) * 1000)
+    minutes, remainder_ms = divmod(total_ms, 60_000)
+    secs, ms = divmod(remainder_ms, 1000)
+    return f"{minutes:02d}:{secs:02d}.{ms:03d}"
+
+
+def build_style_clause(shot_payload: Mapping[str, Any]) -> str | None:
+    """把拆解出的整体风格字段拼成 style 段。
+
+    任一字段缺失就跳过该子句；全部缺失（旧镜头卡，落库时还没有这些
+    顶层字段）时返回 None，调用方直接跳过整个 style 段，不留空行。
+    """
+    labelled_fields = (
+        ("visual_style", "整体视觉风格"),
+        ("color_tone", "主色调"),
+        ("pace", "剪辑节奏"),
+        ("camera_language", "运镜语言基调"),
+    )
+    parts = [
+        f"{label}：{value}"
+        for field, label in labelled_fields
+        if (value := str(shot_payload.get(field) or "").strip())
+    ]
+    if not parts:
+        return None
+    return "；".join(parts) + "；全片风格统一，中途不得切换。"
+
+
+def shot_wardrobe_clause(shot: Mapping[str, Any]) -> str:
+    """非身份类外观细节（服装/配饰/姿态），插入主体子句；缺失时不插入。"""
+    detail = str(shot.get("wardrobe_pose_detail") or "").strip()
+    if not detail or detail == "无人物出镜":
+        return ""
+    return f"，本镜头新增细节：{detail}"
+
+
+def shot_scene_text(shot: Mapping[str, Any]) -> str:
+    """场景描述 = scene + 可选的背景陈设 + 可选的光线质感。"""
+    parts = [str(shot.get("scene", ""))]
+    for field in ("scene_dressing", "scene_lighting"):
+        value = str(shot.get(field) or "").strip()
+        if value:
+            parts.append(value)
+    return "，".join(parts)
+
+
+def build_audio_clause(shot_payload: Mapping[str, Any]) -> str:
+    """汇总各镜头的环境音/配乐倾向；旧镜头卡没有这些字段时返回空串，
+    audio 段退化为原 outro 常量文案（行为不劣化）。
+    """
+    ambient_sounds: list[str] = []
+    music_hints: list[str] = []
+    for shot in shot_payload.get("shots", []):
+        if not isinstance(shot, Mapping):
+            continue
+        ambient = str(shot.get("ambient_sound") or "").strip()
+        if ambient and ambient not in ("无", "无人物出镜") and ambient not in ambient_sounds:
+            ambient_sounds.append(ambient)
+        music = str(shot.get("music_style_hint") or "").strip()
+        if music and music not in music_hints:
+            music_hints.append(music)
+    parts = []
+    if ambient_sounds:
+        parts.append(f"环境音：{'；'.join(ambient_sounds)}")
+    if music_hints:
+        parts.append(f"配乐风格：{'；'.join(music_hints)}")
+    return "；".join(parts) + "；" if parts else ""
+
+
 def compile_prompt_text(
     *,
     script_payload: dict[str, Any],
@@ -7160,6 +7243,9 @@ def compile_prompt_text(
         ),
         H3_PROMPT_TEMPLATES["continuity"],
     ]
+    style_clause = build_style_clause(shot_payload)
+    if style_clause is not None:
+        lines.append(H3_PROMPT_TEMPLATES["style"].format(style_clause=style_clause))
     mappings_by_shot = {
         str(mapping["shot_id"]): str(mapping["text"])
         for mapping in script_payload.get("shot_mappings", [])
@@ -7173,19 +7259,20 @@ def compile_prompt_text(
         end = max(start, min(float(duration_seconds), float(shot["end_time"]) * timeline_scale))
         lines.append(
             H3_PROMPT_TEMPLATES["shot"].format(
-                start=start,
-                end=end,
+                start=_format_shot_timestamp(start),
+                end=_format_shot_timestamp(end),
                 shot_type=shot["shot_type"],
                 composition=shot["composition"],
                 camera_motion=shot_camera_motion_text(shot),
+                wardrobe_clause=shot_wardrobe_clause(shot),
                 motion_clause=render_shot_motion_clause(shot),
-                scene=shot["scene"],
+                scene=shot_scene_text(shot),
                 transition=shot["transition"],
                 spoken=spoken,
             )
         )
     lines.append(H3_PROMPT_TEMPLATES["script"].format(full_text=script_payload["full_text"]))
-    lines.append(H3_PROMPT_TEMPLATES["outro"])
+    lines.append(H3_PROMPT_TEMPLATES["audio"].format(audio_clause=build_audio_clause(shot_payload)))
     lines.append(H3_PROMPT_TEMPLATES["narration_sync"])
     return "\n".join(lines)
 

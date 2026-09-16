@@ -619,10 +619,12 @@ def analysis_instruction(duration_seconds: float) -> str:
     return (
         "分析这条参考短视频，只返回合法 JSON 对象，不要 markdown 代码块。\n"
         "JSON 结构：summary, aspect_ratio, resolution, fps, theme, visual_style, "
-        "pace, camera_language, original_script, shots。\n"
+        "pace, camera_language, color_tone, original_script, shots。\n"
         "shots 内每个镜头必须包含 shot_id, start_time, end_time, shot_type, "
-        "composition, camera_motion, subject, person_count, action, scene, spoken_text, "
-        "transition, motion, segment_kind, boundary_reason。shots 的业务含义是可执行时间段，"
+        "composition, camera_motion, subject, person_count, action, scene, "
+        "scene_dressing, scene_lighting, wardrobe_pose_detail, ambient_sound, "
+        "music_style_hint, spoken_text, transition, motion, segment_kind, "
+        "boundary_reason。shots 的业务含义是可执行时间段，"
         "既可以来自真实剪辑切点，也可以来自同一连续镜头内的动作或语义阶段变化；"
         "时间段必须从 0 秒开始、连续覆盖全片、互不重叠且不得留空洞。\n"
         f"已验证的视频总时长为 {canonical_duration} 秒；最后一个镜头的 end_time "
@@ -639,9 +641,20 @@ def analysis_instruction(duration_seconds: float) -> str:
         "- subject_displacement（位移幅度，中文）：如“向镜头走近两三步”“无位移”；\n"
         "- hand_action（左右手动作，中文）：如“双臂随步态交替自然摆动，不指点不握拳”；\n"
         "- camera_motion（机位运动，枚举）：STATIC 固定 / PUSH_IN 推近 / PULL_BACK 拉远 / "
-        "HANDHELD_TRACKING 手持跟拍 / PAN 横摇 / TILT 纵摇 / FOLLOW 跟随；机位在动时"
-        "禁止填 STATIC；\n"
+        "HANDHELD_TRACKING 手持跟拍 / PAN 横摇 / TILT 纵摇 / FOLLOW 跟随 / "
+        "ORBIT 环绕 / CRANE_UP 升镜 / CRANE_DOWN 降镜 / ZOOM_IN 光学变焦推近 / "
+        "ZOOM_OUT 光学变焦拉远；机位在动时禁止填 STATIC；\n"
         "- relative_motion（人物与摄影机相对运动，中文）：如“人物逐渐靠近镜头，画面占比增大”。\n"
+        "\n"
+        "color_tone（全片主色调，中文，如“暖橙偏黄，高对比”）用于统一整条视频的视觉风格锚点。\n"
+        "scene_dressing（该镜头背景陈设/道具，中文，如“木质工作台，墙面挂满工具”）、"
+        "scene_lighting（该镜头光线方向与质感，中文，如“侧逆光，硬光源，高反差”）、"
+        "ambient_sound（该镜头环境音，中文，如“雨声，远处车流”）、"
+        "music_style_hint（该镜头配乐风格倾向，中文，如“轻电子，节奏偏快”）"
+        "均需逐镜头填写，不得只写“无”敷衍，除非画面确实无背景陈设/无环境声可辨识。\n"
+        "wardrobe_pose_detail（该镜头人物非身份类外观细节，中文）：只描述服装款式、"
+        "配饰、姿态动作等不涉及身份识别的信息，严禁描述面部长相、五官、发型等身份特征；"
+        "无人物出镜的镜头写“无人物出镜”。\n"
         "\n"
         "关键规则：\n"
         "-1. person_count 必须统计该时间段画面内所有可见真人（包括局部露出者）；"
@@ -656,7 +669,9 @@ def analysis_instruction(duration_seconds: float) -> str:
         "“站立”，也不得把运动镜头写成固定机位。\n"
         "2. 人物确实静止时选 STATIC，不得凭空增加运动。\n"
         "3. 无人物出镜的镜头 subject_motion_state 选 NO_PERSON 或 OBJECT_MOTION，"
-        "文本字段写“无人物出镜”。"
+        "文本字段写“无人物出镜”。\n"
+        "4. wardrobe_pose_detail 一旦出现任何面部/五官/发型描述视为不合规，必须"
+        "改写为纯服装、配饰、姿态描述。"
     )
 
 
@@ -770,6 +785,13 @@ def create_shot_card_version(
         "schema_version": SCHEMA_VERSION,
         "source_analysis_version_id": str(analysis_version["id"]),
         "duration_seconds": analysis_payload["duration_seconds"],
+        # 顶层风格字段随镜头卡一起落库，否则 H3 Prompt 编译层的 style 段
+        # 在正式保存后的镜头卡上永远读不到（分析版本本身不会再被读取）。
+        "theme": analysis_payload.get("theme"),
+        "visual_style": analysis_payload.get("visual_style"),
+        "pace": analysis_payload.get("pace"),
+        "camera_language": analysis_payload.get("camera_language"),
+        "color_tone": analysis_payload.get("color_tone"),
         "shots": [shot.model_dump(mode="json") for shot in shots],
     }
     return insert_version(
