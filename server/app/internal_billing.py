@@ -720,7 +720,21 @@ def finalize_internal_billing(
                 (task_id,),
             ).fetchone()[0]
             if usage is None:
-                return BillingFinalization(task_id, None, None)
+                # R1：任务已交付但上游没有回传成片秒数时，旧行为是既不结算也不
+                # 释放，用户这笔预留会永久冻结，且对账候选要求该字段非空，同样
+                # 选不到它。这里退回到本轮提交时与用户约定的预留秒数先行落账：
+                # 约定值本就代表用户已接受的计费口径，不猜测真实成片长度；
+                # finish_operation 内部再以 reserved_credits 封顶，超出部分由
+                # 平台承担，因此不可能超扣。
+                reserved = conn.execute(
+                    "SELECT reserved_delta FROM wallet_transactions "
+                    "WHERE task_id = %s AND type = 'RESERVE' AND billing_round = %s",
+                    (task_id, recorded["billing_round"]),
+                ).fetchone()
+                if reserved is None or reserved[0] is None:
+                    # 没有可用的约定秒数（历史数据）时保持原语义，不臆造用量。
+                    return BillingFinalization(task_id, None, None)
+                usage = max(1, int(reserved[0]))
         else:
             if task["status"] not in {"FAILED", "CANCELLED"}:
                 raise BillingInvariantError("released billing requires a failed or cancelled task")
