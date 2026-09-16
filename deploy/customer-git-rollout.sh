@@ -252,7 +252,10 @@ if [[ -d "$ADMIN_SITE" ]]; then
 fi
 CURRENT_HEAD_BEFORE=$(docker compose -f "$COMPOSE" exec -T db sh -lc \
   'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT version_num FROM alembic_version"')
-[[ "$CURRENT_HEAD_BEFORE" == "$OLD_IMAGE_DB_HEAD" ]]
+if [[ "$CURRENT_HEAD_BEFORE" != "$OLD_IMAGE_DB_HEAD" && "$CURRENT_HEAD_BEFORE" != "$EXPECTED_DB_HEAD" ]]; then
+  echo "PRECHECK_FAILED: database revision is neither the active image head nor the target release head" >&2
+  exit 1
+fi
 printf '%s\n' "$CURRENT_HEAD_BEFORE" > "$BACKUP/database-revision-before.txt"
 docker compose -f "$COMPOSE" exec -T db sh -lc \
   'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$BACKUP/database-before.dump"

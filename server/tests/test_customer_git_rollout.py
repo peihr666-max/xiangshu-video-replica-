@@ -59,6 +59,19 @@ def test_customer_git_rollout_only_rolls_optional_services_when_configured() -> 
     assert 'for service in "${WORKER_SERVICES[@]}"; do' in script
 
 
+def test_customer_git_rollout_allows_retry_after_forward_compatible_rollback() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert (
+        '"$CURRENT_HEAD_BEFORE" != "$OLD_IMAGE_DB_HEAD" '
+        '&& "$CURRENT_HEAD_BEFORE" != "$EXPECTED_DB_HEAD"'
+    ) in script
+    assert (
+        "database revision is neither the active image head nor the target release head"
+        in script
+    )
+
+
 def test_customer_git_rollout_ignores_only_root_package_version_metadata() -> None:
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 
