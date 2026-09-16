@@ -159,6 +159,152 @@ def request_body(key: str = "click") -> dict[str, Any]:
     }
 
 
+def test_final_replica_preview_submission_and_stale_script_on_pg(
+    client: TestClient,
+    route_state: str,
+) -> None:
+    from fastapi import HTTPException
+
+    from app.analysis import (
+        FakeGemini,
+        analyze_video,
+        create_analysis_version,
+        create_shot_card_version,
+        insert_version,
+    )
+    from app.auth import CurrentUser
+    from app.generation import (
+        GenerationBatchRequest,
+        PromptCompileRequest,
+        PromptContext,
+        ScriptRequest,
+        compile_prompt_version,
+        create_generation_batch,
+        create_script_version,
+    )
+
+    user, _ = _customer(client, route_state, credits=100)
+    actor = CurrentUser(id=user["user_id"], username="alice", display_name="alice", role="customer")
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        conn.execute(
+            "INSERT INTO projects(id,name,owner_user_id) VALUES('final-project','Final',%s)",
+            (actor.id,),
+        )
+        for asset, kind, mime in (
+            ("final-source", "reference_video", "video/mp4"),
+            ("final-frame", "first_frame", "image/png"),
+        ):
+            conn.execute(
+                "INSERT INTO assets(id,project_id,kind,storage_uri,sha256,size_bytes,"
+                "content_type,created_by_user_id) "
+                "VALUES(%s,'final-project',%s,%s,'hash',10,%s,%s)",
+                (asset, kind, f"local://test/{asset}", mime, actor.id),
+            )
+        raw.commit()
+        result = analyze_video(video_uri="fake", video_duration_seconds=4, provider=FakeGemini())
+        analysis = create_analysis_version(
+            conn,
+            project_id="final-project",
+            asset_id="final-source",
+            asset_uri="fake",
+            created_by_user_id=actor.id,
+            result=result,
+        )
+        shots = create_shot_card_version(
+            conn,
+            analysis_version=analysis,
+            created_by_user_id=actor.id,
+            shots=result.analysis.shots,
+        )
+
+        def version(kind: str, payload: dict[str, Any]):
+            return insert_version(
+                conn,
+                project_id="final-project",
+                asset_id="final-frame",
+                kind=kind,
+                created_by_user_id=actor.id,
+                payload=payload,
+            )
+
+        source = version("source_frame_selection", {"timestamp_seconds": 0})
+        candidates = version(
+            "first_frame_candidates",
+            {
+                "source_frame_selection_version_id": source["id"],
+                "review_mode": "HUMAN_CONFIRMATION",
+                "candidates": [{"asset_id": "final-frame"}],
+            },
+        )
+        version(
+            "first_frame_selection",
+            {
+                "first_frame_candidates_version_id": candidates["id"],
+                "first_frame_asset_id": "final-frame",
+                "review_mode": "HUMAN_CONFIRMATION",
+                "reviewed_by_user_id": actor.id,
+            },
+        )
+        script = create_script_version(
+            conn,
+            project_id="final-project",
+            actor=actor,
+            request=ScriptRequest(
+                source="custom", text="今天带你看庭院", shot_card_version_id=shots["id"]
+            ),
+        )
+        final = compile_prompt_version(
+            conn,
+            project_id="final-project",
+            actor=actor,
+            request=PromptCompileRequest(
+                script_version_id=script["id"],
+                shot_card_version_id=shots["id"],
+                first_frame_asset_id="final-frame",
+                output_duration_seconds=4,
+            ),
+        )
+        text = json.loads(final["payload_json"])["prompt_text"]
+        request = GenerationBatchRequest(
+            quantity=1,
+            prompt_text=text,
+            prompt_context=PromptContext(
+                final_prompt_version_id=final["id"],
+                script_version_id=script["id"],
+                shot_card_version_id=shots["id"],
+            ),
+            first_frame_asset_id="final-frame",
+            output_duration_seconds=4,
+            idempotency_key="final-click",
+        )
+        batch = create_generation_batch(
+            conn, project_id="final-project", actor=actor, request=request
+        )
+        replay = create_generation_batch(
+            conn, project_id="final-project", actor=actor, request=request
+        )
+        assert batch.id == replay.id
+        frozen = conn.execute(
+            "SELECT prompt_snapshot_json FROM generation_tasks WHERE batch_id=%s", (batch.id,)
+        ).fetchone()
+        assert json.loads(frozen["prompt_snapshot_json"])["prompt_text"] == text
+        create_script_version(
+            conn,
+            project_id="final-project",
+            actor=actor,
+            request=ScriptRequest(source="no_narration", text="", shot_card_version_id=shots["id"]),
+        )
+        with pytest.raises(HTTPException) as failure:
+            create_generation_batch(
+                conn,
+                project_id="final-project",
+                actor=actor,
+                request=request.model_copy(update={"idempotency_key": "new-click"}),
+            )
+        assert failure.value.detail["code"] == "PROMPT_STALE"
+
+
 def test_async_request_replay_and_single_charge(
     client: TestClient, route_state: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:

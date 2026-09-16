@@ -461,7 +461,8 @@ def test_first_frame_quality_has_separate_single_attempt_budget():
 
 
 @pytest.mark.parametrize("resuming", [False, True])
-def test_scene_replacement_has_no_ai_review_or_automatic_regeneration(resuming):
+@pytest.mark.parametrize("appearance_source", ["SCENE_LOOK", "VIDEO_ANALYSIS"])
+def test_scene_replacement_has_no_ai_review_or_automatic_regeneration(resuming, appearance_source):
     from types import SimpleNamespace
 
     from app.first_frames import GeneratedImage, perform_first_frame_generation
@@ -487,7 +488,7 @@ def test_scene_replacement_has_no_ai_review_or_automatic_regeneration(resuming):
         quantity=1,
         model="gpt-image-2",
         effective_prompt="replace person",
-        project_appearance=SimpleNamespace(appearance_source="SCENE_LOOK"),
+        project_appearance=SimpleNamespace(appearance_source=appearance_source),
     )
     checkpoints = []
     result = perform_first_frame_generation(

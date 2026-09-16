@@ -1495,6 +1495,11 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 
 视频口播流程与独立声音档案改造；局部 AUTOMATED_VERIFIED，未调用付费飞影链路、未合并部署。前端 1565 passed，口播/素材专项 205 passed，设计 QA passed；全量 PG 及远程提交状态见 [任务证据](evidence/ORAL-VIDEO-TTS-20260916.md)。基线 f0b45b2、分支 feat/oral-video-tts-20260916。仅本任务增量登记，不核销其他业务工作包。
 
+
+## 2026-09-17 REPLICA-FINAL-PROMPT-20260917
+
+REVIEW / AUTOMATED_VERIFIED（本地）：最终提示词后置、确认文案绑定、首帧三图人工选择及文生/参考生视频链路核验。Owner Codex / 01a0aae7-8864-7c41-a255-4c8f62adc5e3，Reviewer 执行者自检与 PR 门禁；不声称独立代理评审。独立分支 fix/replica-final-prompt-20260917，从 origin/main@d95a8db4 创建 .worktrees/REPLICA-FINAL-PROMPT-20260917；共享 claim 已认领。没有执行真实付费出片、生产功能开关或部署。本地完整范围及失败项补验已通过，已合入 main 的 #128 页面增量；待 PR 当前 head 三门禁与评审，未合并部署。[详细证据](evidence/REPLICA-FINAL-PROMPT-20260917.md)。
+
 ## 2026-09-17 PUBLISH-DELIVERY-20260917
 
 发布链路第二阶段 PR-A。新增迁移 `20260917T1000_publish_records`（`publish_records` 表 + `publish_browser_accounts.status/error_message/source`）、`app/publish_records.py` / `publish_record_routes.py` / `publish_credentials.py` / `publish_delivery.py`，`publish_worker` 每轮追加一条发布投递；桌面 `publish_accounts.rs` connected 时导出 storage_state 并由前端 `POST /publish/browser/accounts/import` 加密入库；发布页立即/定时发布、`PublishRecordsPanel`、首页真实 `published_total`；compose/systemd/基础镜像（Node.js）接入 `worker-publish`。本地 ruff/format/mypy、cargo test 27、client check 105 文件 1617 passed，专项与迁移矩阵见证据；全量 PostgreSQL 四分片 2452 passed / 34 failed / 1 skipped，34 项均为 Windows 本机既有失败（对照未改动主检出复现），详见证据末段。AUTOMATED_VERIFIED；全部用例合成凭据与假投递器，未触网、未真实发布、未合并部署。详见[独立证据](evidence/PUBLISH-DELIVERY-20260917.md)。

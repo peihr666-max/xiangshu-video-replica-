@@ -8,7 +8,7 @@ import time
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote, urlsplit
 
 from anyio import CancelScope
@@ -127,6 +127,7 @@ class UploadIntentRequest(BaseModel):
     content_type: str = Field(min_length=1)
     size_bytes: int = Field(ge=0)
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    purpose: Literal["replica", "script"] = "replica"
 
 
 class UploadIntentResponse(BaseModel):
@@ -614,6 +615,7 @@ def create_asset_upload_intent(
             content_type=payload.content_type,
             size_bytes=payload.size_bytes,
             sha256=payload.sha256,
+            purpose=payload.purpose,
         )
         is_customer = actor.role == "customer"
     upload_url = intent.url

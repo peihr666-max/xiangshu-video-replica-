@@ -178,6 +178,7 @@ def create_upload_intent(
     content_type: str,
     size_bytes: int,
     sha256: str | None = None,
+    purpose: str = "replica",
 ) -> CreatedUploadIntent:
     require_not_auditor(
         conn,
@@ -244,6 +245,7 @@ def create_upload_intent(
                 json.dumps(
                     {
                         "upload_status": "PENDING",
+                        "upload_purpose": purpose,
                         "requested_size_bytes": size_bytes,
                         "requested_sha256": sha256,
                         "intent_expires_at": intent.expires_at.isoformat(),
@@ -587,6 +589,7 @@ def persist_upload_completion(
         )
         if (
             analysis_task is None
+            and metadata.get("upload_purpose", "replica") == "replica"
             and _automatic_analysis_input_ready(conn, probed.storage_uri)
             and find_analysis_version_for_asset(
                 conn,

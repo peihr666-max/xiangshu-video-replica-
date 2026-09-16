@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-
 import {
   applySavedGenerationPrompt,
   compileGenerationPrompt,
@@ -26,11 +25,16 @@ import {
   waitForScriptRewriteTask,
 } from "./api";
 import {
+  type FinalReplicaSnapshot,
+  replicaInputKey,
+} from "./studio/PromptEditor";
+import {
   clearScriptRewriteIdempotencyKey,
   type ScriptRewriteScope,
   scriptRewriteIdempotencyKey,
   shouldClearScriptRewriteIdempotencyKey,
 } from "./studio/scriptRewrite";
+import { readAppliedOptimization } from "./studio/usePromptOptimization";
 
 export type ScriptSource = "original" | "custom";
 
@@ -83,7 +87,6 @@ type UseGenerationDraftsInput = {
 };
 
 export function useGenerationDrafts({
-  analysisPrompt = "",
   characterVersionId,
   currentUserId,
   durationSeconds,
@@ -97,6 +100,9 @@ export function useGenerationDrafts({
   shotCardVersionId,
   sourceAssetId,
 }: UseGenerationDraftsInput) {
+  const finalInvalidated = useRef(false);
+  const [finalSnapshot, setFinalSnapshot] =
+    useState<FinalReplicaSnapshot | null>(null);
   const [scriptVersion, setScriptVersion] = useState<GenerationVersion | null>(
     null,
   );
@@ -106,7 +112,7 @@ export function useGenerationDrafts({
   const [promptVersion, setPromptVersion] = useState<GenerationVersion | null>(
     null,
   );
-  const [promptText, setPromptText] = useState(analysisPrompt);
+  const [promptText, setPromptText] = useState("");
   const [savedPromptText, setSavedPromptText] = useState("");
   const [promptStale, setPromptStale] = useState(false);
   const [limits, setLimits] = useState(DEFAULT_LIMITS);
@@ -206,7 +212,7 @@ export function useGenerationDrafts({
 
         const restoredPrompt = promptState.version;
         const restoredPromptText =
-          readPayloadString(restoredPrompt, "prompt_text") ?? analysisPrompt;
+          readPayloadString(restoredPrompt, "prompt_text") ?? "";
         setPromptVersion(restoredPrompt);
         setPromptText(restoredPromptText);
         setSavedPromptText(restoredPromptText);
@@ -394,7 +400,6 @@ export function useGenerationDrafts({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 依赖即草稿状态源；durationSeconds 仅用于成片时长默认值回退
   }, [
-    analysisPrompt,
     characterVersionId,
     currentUserId,
     durationSeconds,
@@ -476,6 +481,40 @@ export function useGenerationDrafts({
   const duration = Number(outputDuration);
   const durationValid = duration === 4 || duration === 15;
   const provider = defaultBatchProvider();
+  const finalInput = {
+    projectId,
+    scriptText,
+    firstFrameAssetId: firstFrameAssetId ?? "",
+    duration,
+    resolution,
+    ratio,
+    shotCardVersionId,
+  };
+  const savedFinal = promptVersion?.payload;
+  const restoredFinal =
+    !finalInvalidated.current &&
+    promptVersion &&
+    !promptStale &&
+    savedFinal?.final_composition &&
+    savedFinal.confirmed_script_text === scriptText.trim() &&
+    savedFinal.script_version_id === scriptVersion?.id &&
+    savedFinal.shot_card_version_id === shotCardVersionId &&
+    savedFinal.first_frame_asset_id === firstFrameAssetId &&
+    savedFinal.output_duration_seconds === duration &&
+    savedFinal.resolution === resolution &&
+    savedFinal.ratio === ratio
+      ? {
+          inputKey: replicaInputKey(finalInput),
+          versionId: promptVersion.id,
+          scriptVersionId: String(savedFinal.script_version_id),
+          shotCardVersionId,
+        }
+      : null;
+  const activeFinalSnapshot =
+    finalSnapshot?.inputKey === replicaInputKey(finalInput)
+      ? finalSnapshot
+      : restoredFinal;
+  const finalReady = activeFinalSnapshot !== null;
   const batchRequest: Omit<GenerationBatchInput, "idempotency_key"> | null =
     quantity !== null && durationValid && firstFrameAssetId
       ? {
@@ -483,7 +522,17 @@ export function useGenerationDrafts({
           prompt_text: promptText,
           prompt_context: {
             source: "manual",
+            ...readAppliedOptimization(
+              `${currentUserId}:${projectId}`,
+              promptText,
+              {
+                script_version_id: activeFinalSnapshot?.scriptVersionId,
+                shot_card_version_id: shotCardVersionId,
+              },
+            ),
             shot_card_version_id: shotCardVersionId,
+            script_version_id: activeFinalSnapshot?.scriptVersionId,
+            final_prompt_version_id: activeFinalSnapshot?.versionId,
           },
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
@@ -605,7 +654,8 @@ export function useGenerationDrafts({
       durationValid,
   );
   const canCreateBatch = Boolean(
-    !readOnly &&
+    finalReady &&
+      !readOnly &&
       promptText.trim() &&
       Array.from(promptText).length <= 7000 &&
       firstFrameAssetId &&
@@ -995,6 +1045,10 @@ export function useGenerationDrafts({
       return;
     }
 
+    if (!finalReady) {
+      setError("请先确认文案与首帧并合成最终提示词。");
+      return;
+    }
     const actionGeneration = actionGenerationRef.current + 1;
     actionGenerationRef.current = actionGeneration;
     const isCurrent = () => actionGeneration === actionGenerationRef.current;
@@ -1011,7 +1065,17 @@ export function useGenerationDrafts({
           prompt_text: promptText,
           prompt_context: {
             source: "manual",
+            ...readAppliedOptimization(
+              `${currentUserId}:${projectId}`,
+              promptText,
+              {
+                script_version_id: activeFinalSnapshot?.scriptVersionId,
+                shot_card_version_id: shotCardVersionId,
+              },
+            ),
             shot_card_version_id: shotCardVersionId,
+            script_version_id: activeFinalSnapshot?.scriptVersionId,
+            final_prompt_version_id: activeFinalSnapshot?.versionId,
           },
           first_frame_asset_id: firstFrameAssetId,
           output_duration_seconds: duration,
@@ -1110,6 +1174,13 @@ export function useGenerationDrafts({
   }
 
   return {
+    finalInput,
+    finalSnapshot: activeFinalSnapshot,
+    setFinalSnapshot: (snapshot: FinalReplicaSnapshot | null) => {
+      finalInvalidated.current = snapshot === null;
+      setFinalSnapshot(snapshot);
+      if (snapshot?.promptVersion) setPromptVersion(snapshot.promptVersion);
+    },
     projectId,
     promptScope: `${currentUserId}:${projectId}`,
     // script 状态
@@ -1421,7 +1492,7 @@ function requestFingerprint(
   return JSON.stringify(request);
 }
 
-function restoreIdempotencyRecord(
+export function restoreIdempotencyRecord(
   storageKey: string,
 ): IdempotencyRecord | null {
   const memoryRecord = sessionIdempotencyRecords.get(storageKey);
@@ -1444,10 +1515,11 @@ function restoreIdempotencyRecord(
   return null;
 }
 
-function restoreOrCreateIdempotencyRecord(
+export function restoreOrCreateIdempotencyRecord(
   storageKey: string,
   request: Omit<GenerationBatchInput, "idempotency_key">,
   memoryRecord: IdempotencyRecord | null,
+  preferredKey?: string,
 ): IdempotencyRecord | null {
   const fingerprint = requestFingerprint(request);
   if (memoryRecord) {
@@ -1457,7 +1529,7 @@ function restoreOrCreateIdempotencyRecord(
   if (savedRecord) {
     return savedRecord.fingerprint === fingerprint ? savedRecord : null;
   }
-  const key = createIdempotencyKey();
+  const key = preferredKey ?? createIdempotencyKey();
   const record = {
     fingerprint,
     key,
@@ -1472,7 +1544,10 @@ function restoreOrCreateIdempotencyRecord(
   return record;
 }
 
-function clearIdempotencyRecord(storageKey: string, record: IdempotencyRecord) {
+export function clearIdempotencyRecord(
+  storageKey: string,
+  record: IdempotencyRecord,
+) {
   if (sessionIdempotencyRecords.get(storageKey)?.key === record.key) {
     sessionIdempotencyRecords.delete(storageKey);
   }

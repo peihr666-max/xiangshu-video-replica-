@@ -8,18 +8,32 @@ import {
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PromptOptimizeResult } from "../api";
-import { PromptEditor } from "./PromptEditor";
+import {
+  type FinalReplicaSnapshot,
+  PromptEditor,
+  ReplicaFinalPromptControls,
+} from "./PromptEditor";
+import { readAppliedOptimization } from "./usePromptOptimization";
 
 const api = vi.hoisted(() => ({
   create: vi.fn(),
   get: vi.fn(),
   session: vi.fn(() => true),
+  compile: vi.fn(),
+  script: vi.fn(),
 }));
 vi.mock("../api", () => ({
   createPromptOptimization: api.create,
   getPromptOptimization: api.get,
   capturePromptSession: () => api.session,
   customerVisibleErrorMessage: (_error: unknown, fallback: string) => fallback,
+  getLatestGenerationPrompt: vi.fn(async () => ({
+    version: null,
+    stale: false,
+  })),
+  getLatestProjectShotCards: vi.fn(async () => ({ id: "shots" })),
+  createScriptVersion: api.script,
+  compileGenerationPrompt: api.compile,
 }));
 function Harness({ scope = "user:project" }: { scope?: string }) {
   const [text, setText] = useState("原始提示词");
@@ -41,6 +55,133 @@ const success: PromptOptimizeResult = {
   formatter_version: "v1",
   result: { prompt_text: "优化结果", warnings: [], validation_status: "valid" },
 };
+
+function FinalHarness({
+  script = "新文案",
+  frame = "frame",
+  duration = 4,
+}: {
+  script?: string;
+  frame?: string;
+  duration?: number;
+}) {
+  const [text, setText] = useState("");
+  const [snapshot, setSnapshot] = useState<FinalReplicaSnapshot | null>(null);
+  return (
+    <>
+      <ReplicaFinalPromptControls
+        input={{
+          projectId: "project",
+          scriptText: script,
+          firstFrameAssetId: frame,
+          duration,
+          resolution: "768P",
+          ratio: "adaptive",
+          shotCardVersionId: "shots",
+        }}
+        value={text}
+        onChange={setText}
+        snapshot={snapshot}
+        onPrepared={setSnapshot}
+      />
+      <textarea
+        aria-label="最终正文"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+    </>
+  );
+}
+
+it("keeps adopted optimization provenance scoped to the account and exact text", async () => {
+  api.create.mockResolvedValue(success);
+  render(<Harness scope="receipt-user:receipt-project" />);
+  fireEvent.click(screen.getByRole("button", { name: "AI 优化提示词" }));
+  await waitFor(() =>
+    expect(screen.getByLabelText("提示词")).toHaveValue("优化结果"),
+  );
+  expect(
+    readAppliedOptimization("receipt-user:receipt-project", "优化结果"),
+  ).toEqual({
+    source: "ai",
+    optimization_task_id: "task",
+    context_hash: "hash",
+  });
+  expect(
+    readAppliedOptimization("other-user:receipt-project", "优化结果"),
+  ).toEqual({});
+  expect(
+    readAppliedOptimization("receipt-user:receipt-project", "人工修改"),
+  ).toEqual({});
+});
+
+describe("最终提示词后置", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.script.mockResolvedValue({ id: "script-final" });
+    api.compile.mockResolvedValue({
+      id: "final",
+      payload: { prompt_text: "最终稿" },
+    });
+  });
+  it("确认文案和首帧后才合成；改变时长使旧稿失效且保留编辑", async () => {
+    const view = render(<FinalHarness frame="" />);
+    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    expect(
+      screen.getByRole("button", { name: "合成最终提示词" }),
+    ).toBeDisabled();
+    view.rerender(<FinalHarness />);
+    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("最终正文")).toHaveValue("最终稿"),
+    );
+    expect(api.script).toHaveBeenCalledWith("project", {
+      source: "custom",
+      text: "新文案",
+      shot_card_version_id: "shots",
+    });
+    fireEvent.change(screen.getByLabelText("最终正文"), {
+      target: { value: "人工编辑" },
+    });
+    view.rerender(<FinalHarness duration={15} />);
+    expect(screen.getByText(/最终稿待合成或更新/)).toBeInTheDocument();
+    expect(screen.getByLabelText("最终正文")).toHaveValue("人工编辑");
+    expect(api.compile).toHaveBeenCalledOnce();
+  });
+  it("明确无口播会保存空脚本，不把说明文字当作台词", async () => {
+    render(<FinalHarness script="" />);
+    fireEvent.click(screen.getByLabelText("确认本视频无口播"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+    await waitFor(() => expect(api.compile).toHaveBeenCalledOnce());
+    expect(api.script).toHaveBeenCalledWith("project", {
+      source: "no_narration",
+      text: "",
+      shot_card_version_id: "shots",
+    });
+  });
+  it("迟到合成只作为候选展示，不能覆盖等待期间的人工修改", async () => {
+    let finish: ((value: unknown) => void) | undefined;
+    api.compile.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(<FinalHarness />);
+    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+    await waitFor(() => expect(api.compile).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getByLabelText("最终正文"), {
+      target: { value: "继续编辑" },
+    });
+    await act(async () => {
+      finish?.({ id: "final", payload: { prompt_text: "迟到新稿" } });
+    });
+    expect(screen.getByLabelText("最终正文")).toHaveValue("继续编辑");
+    fireEvent.click(screen.getByRole("button", { name: "采用这份最终稿" }));
+    expect(screen.getByLabelText("最终正文")).toHaveValue("迟到新稿");
+  });
+});
 
 describe("PromptEditor", () => {
   beforeEach(() => {

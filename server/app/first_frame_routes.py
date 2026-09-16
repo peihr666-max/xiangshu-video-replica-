@@ -51,7 +51,7 @@ class GenerateFirstFramesRequest(BaseModel):
     model: Literal["gpt-image-2", "nano-banana-pro-2k"] = "gpt-image-2"
     prompt: str | None = Field(default=None, max_length=4000)
     replace_scene: bool = False
-    quantity: int = Field(default=1, ge=1, le=3)
+    quantity: int = Field(default=3, ge=1, le=3)
     aspect_ratio: Literal["9:16", "16:9", "1:1", "3:4", "4:3"] | None = None
     character_version_id: str | None = Field(default=None, min_length=1)
     character_reference_selection_id: str | None = Field(default=None, min_length=1)
@@ -234,10 +234,6 @@ def get_first_frame_quality_inspector(conn: BusinessReadConn) -> FirstFrameQuali
 
 FirstFrameStorage = Annotated[StorageAdapter, Depends(get_media_storage)]
 InjectedImageProvider = Annotated[ImageProvider, Depends(get_image_provider)]
-InjectedFirstFrameQualityInspector = Annotated[
-    FirstFrameQualityInspector,
-    Depends(get_first_frame_quality_inspector),
-]
 
 
 def require_async_first_frame_route(project_id: str) -> None:
@@ -256,7 +252,6 @@ def generate_project_first_frames(
     request: GenerateFirstFramesRequest,
     storage: FirstFrameStorage,
     provider: InjectedImageProvider,
-    quality_inspector: InjectedFirstFrameQualityInspector,
     db: BusinessDbDep,
 ) -> VersionResponse:
     with db.write() as (conn, actor):
@@ -280,7 +275,6 @@ def generate_project_first_frames(
     generated = perform_first_frame_generation(
         work,
         provider=provider,
-        quality_inspector=quality_inspector,
     )
     stored = store_first_frame_generation(work, storage=storage, generated=generated)
     try:

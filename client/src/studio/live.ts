@@ -63,6 +63,11 @@ import {
   type ViralVideoItem,
   verifyPublishAccount,
 } from "../api";
+import {
+  clearIdempotencyRecord,
+  restoreIdempotencyRecord,
+  restoreOrCreateIdempotencyRecord,
+} from "../useGenerationDrafts";
 import { createDraft } from "./state";
 import type {
   StudioAsset,
@@ -77,6 +82,7 @@ import type {
   StudioVideo,
   StudioVoice,
 } from "./types";
+import { readAppliedOptimization } from "./usePromptOptimization";
 
 const projectLimit = 24;
 const personLimit = 8;
@@ -85,6 +91,7 @@ const sceneLimit = 12;
 const MAX_ORAL_SOURCE_BYTES = 50 * 1024 * 1024;
 
 type FrozenReplicaRequest = {
+  storageKey: string;
   fingerprint: string;
   idempotencyKey: string;
   projectId: string;
@@ -99,6 +106,9 @@ function replicaRequestContextKey(projectId: string, fingerprint: string) {
 }
 
 function clearFrozenReplicaRequest(frozen: FrozenReplicaRequest) {
+  const saved = restoreIdempotencyRecord(frozen.storageKey);
+  if (saved?.key === frozen.idempotencyKey)
+    clearIdempotencyRecord(frozen.storageKey, saved);
   if (frozenReplicaRequests.get(frozen.idempotencyKey) === frozen) {
     frozenReplicaRequests.delete(frozen.idempotencyKey);
   }
@@ -798,20 +808,27 @@ export async function uploadWorkbenchSourceVideo(
   file: File,
   onProgress: (percent: number) => void,
   signal?: AbortSignal,
+  purpose: "replica" | "script" = "replica",
 ): Promise<{
   projectId: string;
   assetId: string;
   project?: Project;
   asset?: StudioAsset;
+  analysisTaskId?: string;
+  analysisTaskStatus?: string;
 }> {
   const base = file.name.replace(/\.(mp4|mov)$/i, "").trim();
   const project = await createProject((base || file.name).slice(0, 120));
-  const intent = await createVideoUploadIntent(project.id, file);
+  const intent = await createVideoUploadIntent(project.id, file, purpose);
+  let analysisTaskId: string | undefined;
+  let analysisTaskStatus: string | undefined;
   let assetId = intent.asset_id;
   if (intent.upload_required !== false) {
     await uploadReferenceVideo(intent, file, onProgress, signal);
     const completed = await completeVideoUpload(intent.asset_id);
     assetId = completed.asset_id;
+    analysisTaskId = completed.analysis_task_id ?? undefined;
+    analysisTaskStatus = completed.analysis_task_status ?? undefined;
   }
   const uploadedProject: Project = {
     ...project,
@@ -823,6 +840,8 @@ export async function uploadWorkbenchSourceVideo(
     assetId,
     project: uploadedProject,
     asset: projectAsset(uploadedProject),
+    analysisTaskId,
+    analysisTaskStatus,
   };
 }
 
@@ -1478,6 +1497,9 @@ export async function runReplicaGeneration(
   projectId: string,
   input: {
     promptText: string;
+    currentUserId?: string;
+    finalPromptVersionId?: string;
+    scriptVersionId?: string;
     originalScriptText: string;
     confirmedScriptText?: string;
     shotCardVersionId: string;
@@ -1493,9 +1515,20 @@ export async function runReplicaGeneration(
   const { idempotencyKey, isCurrent, ...stableInput } = input;
   const fingerprint = JSON.stringify(stableInput);
   const contextKey = replicaRequestContextKey(projectId, fingerprint);
+  const storageKey = `replica.submission/${input.currentUserId ?? "legacy"}/${contextKey}`;
+  const saved = restoreIdempotencyRecord(storageKey);
   const frozen =
     frozenReplicaRequests.get(idempotencyKey) ??
-    frozenReplicaRequestsByContext.get(contextKey);
+    frozenReplicaRequestsByContext.get(contextKey) ??
+    (saved
+      ? {
+          storageKey,
+          projectId,
+          fingerprint,
+          idempotencyKey: saved.key,
+          request: saved.request,
+        }
+      : null);
   if (frozen) {
     if (frozen.projectId !== projectId || frozen.fingerprint !== fingerprint) {
       throw new Error("复刻提交参数已变化，请重新确认费用后再试。");
@@ -1510,6 +1543,9 @@ export async function runReplicaGeneration(
   if (!input.promptText.trim() || Array.from(input.promptText).length > 7000) {
     throw new Error("请输入 1–7000 字的提示词。");
   }
+  if (!input.finalPromptVersionId || !input.scriptVersionId) {
+    throw new Error("请先确认文案与首帧并合成最终提示词，再核对费用提交。");
+  }
   if (isCurrent && !isCurrent()) {
     throw new Error("复刻页面已变化，本次旧提交已停止。");
   }
@@ -1518,7 +1554,17 @@ export async function runReplicaGeneration(
     prompt_text: input.promptText,
     prompt_context: {
       source: "manual",
+      ...readAppliedOptimization(
+        `${input.currentUserId}:${projectId}`,
+        input.promptText,
+        {
+          script_version_id: input.scriptVersionId,
+          shot_card_version_id: input.shotCardVersionId,
+        },
+      ),
       shot_card_version_id: input.shotCardVersionId,
+      script_version_id: input.scriptVersionId,
+      final_prompt_version_id: input.finalPromptVersionId,
     },
     first_frame_asset_id: input.firstFrameAssetId,
     output_duration_seconds: input.outputDurationSeconds,
@@ -1528,7 +1574,16 @@ export async function runReplicaGeneration(
     provider: defaultBatchProvider(),
     fake_audio_quality: "ok",
   };
+  const { idempotency_key: preferredKey, ...requestBody } = request;
+  const record = restoreOrCreateIdempotencyRecord(
+    storageKey,
+    requestBody,
+    null,
+    preferredKey,
+  );
+  if (!record) throw new Error("已有提交待恢复，请先核对任务记录。");
   const prepared = {
+    storageKey,
     fingerprint,
     idempotencyKey,
     projectId,

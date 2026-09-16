@@ -1537,6 +1537,8 @@ describe("runReplicaGeneration（复刻一键管线）", () => {
 
   const baseInput = {
     promptText: "编辑后的提示词",
+    finalPromptVersionId: "final-preview",
+    scriptVersionId: "script-confirmed",
     originalScriptText: "原片口播稿",
     shotCardVersionId: "scv-1",
     firstFrameAssetId: "ff-1",

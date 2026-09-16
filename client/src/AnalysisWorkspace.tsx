@@ -17,7 +17,6 @@ import {
   getLatestProjectShotCards,
   type Project,
   type ProjectMainCharacter,
-  readAnalysisH3Prompt,
   readAnalysisPayload,
   readAnalysisProvider,
   readFirstFrameSelectionPayload,
@@ -212,7 +211,6 @@ export function AnalysisWorkspace({
   walletProvider?: () => Promise<number | null>;
 }) {
   const [analysisId, setAnalysisId] = useState("");
-  const [analysisPrompt, setAnalysisPrompt] = useState("");
   const [analysisProvider, setAnalysisProvider] =
     useState<AnalysisProvider | null>(null);
   const [analysisSummary, setAnalysisSummary] = useState("");
@@ -330,7 +328,6 @@ export function AnalysisWorkspace({
       setError("");
       setSaveMessage("");
       setAnalysisProvider(null);
-      setAnalysisPrompt("");
       setIsAnalysisMissing(true);
       return;
     }
@@ -341,7 +338,6 @@ export function AnalysisWorkspace({
     setError("");
     setSaveMessage("");
     setAnalysisProvider(null);
-    setAnalysisPrompt("");
     setIsAnalysisMissing(false);
     setShotCardVersionId("");
     setShotCardsDirty(false);
@@ -359,7 +355,6 @@ export function AnalysisWorkspace({
           return;
         }
         setAnalysisId(version.id);
-        setAnalysisPrompt(readAnalysisH3Prompt(version));
         setIsAnalysisMissing(false);
         setAnalysisProvider(readAnalysisProvider(version));
         setAnalysisSummary(payload.summary);
@@ -525,7 +520,6 @@ export function AnalysisWorkspace({
   // 标签页③的生成面板共享单一状态源（契约 §2）。Prompt 就绪输入待
   // P0-02-05 接入（契约 §1.2）。
   const generationDrafts = useGenerationDrafts({
-    analysisPrompt,
     characterVersionId: characterSelection?.character_version_id ?? null,
     currentUserId,
     durationSeconds,

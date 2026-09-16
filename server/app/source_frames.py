@@ -58,11 +58,11 @@ def source_video_duration_seconds(asset: sqlite3.Row) -> float | None:
 
 
 def adaptive_source_frame_timestamps(duration_seconds: float | None) -> tuple[float, ...]:
-    """Spread default candidates across the usable video instead of its intro."""
+    """Include the opening state and representative later frames."""
 
     if duration_seconds is None or duration_seconds <= 0:
         return SOURCE_FRAME_TIMESTAMPS_SECONDS
-    return tuple(round(duration_seconds * ratio, 3) for ratio in (0.1, 0.3, 0.5, 0.7, 0.9))
+    return tuple(round(duration_seconds * ratio, 3) for ratio in (0.0, 0.3, 0.5, 0.7, 0.9))
 
 
 @dataclass(frozen=True)
@@ -246,35 +246,6 @@ def score_grayscale_frame(pixels: bytes) -> float:
     sharpness = min(1.0, detail / 32)
     exposure = max(0.0, 1.0 - abs(average - 127.5) / 127.5)
     return float(round(0.6 * sharpness + 0.25 * contrast + 0.15 * exposure, 3))
-
-
-def extract_source_frame_candidates(
-    conn: BusinessConnection,
-    *,
-    project_id: str,
-    asset_id: str,
-    actor: CurrentUser,
-    storage: StorageAdapter,
-    extractor: SourceFrameExtractor,
-    timestamps_seconds: tuple[float, ...] | None = None,
-) -> sqlite3.Row:
-    plan = prepare_source_frame_extraction(
-        conn,
-        project_id=project_id,
-        asset_id=asset_id,
-        actor=actor,
-        timestamps_seconds=timestamps_seconds,
-    )
-    stored = perform_source_frame_extraction(
-        plan,
-        storage=storage,
-        extractor=extractor,
-    )
-    try:
-        return complete_source_frame_extraction(conn, plan=plan, stored=stored)
-    except Exception:
-        delete_created_source_frames(storage, stored.created_assets, actor_id=actor.id)
-        raise
 
 
 def prepare_source_frame_extraction(
