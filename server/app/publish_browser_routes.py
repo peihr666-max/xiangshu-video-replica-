@@ -18,9 +18,11 @@ from app.db_pg import pg_transaction
 from app.permissions import require_not_auditor
 from app.publish_browser import (
     BrowserAccount,
+    BrowserAccountImportRequest,
     BrowserLoginRequest,
     delete_browser_account,
     existing_storage,
+    import_browser_account,
     list_browser_accounts,
     save_login,
     start_login,
@@ -42,6 +44,25 @@ def release_login(owner: str, login_id: str) -> None:
 def accounts(conn: Database, actor: AuthenticatedUser, response: Response) -> list[BrowserAccount]:
     response.headers["Cache-Control"] = "no-store"
     return list_browser_accounts(conn, actor.id)
+
+
+@router.post("/accounts/import", response_model=BrowserAccount)
+def import_account(request: BrowserAccountImportRequest, db: BusinessDbDep) -> BrowserAccount:
+    """Persist a desktop WebView2 login exported once at connect time.
+
+    The desktop client keeps its own WebView2 profile for manual publishing;
+    this copy lets the server-side worker deliver on the account's behalf.
+    """
+    fernet = fernet_from_environment()
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="publish.browser.import",
+            entity_type="publish_account",
+            entity_id="import",
+        )
+        return import_browser_account(conn, actor.id, request, fernet)
 
 
 @router.delete("/accounts/{account_id}")

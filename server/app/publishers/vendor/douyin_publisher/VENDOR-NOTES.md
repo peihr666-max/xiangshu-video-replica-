@@ -34,3 +34,12 @@
 - `sign_params.py` 通过 `Path(__file__).parent` 定位 JS 目录，目录树必须整体保留。
 - 凭据一律经 `douyin_adapter.py` 以参数注入（构造函数本就支持），不再读取任何文件。
 - `publish_images`（图文发布）本仓库未使用，对应代码未验证。
+
+## PUBLISH-DELIVERY-20260917 复用增量
+
+- 正式投递由 `app/publish_delivery.py` 经 `douyin_adapter.publish_to_douyin` 调用 `DouyinPublisher.publish()`；凭据不再来自手工粘贴，
+  而是 `app/publish_credentials.py` 从扫码账号的 Playwright `storage_state` 桥接：Cookie 头按 `douyin.com` 域过滤拼接，
+  `security_sdk` 取 `https://creator.douyin.com` 的 localStorage `security-sdk`（`SecurityMaterial.from_dict` 校验）。
+- 适配层新增 `visibility` 透传（`PublishOptions.visibility_type` 0/1/2）；`timing` 仍为 0——定时由本仓 `publish_records.scheduled_at`
+  在 worker 侧到点投递，不使用平台原生定时。
+- `publish_images`、音乐/合集/POI/头条同步等能力仍未接入（见仓库分析 2026-09-17）。

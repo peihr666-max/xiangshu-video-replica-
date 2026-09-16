@@ -51,7 +51,7 @@ LOG="$ROOT/deploy-git-$SHORT_SHA-$STAMP.log"
 STATUS="$ROOT/deploy-git-$SHORT_SHA-$STAMP.status"
 NEW_IMAGE="video-replica-rehearsal-app:$SHORT_SHA-git"
 REQUIRED_SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4)
-OPTIONAL_SERVICES=(worker-viral)
+OPTIONAL_SERVICES=(worker-viral worker-publish)
 WORKER_SERVICES=(worker-1 worker-2 worker-3 worker-4)
 SERVICES=("${REQUIRED_SERVICES[@]}")
 ROLLOUT_STARTED=0
@@ -89,6 +89,10 @@ rollback() {
   # stopped during rollback; a subsequent successful rollout restarts it.
   if [[ "$ROLLOUT_STARTED" == "1" ]] && printf '%s\n' "${SERVICES[@]}" | grep -Fxq worker-viral; then
     docker compose -f "$COMPOSE" stop worker-viral || true
+  fi
+  # Likewise app.publish_worker only exists from PUBLISH-DELIVERY-20260917 on.
+  if [[ "$ROLLOUT_STARTED" == "1" ]] && printf '%s\n' "${SERVICES[@]}" | grep -Fxq worker-publish; then
+    docker compose -f "$COMPOSE" stop worker-publish || true
   fi
   if [[ -f "$BACKUP/compose-before.yaml" ]]; then
     cp -a "$BACKUP/compose-before.yaml" "$COMPOSE"
@@ -297,7 +301,7 @@ RUN command -v ffmpeg \
     && chmod 0755 /opt/video-replica/scripts/customer_release_preflight.py \
     && python -m compileall -q /opt/video-replica/server/app /opt/video-replica/server/migrations \
     && cd /opt/video-replica/server \
-    && python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker" \
+    && python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker, app.publish_worker" \
     && ! test -e /opt/video-replica/server/app/backup.py \
     && ! test -e /opt/video-replica/server/scripts/sqlite_to_postgres.py \
     && ! test -e /opt/video-replica/server/scripts/reconcile_customer_billing.py \

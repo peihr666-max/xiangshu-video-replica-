@@ -38,7 +38,7 @@ cat > "$BUILD_CTX/Dockerfile" <<'DOCKERFILE'
 FROM python:3.12-slim
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 COPY server /opt/video-replica/server
@@ -48,8 +48,8 @@ RUN cd /opt/video-replica/server \
     && .venv/bin/python -m playwright install --with-deps chromium \
     && chmod -R a+rX /opt/video-replica/browsers \
     && .venv/bin/python -m compileall -q app migrations \
-    && command -v ffmpeg && command -v ffprobe \
-    && .venv/bin/python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker" \
+    && command -v ffmpeg && command -v ffprobe && command -v node \
+    && .venv/bin/python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker, app.publish_worker" \
     && ! test -e /opt/video-replica/server/app/backup.py \
     && ! test -e /opt/video-replica/server/scripts/sqlite_to_postgres.py \
     && ! test -e /opt/video-replica/server/scripts/reconcile_customer_billing.py \

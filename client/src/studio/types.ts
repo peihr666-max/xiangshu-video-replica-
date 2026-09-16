@@ -287,10 +287,13 @@ export type StudioPublishDraft = {
   assetId: string;
   coverId?: string;
   platform: "抖音" | "视频号" | "小红书";
+  /** Server-side publish account id (publish_browser_accounts); "" when unset. */
   account: string;
   title: string;
   description: string;
   tags: string[];
+  /** ISO timestamp for a scheduled delivery; absent = publish immediately. */
+  scheduledAt?: string;
 };
 export type StudioPublishAccount = {
   id: string;

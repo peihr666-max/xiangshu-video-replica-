@@ -70,4 +70,6 @@ Lore 提交 SHA：不适用；实现提交 28149973，合入 main 的集成提�
 
 启动时检查开放 PR #128 CREATION-WORKFLOW-UI 为不同任务；本分支从 main 创建。提交前发现 #128 已合入 main（1f1c1989），在本任务同一分支合入该 main：保留独立视频新布局、口播编辑、场景替换及图片比例展示；按本任务最新用户要求取消其“首帧前生成提示词”的付费入口/下一步门禁，改为选定首帧后确定性最终合成。合并后重新运行完整 Linux 静态门及受影响图像 Worker 专项。
 
+PR 检查等待期间 #129 发布功能已合入 main（e3a8b874），再次在同一分支合入 main。仅两处公共文档追加冲突，保留双方记录；交叉文件为 API/首页/草稿类型，TypeScript 与三份专项 271 项通过，PR 完整门禁以最新合并提交重跑。发布服务、迁移及 Rust 增量均来自已合入 main 的 #129，不属于本任务新增业务范围。
+
 本任务测试容器 `replica-final-pg`、`replica-final-quality`、`replica-final-static`、`replica-final-retest-pg`、`replica-final-retest` 均使用 `--rm`；两套 PG 物理隔离、使用匿名卷。复用现有质量镜像，没有新建镜像 tag。依赖/编译缓存位于 E 盘输出目录；结束前停止自己的全部容器，不触碰其他任务资源。

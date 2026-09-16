@@ -61,8 +61,9 @@ docker compose -f deploy/customer/compose.yaml run --rm --no-deps api-1 \
 | api-1/api-2 | 2 | `VIDEO_REPLICA_PG_POOL_MAX`，默认 8（硬顶 64，`server/app/db_pg.py`） |
 | worker-1..4 | 4 | 同上 |
 | worker-viral | 1 | 独立每周关键词采集及云归档，`--viral-collection --idle-seconds 30` |
+| worker-publish | 1 | 平台发布投递（协议优先、浏览器兜底）与账号登录态探测，`app.publish_worker --idle-seconds 3`；抖音签名依赖基础镜像内 Node.js |
 | migrate | 一次性 | 短连接 |
-| 合计 | — | 7×8=56 + 1 + 3（superuser_reserved）= 60 ≤ `max_connections=120`（compose db command） |
+| 合计 | — | 8×8=64 + 1 + 3（superuser_reserved）= 68 ≤ `max_connections=120`（compose db command） |
 
 上调任一 `VIDEO_REPLICA_PG_POOL_MAX` 前必须复核上式（契约测试：
 `server/tests/test_cw032_delivery_package.py`）。

@@ -41,6 +41,7 @@ const {
   getViralImportTask,
   getStudioNotificationPreferences,
   updateStudioNotificationPreferences,
+  getPublishSummary,
   PUBLISH_PLATFORM_LABELS,
   connectPublishAccount,
   loadPublishAccounts,
@@ -83,6 +84,7 @@ const {
   getViralImportTask: vi.fn(),
   getStudioNotificationPreferences: vi.fn(),
   updateStudioNotificationPreferences: vi.fn(),
+  getPublishSummary: vi.fn(),
   // C5 发布账号（第一阶段）：live.ts 的这几个导出在测试里由替身接管。
   // PUBLISH_PLATFORM_LABELS 是常量映射而非函数，给出同形状字面量即可。
   PUBLISH_PLATFORM_LABELS: { douyin: "抖音", wechat_channels: "视频号" },
@@ -100,6 +102,7 @@ vi.mock("../api", async (importOriginal) => ({
   getViralImportTask,
   getStudioNotificationPreferences,
   updateStudioNotificationPreferences,
+  getPublishSummary,
 }));
 vi.mock("./live", () => ({
   loadTaskPreview,
@@ -2276,8 +2279,16 @@ const nativeAccounts = vi.hoisted(() => ({
   checkLocalPublishLogin: vi.fn(),
   cancelLocalPublishLogin: vi.fn(),
   removeLocalPublishAccount: vi.fn(),
+  // PUBLISH-DELIVERY-20260917: server-side copies used by the publish worker.
+  listCloudPublishAccounts: vi.fn(),
+  importCloudPublishAccount: vi.fn(),
+  exportLocalPublishAccountState: vi.fn(),
+  deleteCloudPublishAccount: vi.fn(),
 }));
-vi.mock("./localPublishAccounts", () => nativeAccounts);
+vi.mock("./localPublishAccounts", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ...nativeAccounts,
+}));
 describe("发布账号官方扫码", () => {
   const account = {
     id: "local-1",
@@ -2300,12 +2311,94 @@ describe("发布账号官方扫码", () => {
     getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
     nativeAccounts.canUseLocalPublishAccounts.mockReturnValue(true);
     nativeAccounts.listLocalPublishAccounts.mockResolvedValue([]);
+    nativeAccounts.listCloudPublishAccounts.mockResolvedValue([]);
+    nativeAccounts.importCloudPublishAccount.mockResolvedValue({
+      ...account,
+      id: "cloud-1",
+      status: "connected",
+      error_message: null,
+      source: "desktop",
+    });
+    nativeAccounts.deleteCloudPublishAccount.mockResolvedValue(undefined);
     nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
       phase: "loading",
       image: null,
       account: null,
     });
     nativeAccounts.cancelLocalPublishLogin.mockResolvedValue(undefined);
+  });
+  it("扫码确认后把导出的登录状态加密同步到服务端，失败可重试", async () => {
+    const storage = {
+      cookies: [{ name: "sid", value: "s", domain: ".xiaohongshu.com" }],
+      origins: [],
+    };
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("login-1");
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "connected",
+      image: null,
+      account,
+      storage_state: storage,
+    });
+    nativeAccounts.importCloudPublishAccount.mockRejectedValueOnce(
+      new Error("服务端暂不可用"),
+    );
+    const { value } = open();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "小红书" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "小红书" }));
+    await screen.findByText("小红书 · 平台真实昵称", {}, { timeout: 2500 });
+    await waitFor(() =>
+      expect(nativeAccounts.importCloudPublishAccount).toHaveBeenCalledWith(
+        "xiaohongshu",
+        { platform_user_id: "platform-uid", username: "平台真实昵称" },
+        storage,
+      ),
+    );
+    await screen.findByText("服务端暂不可用");
+    expect(screen.getByText(/服务端未同步/)).toBeInTheDocument();
+    // Retry re-exports from the hidden official window and uploads again.
+    nativeAccounts.exportLocalPublishAccountState.mockResolvedValue({
+      identity: { platform_user_id: "platform-uid", username: "平台真实昵称" },
+      storage_state: storage,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "同步到服务端" }));
+    await waitFor(() =>
+      expect(
+        nativeAccounts.exportLocalPublishAccountState,
+      ).toHaveBeenCalledWith(value.user.id, "local-1"),
+    );
+    await screen.findByText(/已同步服务端，可自动发布/);
+    expect(value.notify).toHaveBeenCalledWith(
+      "登录状态已同步到服务端，可用于自动发布",
+    );
+    expect(screen.queryByText("服务端暂不可用")).toBeNull();
+  });
+  it("解绑本机账号时同时删除服务端副本", async () => {
+    nativeAccounts.listLocalPublishAccounts.mockResolvedValue([account]);
+    nativeAccounts.listCloudPublishAccounts.mockResolvedValue([
+      {
+        ...account,
+        id: "cloud-9",
+        status: "connected",
+        error_message: null,
+        source: "desktop",
+      },
+    ]);
+    nativeAccounts.removeLocalPublishAccount.mockResolvedValue(undefined);
+    open();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "小红书" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "小红书" }));
+    await screen.findByText(/已同步服务端，可自动发布/);
+    fireEvent.click(screen.getByRole("button", { name: "解绑" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认解绑" }));
+    await waitFor(() =>
+      expect(nativeAccounts.deleteCloudPublishAccount).toHaveBeenCalledWith(
+        "cloud-9",
+      ),
+    );
   });
   it("只从本机加载账号并显示官方用户名，不提供 Cookie 输入框", async () => {
     nativeAccounts.listLocalPublishAccounts.mockResolvedValue([account]);

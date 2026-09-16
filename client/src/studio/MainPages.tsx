@@ -3,6 +3,7 @@ import {
   type CustomerProfile,
   createViralImportTask,
   customerVisibleErrorMessage,
+  getPublishSummary,
   getStudioNotificationPreferences,
   getViralImportTask,
   resolveViralLink,
@@ -224,6 +225,25 @@ export function WorkbenchPage() {
     };
   }
   const accountContextKey = `${accountId}:${accountGenerationRef.current.generation}`;
+  // PUBLISH-DELIVERY-20260917: the home metric reads real publish records;
+  // null keeps the honest "—" until the summary arrives (or fails).
+  const [publishedTotal, setPublishedTotal] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    setPublishedTotal(null);
+    if (review || !user.id) return;
+    void (async () => {
+      try {
+        const summary = await getPublishSummary();
+        if (active) setPublishedTotal(summary.published_total);
+      } catch {
+        if (active) setPublishedTotal(null);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [review, user.id]);
   const [sourceLinkState, setSourceLinkState] = useState({
     accountContextKey,
     value: "",
@@ -729,10 +749,16 @@ export function WorkbenchPage() {
           },
           {
             label: "累计已发布",
-            // C5 第一阶段只交付账号授权；published_total 属正式发布记录
-            // （第二阶段），眼下没有真实发布数据源，保持 "—" 不伪造。
-            value: review ? "156" : "—",
-            hint: review ? "本周 +21" : "等待发布统计",
+            value: review
+              ? "156"
+              : publishedTotal === null
+                ? "—"
+                : String(publishedTotal),
+            hint: review
+              ? "本周 +21"
+              : publishedTotal === null
+                ? "等待发布统计"
+                : "已发布作品",
             tone: "success",
             icon: "upload",
             page: "publishing" as const,

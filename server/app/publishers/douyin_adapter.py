@@ -28,17 +28,22 @@ def _require_node() -> None:
         raise RuntimeError(_UNAVAILABLE_MESSAGE)
 
 
-def _load_publisher(cookie: str, security_sdk: str | None) -> Any:
+SecuritySdk = str | dict[str, Any] | None
+
+
+def _load_publisher(cookie: str, security_sdk: SecuritySdk) -> Any:
     from .vendor.douyin_publisher import publish as douyin_publish
 
     _require_node()
     sdk: dict[str, Any] | None = None
-    if security_sdk:
+    if isinstance(security_sdk, dict):
+        sdk = security_sdk
+    elif security_sdk:
         sdk = json.loads(security_sdk)
     return douyin_publish.DouyinPublisher(cookie=cookie, security_sdk=sdk)
 
 
-def probe_douyin(cookie: str, security_sdk: str | None) -> tuple[bool, str | None]:
+def probe_douyin(cookie: str, security_sdk: SecuritySdk) -> tuple[bool, str | None]:
     """Cheap login-state probe; returns (ok, failure_message)."""
     try:
         publisher = _load_publisher(cookie, security_sdk)
@@ -56,14 +61,18 @@ def probe_douyin(cookie: str, security_sdk: str | None) -> tuple[bool, str | Non
 def publish_to_douyin(
     *,
     cookie: str,
-    security_sdk: str | None,
+    security_sdk: SecuritySdk,
     video_path: Path,
     title: str,
     description: str,
     tags: list[str],
     cover_path: Path | None,
+    visibility: int = 0,
 ) -> PublishResult:
-    """Deliver one video; account_invalid marks the stored login state dead."""
+    """Deliver one video; account_invalid marks the stored login state dead.
+
+    ``visibility`` follows the creator page: 0 public / 1 friends / 2 private.
+    """
     try:
         from .vendor.douyin_publisher import publish_options
 
@@ -81,7 +90,7 @@ def publish_to_douyin(
                 "title": title,
                 "caption": description,
                 "hashtags": tags,
-                "visibility_type": 0,
+                "visibility_type": visibility if visibility in (0, 1, 2) else 0,
                 "timing": 0,
             }
         )

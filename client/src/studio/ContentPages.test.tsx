@@ -43,6 +43,12 @@ const {
   saveStudioDraft,
   resolveMaterials,
   createGenerationTaskPreviewUrl,
+  createPublishRecord,
+  listPublishRecords,
+  cancelPublishRecord,
+  retryPublishRecord,
+  syncPublishRecord,
+  deletePublishRecord,
 } = vi.hoisted(() => ({
   useStudio: vi.fn(),
   fetchViralVideoMedia: vi.fn(),
@@ -78,6 +84,12 @@ const {
     async (): Promise<{ items: MaterialItem[] }> => ({ items: [] }),
   ),
   createGenerationTaskPreviewUrl: vi.fn(),
+  createPublishRecord: vi.fn(),
+  listPublishRecords: vi.fn(async (): Promise<unknown[]> => []),
+  cancelPublishRecord: vi.fn(),
+  retryPublishRecord: vi.fn(),
+  syncPublishRecord: vi.fn(),
+  deletePublishRecord: vi.fn(),
 }));
 vi.mock("./context", () => ({ useStudio }));
 vi.mock("../api", () => ({
@@ -107,6 +119,22 @@ vi.mock("../api", () => ({
   saveStudioDraft,
   resolveMaterials,
   createGenerationTaskPreviewUrl,
+  createPublishRecord,
+  listPublishRecords,
+  cancelPublishRecord,
+  retryPublishRecord,
+  syncPublishRecord,
+  deletePublishRecord,
+}));
+const publishAccounts = vi.hoisted(() => ({
+  canUseLocalPublishAccounts: vi.fn(() => false),
+  listCloudPublishAccounts: vi.fn(async () => [] as unknown[]),
+  listLocalPublishAccounts: vi.fn(async () => [] as unknown[]),
+  openLocalPublishAccount: vi.fn(),
+}));
+vi.mock("./localPublishAccounts", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  ...publishAccounts,
 }));
 // 组件现在统一走 putMaterial。默认实现沿用旧的「传输 → 完成」两步，
 // 这样既有用例针对 uploadMaterial / completeMaterialUpload 打的桩仍然生效；
@@ -3929,7 +3957,8 @@ describe("V1.4 内容与运营页面", () => {
       screen.getByRole("button", { name: "移除标签 建房避坑" }),
     ).toBeInTheDocument();
     expect(value.state.draft.script.text).toBe("口播终稿不得被发布表单覆盖");
-    expect(screen.getByRole("button", { name: "前往官方发布" })).toBeDisabled();
+    // Review mode never submits a real delivery.
+    expect(screen.getByRole("button", { name: "立即发布" })).toBeDisabled();
   });
 
   it("发布草稿使用云端版本保存，失败保留表单且不提示成功", async () => {
@@ -4080,7 +4109,7 @@ describe("V1.4 内容与运营页面", () => {
     },
   );
 
-  it("正式模式不伪造已发布数量或已连接账号", () => {
+  it("正式模式不伪造已发布数量或已连接账号", async () => {
     const base = studio();
     const value = studio({
       review: false,
@@ -4115,20 +4144,179 @@ describe("V1.4 内容与运营页面", () => {
     render(<PublishPage />);
 
     expect(
-      screen.getByText("云端保存发布草稿，在官方平台确认并完成发布"),
+      screen.getByText(
+        "选择成片与账号，立即发布或定时发布；发布结果在下方记录中回收",
+      ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("正式发布结果请在官方平台查看"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("草稿保存在云端，可反复编辑")).toBeInTheDocument();
     expect(screen.queryByText(/待发布\s*0/)).not.toBeInTheDocument();
     expect(screen.queryByText(/已发布\s*0/)).not.toBeInTheDocument();
-    expect(
-      screen.getByText("请在 Windows 桌面客户端扫码连接账号"),
-    ).toBeInTheDocument();
+    await screen.findByText("尚未连接该平台账号，请先扫码连接");
+    await screen.findByText("暂无发布记录");
+    expect(screen.getByRole("button", { name: "立即发布" })).toBeDisabled();
     fireEvent.click(
       screen.getByRole("button", { name: "前往用户档案管理账号" }),
     );
     expect(value.navigate).toHaveBeenCalledWith("profile");
+  });
+
+  it("选择服务端账号后可立即发布或按时区换算的定时发布", async () => {
+    createPublishRecord.mockReset();
+    const base = studio();
+    const value = studio({
+      review: false,
+      state: { ...base.state, selectedAssetId: "ready-video" },
+      data: {
+        ...base.data,
+        tasks: [],
+        assets: [
+          {
+            id: "ready-video",
+            assetId: "ready-video",
+            materialId: "asset:ready-video",
+            name: "成片",
+            kind: "video",
+            group: "成片",
+            source: "任务中心",
+            saved: true,
+          },
+        ],
+      },
+    });
+    publishAccounts.listCloudPublishAccounts.mockResolvedValue([
+      {
+        id: "cloud-douyin",
+        platform: "douyin",
+        platform_user_id: "uid-1",
+        username: "张工说乡墅",
+        verified_at: 1,
+        status: "connected",
+        error_message: null,
+        source: "cloud",
+      },
+      {
+        id: "cloud-dead",
+        platform: "douyin",
+        platform_user_id: "uid-2",
+        username: "失效账号",
+        verified_at: 1,
+        status: "invalid",
+        error_message: "登录过期",
+        source: "desktop",
+      },
+    ]);
+    getStudioDraft.mockResolvedValueOnce({
+      revision: 3,
+      payload: { drafts: [] },
+    });
+    createPublishRecord.mockResolvedValue({
+      id: "rec-1",
+      platform: "douyin",
+      scheduled_at: null,
+      status: "queued",
+    });
+    useStudio.mockReturnValue(value);
+    render(<PublishPage />);
+    const select = await screen.findByLabelText("选择发布账号");
+    fireEvent.change(select, { target: { value: "cloud-dead" } });
+    expect(
+      screen.getByText("该账号登录态已失效，请在用户档案中重新扫码后再发布。"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即发布" })).toBeDisabled();
+    fireEvent.change(select, { target: { value: "cloud-douyin" } });
+    fireEvent.change(screen.getByLabelText("发布标题"), {
+      target: { value: "立即发的标题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "立即发布" }));
+    await waitFor(() =>
+      expect(createPublishRecord).toHaveBeenCalledWith({
+        account_id: "cloud-douyin",
+        video_material_id: "asset:ready-video",
+        cover_material_id: null,
+        title: "立即发的标题",
+        description: "",
+        tags: [],
+        scheduled_at: null,
+      }),
+    );
+    expect(value.notify).toHaveBeenCalledWith("已提交发布 · 抖音");
+    expect(listPublishRecords).toHaveBeenCalled();
+
+    // Scheduled: the datetime-local value is local wall-clock time → ISO instant.
+    fireEvent.click(screen.getByRole("button", { name: "定时" }));
+    const timeInput = screen.getByLabelText("定时发布时间");
+    fireEvent.change(timeInput, { target: { value: "2020-01-01T10:00" } });
+    fireEvent.click(screen.getByRole("button", { name: "定时发布" }));
+    await screen.findByText("定时发布至少需要提前 2 分钟。");
+    expect(createPublishRecord).toHaveBeenCalledTimes(1);
+    const future = new Date(Date.now() + 3 * 60 * 60 * 1000);
+    future.setSeconds(0, 0);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const local = `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T${pad(future.getHours())}:${pad(future.getMinutes())}`;
+    fireEvent.change(timeInput, { target: { value: local } });
+    createPublishRecord.mockResolvedValueOnce({
+      id: "rec-2",
+      platform: "douyin",
+      scheduled_at: future.toISOString(),
+      status: "queued",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "定时发布" }));
+    await waitFor(() => expect(createPublishRecord).toHaveBeenCalledTimes(2));
+    expect(createPublishRecord.mock.calls[1][0].scheduled_at).toBe(
+      future.toISOString(),
+    );
+    expect(value.notify).toHaveBeenCalledWith("已加入定时发布队列 · 抖音");
+  });
+
+  it("小红书账号只能保存草稿与前往官方发布，不提交自动发布", async () => {
+    createPublishRecord.mockReset();
+    const base = studio();
+    const value = studio({
+      review: false,
+      state: { ...base.state, selectedAssetId: "ready-video" },
+      data: {
+        ...base.data,
+        tasks: [],
+        assets: [
+          {
+            id: "ready-video",
+            assetId: "ready-video",
+            name: "成片",
+            kind: "video",
+            group: "成片",
+            source: "任务中心",
+            saved: true,
+          },
+        ],
+      },
+    });
+    publishAccounts.listCloudPublishAccounts.mockResolvedValue([
+      {
+        id: "cloud-xhs",
+        platform: "xiaohongshu",
+        platform_user_id: "uid-x",
+        username: "小红书号",
+        verified_at: 1,
+        status: "connected",
+        error_message: null,
+        source: "cloud",
+      },
+    ]);
+    getStudioDraft.mockResolvedValueOnce({
+      revision: 1,
+      payload: { drafts: [] },
+    });
+    useStudio.mockReturnValue(value);
+    render(<PublishPage />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "保存草稿" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /小红书/ }));
+    const select = await screen.findByLabelText("选择发布账号");
+    fireEvent.change(select, { target: { value: "cloud-xhs" } });
+    expect(screen.getByText(/小红书自动发布即将上线/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "立即发布" })).toBeDisabled();
+    expect(createPublishRecord).not.toHaveBeenCalled();
   });
 
   it("直接进入发布页但未选择完成视频时不随机回退预览", () => {

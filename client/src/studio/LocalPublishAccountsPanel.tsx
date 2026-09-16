@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useStudio } from "./context";
 import {
+  type CloudPublishAccount,
   cancelLocalPublishLogin,
   canUseLocalPublishAccounts,
   checkLocalPublishLogin,
+  deleteCloudPublishAccount,
+  exportLocalPublishAccountState,
   focusLocalPublishLogin,
+  importCloudPublishAccount,
+  isPublishStorageState,
   type LocalPublishAccount,
   type LocalPublishLoginStatus,
+  listCloudPublishAccounts,
   listLocalPublishAccounts,
   removeLocalPublishAccount,
   startLocalPublishLogin,
@@ -36,6 +42,10 @@ const loadingStatus: LocalPublishLoginStatus = {
   image: null,
   account: null,
 };
+const cloudKey = (account: { platform: string; platform_user_id: string }) =>
+  `${account.platform}:${account.platform_user_id}`;
+const SYNC_FAILED_MESSAGE =
+  "本机已连接，但同步到服务端失败，自动发布暂不可用；请点击「同步到服务端」重试。";
 
 export function LocalPublishAccountsPanel({
   notify,
@@ -54,10 +64,21 @@ export function LocalPublishAccountsPanel({
   const [retryPoll, setRetryPoll] = useState(0);
   const [pollPaused, setPollPaused] = useState(false);
   const [removing, setRemoving] = useState<LocalPublishAccount | null>(null);
+  // Desktop only: server-side copies keyed by platform + platform_user_id, so the
+  // list can say whether automatic publishing is available for a local profile.
+  const [cloudAccounts, setCloudAccounts] = useState<
+    Record<string, CloudPublishAccount>
+  >({});
+  const [syncErrors, setSyncErrors] = useState<Record<string, string>>({});
+  const [syncing, setSyncing] = useState<string | null>(null);
   const currentLogin = useRef<string | null>(null);
   const loginAccount = useRef<LocalPublishAccount | undefined>(undefined);
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
+  // The login poll effect must not restart when this callback's identity changes.
+  const syncToCloudRef = useRef<
+    (account: LocalPublishAccount, storageState?: unknown) => Promise<void>
+  >(async () => {});
   const generation = useRef(0);
   const pending = useRef(false);
   const native = canUseLocalPublishAccounts();
@@ -81,10 +102,75 @@ export function LocalPublishAccountsPanel({
       .finally(() => {
         if (generation.current === current) setLoading(false);
       });
+    if (native)
+      void listCloudPublishAccounts()
+        .then((value) => {
+          if (generation.current !== current) return;
+          setCloudAccounts(
+            Object.fromEntries(value.map((item) => [cloudKey(item), item])),
+          );
+        })
+        .catch(() => {
+          // The local list still renders; sync status simply shows as unknown.
+          if (generation.current === current) setCloudAccounts({});
+        });
     return () => {
       generation.current += 1;
     };
-  }, [user.id, review, refresh]);
+  }, [user.id, review, refresh, native]);
+  const rememberCloud = (account: CloudPublishAccount) => {
+    setCloudAccounts((previous) => ({
+      ...previous,
+      [cloudKey(account)]: account,
+    }));
+    setSyncErrors((previous) => {
+      const { [cloudKey(account)]: _dropped, ...rest } = previous;
+      return rest;
+    });
+  };
+  const uploadLoginState = async (
+    account: LocalPublishAccount,
+    storageState: unknown,
+  ) => {
+    if (!isPublishStorageState(storageState))
+      throw new Error("本机未能导出登录状态");
+    const cloud = await importCloudPublishAccount(
+      account.platform,
+      {
+        platform_user_id: account.platform_user_id,
+        username: account.username,
+      },
+      storageState,
+    );
+    rememberCloud(cloud);
+  };
+  async function syncToCloud(
+    account: LocalPublishAccount,
+    storageState?: unknown,
+  ) {
+    const key = cloudKey(account);
+    setSyncing(key);
+    try {
+      if (storageState === undefined) {
+        const exported = await exportLocalPublishAccountState(
+          user.id,
+          account.id,
+        );
+        await uploadLoginState(account, exported.storage_state);
+      } else {
+        await uploadLoginState(account, storageState);
+      }
+      notifyRef.current("登录状态已同步到服务端，可用于自动发布");
+    } catch (cause) {
+      setSyncErrors((previous) => ({
+        ...previous,
+        [key]: cause instanceof Error ? cause.message : SYNC_FAILED_MESSAGE,
+      }));
+    } finally {
+      setSyncing((current) => (current === key ? null : current));
+    }
+  }
+  syncToCloudRef.current = syncToCloud;
   useEffect(() => {
     setLoginId(null);
     setLoginStatus(loadingStatus);
@@ -122,6 +208,8 @@ export function LocalPublishAccountsPanel({
           notifyRef.current(
             `已连接 ${publishPlatformNames[account.platform]} · ${account.username}`,
           );
+          if (canUseLocalPublishAccounts())
+            void syncToCloudRef.current(account, status.storage_state ?? null);
         } else if (status.phase !== "expired" && status.phase !== "closed") {
           timer = setTimeout(() => void poll(), 1500);
         }
@@ -232,10 +320,14 @@ export function LocalPublishAccountsPanel({
     const current = generation.current;
     try {
       await removeLocalPublishAccount(user.id, removing.id);
+      if (native) {
+        const cloud = cloudAccounts[cloudKey(removing)];
+        if (cloud) await deleteCloudPublishAccount(cloud.id).catch(() => {});
+      }
       if (current !== generation.current) return;
       setRemoving(null);
       setRefresh((value) => value + 1);
-      notify(`已清除该账号的${native ? "本机" : "云端"}登录状态`);
+      notify(`已清除该账号的${native ? "本机与服务端" : "云端"}登录状态`);
     } catch (cause) {
       if (current === generation.current) setError(errorMessage(cause));
     } finally {
@@ -278,7 +370,11 @@ export function LocalPublishAccountsPanel({
           )}
         </p>
       )}
-      {native && <p>桌面端账号的登录状态分别保存在本机。</p>}
+      {native && (
+        <p>
+          桌面端账号的登录状态保存在本机，并在连接时加密同步一份到服务端用于自动发布。
+        </p>
+      )}
       {loading && <p role="status">正在读取发布账号…</p>}
       {!loading &&
         !loginId &&
@@ -304,7 +400,37 @@ export function LocalPublishAccountsPanel({
             <small>
               {native ? "本机已连接" : "云端已连接"} · 最后验证{" "}
               {new Date(account.verified_at * 1000).toLocaleString("zh-CN")}
+              {native &&
+                (syncErrors[cloudKey(account)]
+                  ? " · 服务端未同步"
+                  : cloudAccounts[cloudKey(account)]
+                    ? cloudAccounts[cloudKey(account)].status === "invalid"
+                      ? " · 服务端登录态失效，请重新登录"
+                      : " · 已同步服务端，可自动发布"
+                    : "")}
+              {!native &&
+                (account as Partial<CloudPublishAccount>).status ===
+                  "invalid" &&
+                " · 登录态失效，请重新登录"}
             </small>
+            {native && syncErrors[cloudKey(account)] && (
+              <p role="alert">{syncErrors[cloudKey(account)]}</p>
+            )}
+            {native &&
+              (syncErrors[cloudKey(account)] ||
+                !cloudAccounts[cloudKey(account)]) && (
+                <Button
+                  disabled={
+                    busy ||
+                    Boolean(loginId) ||
+                    syncing === cloudKey(account) ||
+                    user.role === "auditor"
+                  }
+                  onClick={() => void syncToCloud(account)}
+                >
+                  {syncing === cloudKey(account) ? "同步中…" : "同步到服务端"}
+                </Button>
+              )}
             <Button
               disabled={busy || Boolean(loginId) || user.role === "auditor"}
               onClick={() => void start(account)}
