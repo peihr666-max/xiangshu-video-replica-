@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -190,3 +191,42 @@ def test_reclaim_entry_points_are_importable() -> None:
 
     assert callable(reclaim_content_objects)
     assert callable(reclaim_expired_content_objects_throttled)
+
+
+# ---------------------------------------------------------------------------
+# B2 爆款导入的缓存对象生命周期约定（评审 P5）
+#
+# B2 取消 copy 之后，项目资产直接引用 viral/prepared/... 这个共享缓存对象。
+# 该 key 只在「准备失败且尚未 publish」时被删除，安全性来自两点：
+#   ① key 里带 attempt——失败清理只能删掉当前这一次尝试的产物；
+#   ② 闸门对该 key 放行（它不在 content/ 命名空间），行为与收敛前完全一致。
+# 下面两条把这两点分别钉死，避免后人误以为闸门在这里提供了额外保护。
+
+
+def _viral_preparation() -> object:
+    from app.viral_media_preparation import ViralMediaPreparation
+
+    return ViralMediaPreparation(storage=SimpleNamespace(cache_namespace="viral-test"))
+
+
+def test_viral_prepared_key_embeds_attempt() -> None:
+    """attempt 进了 key，所以清理第 N 次尝试碰不到第 N-1 次的产物。"""
+    preparation = _viral_preparation()
+    first = preparation._key({"id": "row-1", "attempt": 1}, "video")  # type: ignore[attr-defined]
+    second = preparation._key({"id": "row-1", "attempt": 2}, "video")  # type: ignore[attr-defined]
+
+    assert first != second
+    assert first.startswith("viral/prepared/")
+    # 同一身份目录下只有 attempt 段不同——这正是"只删当前 attempt"的依据
+    assert first.rsplit("/", 1)[0] == second.rsplit("/", 1)[0]
+    assert first.endswith("/1.mp4") and second.endswith("/2.mp4")
+
+
+def test_viral_prepared_cleanup_is_allowed_by_the_namespace_guard() -> None:
+    """闸门对 viral/prepared/... 放行：这里没有新增保护，只是没造成回归。"""
+    storage = _RecordingStorage()
+    key = "viral/prepared/scope/identity/3.mp4"
+
+    assert content_store.delete_object_outside_content_namespace(storage, key) is True
+    assert storage.deleted == [key]
+    assert not content_store.is_content_object_key(key)

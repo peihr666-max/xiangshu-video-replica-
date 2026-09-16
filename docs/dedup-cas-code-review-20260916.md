@@ -150,8 +150,8 @@ content_store.delete_object_outside_content_namespace(self.storage, lease.key)
 - `ContentPages.tsx` 两处上传调用（"我的上传"、发布封面）改用 `putMaterial()`。
 - 同步更新 `generated/api.ts` schema 与 `ContentPages.test.tsx` mock 桩。
 
-> ⚠️ **前端未经编译验证**：本工作区 `client/node_modules` 不存在（无 typescript），
-> 跑不了 `tsc -b` / `vitest` / `biome check`。**合入前必须在能装依赖的环境补跑 `npm run check`。**
+> ✅ **前端已编译验证**（不再是风险项）：`npm run check` =
+> `biome check` + `tsc -b` + `vitest run` 全绿（100 文件 / 1528 用例，node ≥ 24）。
 
 ### 3.2 回收器通电
 
@@ -237,11 +237,14 @@ A5 要算 sha256 并落成 `character_source_image`。命中登记表也**不能
 - [x] 存量回填（P3）→ **已完成**
 - [x] A2 素材库去重 → **已完成**
 - [x] A3/A4/A5 人物素材去重 → **已完成**（见 §3.5）
-- [ ] **前端补跑 `npm run check`**（本工作区无法编译验证）
+- [x] **前端补跑 `npm run check`** → **已完成且全绿**：`biome check` + `tsc -b` +
+      `vitest run` = 100 个测试文件 / 1528 个用例通过（node ≥ 24）
 - [ ] 观察 A3/A4/A5 命中时的 **pending 孤儿**是否被 `upload_cleanup` 正常回收
       （客户端必须真传一次，命中后那份字节靠回收器带走；否则"省存储"收益被 pending 副本吃掉）
-- [ ] 处理双 head：`20260916T1400_content_objects` 与 `VIRAL-COPY-CACHE-20260915` 的
-      `20260915T1600_viral_copy_cache` 同父，合并需重定父级
+- [x] 处理双 head：~~`20260916T1400_content_objects` 与 `20260915T1600_viral_copy_cache`
+      同父~~ → **已解决**。已 rebase 到合入 PR #120 后的 main，迁移 `down_revision`
+      重挂为 `20260915T1600_viral_copy_cache`，manifest 重录、冻结字面量在干净库重测
+      （`--check` / `--check-schema` 均 OK，迁移链测试 37 passed）
 - [ ] β 计费语义（决策 1）与 L3 一起单独评审
 - [ ] C1/C2 若要做，需先定"复用帧是否计费"
 - [ ] 建议补测试固化 B2 的缓存对象生命周期约定（P5）

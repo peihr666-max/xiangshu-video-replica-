@@ -195,6 +195,19 @@ sweeper 锁内重读计数后才动字节，`pinned=True` 永不入选。
 | `test_cw057_cli_pg_entry` / `customer_ha_smoke` / `customer_fencing` / `async_compat` / `character_image_authorization` / `business_preflight` | 156 passed |
 | `bootstrap_all_env_pg_gate` / `db_pg` / `customer_chain_e2e` / `security_contracts` / `cw028_shared_settings_contract` | 182 passed, 1 skipped |
 
+### 7.1 rebase 到 PR #120 之后的 main（重挂父级）复测
+
+| 门禁 / 套件 | 结果 |
+| --- | --- |
+| `ruff check` / `ruff format --check` / `mypy app` | All checks passed · 253 files formatted · 148 files 无问题 |
+| `migration_manifest.py --check` | migration guard OK |
+| `--check-schema`（新建干净库 `dedup_head_probe`，空库→head） | schema guard OK |
+| 冻结字面量重测 | counts `tables=94 / columns=1099 / timestamptz=44`，digest `a3fb4c3f…`，表名集 94 项 |
+| 迁移链 `test_cw056` + `test_postgres_migrations` | **37 passed** |
+| 去重核心 `test_dedup_cas_pg` + `test_delete_object_gate` | **57 passed**（+ P5 两条后闸门套件 32 passed） |
+| 回归集 cw058 / chain_e2e / fencing / character_image_authorization / async_compat / oral_domain / worker_concurrency / cw030 | **288 passed** |
+| 前端 `npm run check`（node 24） | **100 测试文件 / 1528 用例全绿** |
+
 `test_cw043_viral_import_pg.py` 的 6 项失败是
 `test_cached_local_media_moves_to_cos_without_provider_call_or_losing_source`
 的 6 个参数化实例，**已在未修改的 main 上复现同样的 6 项失败**，判定为既有问题。
@@ -213,12 +226,15 @@ sweeper 锁内重读计数后才动字节，`pinned=True` 永不入选。
 - **A3/A4/A5 命中去重时仍会落一份 pending 对象**（客户端必须真传一次，见 §六之二），
   命中后那份字节成为孤儿，依赖 `upload_cleanup` 回收。上线后需观察回收器确实带走它们，
   否则"省存储"的收益会被 pending 副本吃掉。
-- **双 head 冲突**：未合并分支 `VIRAL-COPY-CACHE-20260915` 的
-  `20260915T1600_viral_copy_cache` 与本轮 `20260916T1400_content_objects`
-  同以 `20260914T0000_local_joint_merge` 为父，合并时需重定父级。
-  该分支已实现 ASR/文稿复用（`viral_script_cache`），本轮未重复实现。
-- **前端未经编译验证**：`client/node_modules` 缺失（无 typescript），
-  合入前必须补跑 `npm run check`。
+- [x] ~~**双 head 冲突**~~ **已解决**：`VIRAL-COPY-CACHE-20260915` 的
+  `20260915T1600_viral_copy_cache` 已随 PR #120 合入 main（该分支实现 ASR/文稿复用
+  `viral_script_cache`，本轮未重复实现）。本分支已 rebase 到该 main，迁移父级
+  **重挂**为 `20260915T1600_viral_copy_cache`；`manifest.json` 用 `--record` 重录，
+  `test_cw056_supported_head_matrix.py` 的冻结字面量在**新建的干净库**
+  （`dedup_head_probe`，空库 → head）上重测：`--check` 与 `--check-schema` 均 OK，
+  迁移链测试 **37 passed**。
+- [x] ~~**前端未经编译验证**~~ **已验证**：装好 `client/node_modules`（148 包，node ≥ 24）后
+  `npm run check` 全绿——`biome check` + `tsc -b` + `vitest run`：100 测试文件 / 1528 用例通过。
 - **β 计费语义未实现**（决策 1）：计费行为是测试固化的规格，需与 L3 单独评审。
 - **C1/C2 暂缓**：需在生成前按 `(source_sha256, fingerprint)` 拦截才真正省算力，
   涉及 AI 生成与计费，建议单独开任务。
