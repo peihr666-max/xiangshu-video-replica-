@@ -67,6 +67,22 @@ docker compose -f deploy/customer/compose.yaml run --rm --no-deps api-1 \
 上调任一 `VIDEO_REPLICA_PG_POOL_MAX` 前必须复核上式（契约测试：
 `server/tests/test_cw032_delivery_package.py`）。
 
+### 3.1 并发度与取小关系
+
+全平台的实际并发由三者取最小，**只调其中一个通常看不到效果**：
+
+```
+真实并发 = min( h3_provider_accounts 的 Σconcurrency_limit ,
+               worker 实例数 × VIDEO_REPLICA_WORKER_CONCURRENCY ,
+               PG 连接余量 ÷ 每个 worker 的连接占用 )
+```
+
+- 账号池额度在管理端「视频生成 · 多账号」配置（表 `h3_provider_accounts`）。
+- `VIDEO_REPLICA_WORKER_CONCURRENCY` 是**单进程内**并行推进的任务数，默认 1
+  （历史串行行为）。4 个 worker 实例 × 并发 4 = 16 路并行。
+- 该值**不得超过 `VIDEO_REPLICA_PG_POOL_MAX`**，否则线程在连接池上排队。
+  提高并发时请同步上调池上限，并重新复核 §3 的总连接预算。
+
 ## 4. 备份与恢复（backup 角色）
 
 - 物理备份：宿主机 `deploy/postgres/pitr-backup.sh`（pg_basebackup + WAL，
