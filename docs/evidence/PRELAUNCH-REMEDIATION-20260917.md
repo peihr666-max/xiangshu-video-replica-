@@ -3,13 +3,13 @@
 ## 请求、范围与基线
 
 用户要求按上线联合评审建议逐项修复，完成后提交 PR。复核 feature `f15cf0c6` 与
-main 后，从 `origin/main@1f1c1989` 创建唯一任务分支，再快进到 `e3a8b874`（#129）。
+main 后，从 `origin/main@1f1c1989` 创建唯一任务分支，再快进到 `e3a8b874`（#129），最后在同分支合入 `6922298b`（#130，集成提交 `aed51fd8`）。
 没有把已由 #127 合入的 feature 重复合并，也没有从其他未合 PR 派生。
 
 Owner：Codex / 01a0ab89-d665-77c0-aeb6-5e4abab382df。
 Reviewer：执行者代码自检及 PR 门禁；独立人工评审待 PR，不宣称独立复审通过。
 分支：`fix/prelaunch-deployment-20260917`；worktree：`.worktrees/PRELAUNCH-REMEDIATION-20260917`。
-共享 claim：`PRELAUNCH-REMEDIATION-20260917`。占用检查发现 #130 正在处理 R01，因此复用。
+共享 claim：`PRELAUNCH-REMEDIATION-20260917`。占用检查发现 #130 正在处理 R01，因此复用；该 PR 随后已合并，已整合到本分支。
 
 ## 问题闭环
 
@@ -40,22 +40,24 @@ Reviewer：执行者代码自检及 PR 门禁；独立人工评审待 PR，不�
 - GREEN：Shell 语法检查与扩展部署专项 25 passed；包括 4 种回滚恢复状态，真实 HTTP 探针请求，生产入口拒绝错误 Host/不可信 peer，依赖不可用返回 503。
 - 实际 Docker Compose v2 解析成功，确认 10 个角色、应用环境解析、CA/token 只读挂载、PG TLS 命令、探针和固定 gateway。
 - 隔离 PostgreSQL 16 实测：CA + 匹配 db 主机名的 verify-full 成功；sslmode=disable 和错误证书主机名均被拒绝。测试证书短期生成，仅用于离线隔离容器。
-- 后端唯一一次全量四片结果：617 passed；684 passed / 2 环境失败 / 1 既有 skipped；647 passed / 1 环境失败；548 passed。共 2496 passed / 3 failed / 1 skipped。三个失败均是容器子进程找不到 alembic/app；补齐容器 site-packages 路径后原样补验全部失败 + 最终部署专项 + 音频可信时长回归共 31 passed。唯一覆盖为 2499 passed / 1 既有 skipped，未重复运行完整后端。每片使用独立 PG 物理实例，不共享 fixture。
-- Linux 静态门：Python Ruff、format、mypy（160 个模块）通过；完整前端和 Rust 检查进行中。探针移至交付包后单独 Ruff/format 及 25 项部署专项再次通过。
+- 后端唯一一次全量四片结果：617 passed；684 passed / 2 环境失败 / 1 既有 skipped；647 passed / 1 环境失败；548 passed。共 2496 passed / 3 failed / 1 skipped。三个失败均是容器子进程找不到 alembic/app；补齐容器 site-packages 路径后原样补验全部失败 + 最终部署专项 + 音频可信时长回归共 31 passed。既有 skip 为 production 环境 bootstrap 参数化分支，原测试注明 TLS 配置另由 test_db_pg 覆盖；本任务另做了真实 TLS 成功/拒绝实验。唯一覆盖为 2499 passed / 1 既有 skipped，未重复运行完整后端。每片使用独立 PG 物理实例，不共享 fixture。
+- Linux 静态门：前端全量 107 文件 / 1634 passed，Biome/TypeScript/E2E lint 通过；Python Ruff、format、mypy（160 个模块）通过；Rust fmt/check 通过（3 条既有 unused 警告）；主线整合后的 Ruff/format/mypy 159 个模块全部通过。探针移至交付包后单独 Ruff/format 及 25 项部署专项再次通过。
+- 合入 #130 后：TypeScript 与准备/创作/提示词页面 121 passed；部署/H3 提示词/优化器 50 passed。#130 原提交 `527d76c4` 的三门禁全部通过；主线合并仅一处账本追加冲突，保留双方记录。
+- Bootstrap 行为补验：在真实干净 checkout 执行原脚本，以 Docker build 替身捕获构建参数，确认完整 SHA/tree/head 和 head 构建校验参数；未将此替身声明为完整镜像重建。
 - 原始本机日志：`outputs/prelaunch-fix-20260917/`；无真实供应商调用、无生产配置或密钥归档。
 
 ## §14 交付与限制
 
 - 实现结果：R02—R06 代码及专项验证完成；R01/R07/R08 按问题表复用已有任务成果。
 - 验证命令与通过数：见上；不把未执行、跳过、失败门禁记为通过。
-- 证据层级：当前 CODE_PRESENT + 专项通过；完整质量门完成后更新为 AUTOMATED_VERIFIED。
+- 证据层级：AUTOMATED_VERIFIED（本地全量及失败项补验、主线整合专项）；不提升 staging 或生产等级。
 - 安全与可观测性：无入口豁免、无明文 PG TCP 回退；不输出 env 内容/真实凭据；回滚恢复失败有独立状态。
 - 数据迁移与回滚：无新增业务迁移，代码通过正常 PR revert 回滚；部署脚本保留前向兼容 DB 策略。
 - 外部授权：仅修复、验证和提交 PR；未操作生产、未调用付费 Provider/COS/ZPay，未合并 PR。
 - 未测试项：实际 Linux 宿主 Nginx 原始 peer、真实私有 COS/PG HA、完整首装/灰度/故障切换。
   默认单宿主 Compose 与离线 TLS 测试不能替代 staging/真实链路，更不代表 PRODUCTION_GO。
-- 提交/PR：待本地门禁完成后填写。
-- 资源清理：本任务容器均 `--rm`；测试容器/卷收尾清理，未操作其他任务资源。
+- 提交/PR：实现提交 `8bbf6759`、主线集成 `aed51fd8`；PR 创建后登记。
+- 资源清理：本任务容器均 `--rm`；测试容器及其匿名卷已清理，无任务命名卷；未操作其他任务资源。编译产物/缓存均在 E 盘。
 
 
 ```text
@@ -66,11 +68,11 @@ Owner / Reviewer：Codex 本任务 / 执行者自检、PR 门禁；独立评审�
 改动文件：见代码开发清单同名文件边界与本 PR diff
 失败测试或回归锁定：RED 5 failed / 15 passed；GREEN 25 passed；真实 TLS/Compose 验证
 实现结果：见问题闭环表；复用 #126/#129/#130，未重复开发在制功能
-验证命令与通过数：见验证记录，完整质量门待填写
-证据层级：CODE_PRESENT（专项已通过，完整门禁进行中）
+验证命令与通过数：见验证记录，后端唯一覆盖 2499 passed / 1 既有 skipped；前端全量 1634 passed；主线整合 UI 121 / 后端 50 passed；静态门通过
+证据层级：AUTOMATED_VERIFIED（本地全量、失败补验及主线整合专项）
 安全与可观测性：TLS-only、入口原始 peer、只读 CA/token、回滚未就绪独立状态
 迁移与回滚：无新迁移；代码可通过正常 PR revert；数据库只支持前向兼容回滚
 外部授权记录：用户授权修复后提交 PR；未操作真实付费链路或生产
 未测试项：生产/HA/COS/实际宿主反代/完整首装与故障演练
-Lore 提交 SHA：不适用；实现提交和 PR 待填写
+Lore 提交 SHA：不适用；实现 8bbf6759，主线集成 aed51fd8；PR 创建后登记
 ```

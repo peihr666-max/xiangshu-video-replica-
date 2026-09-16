@@ -158,3 +158,5 @@ docker compose --env-file /etc/video-replica/compose.env \
 应用修复不等同部署批准，真实 HA/COS/反代及故障回滚仍需 staging 验收。
 
 探针脚本来自已安装交付包，以只读 bind 挂载到镜像外固定路径；回滚到没有新探针模块的旧应用镜像时也能执行，无需为探针预先升级应用。
+
+旧镜像若没有 Node，升级镜像构建会明确失败：先用本包 bootstrap 构建含 Node 的新基底，再通过 `VIDEO_REPLICA_BUILD_BASE_IMAGE` 指定它；不在运行容器里临时安装依赖。
