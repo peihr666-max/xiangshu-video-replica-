@@ -84,3 +84,7 @@ UI-TYPOGRAPHY-BRAND / PROMPT-OPTIMIZE 并行任务涉及同名大文件，本任
 收尾资源核验：本任务 PostgreSQL 与质量容器已停止并自动删除；所有补验容器均已自动删除。最终 docker ps / volume 按 oral-tts 前缀检查为空。未删除复用镜像、其他任务容器或其他 worktree；5216 预览服务继续保留。
 
 合并 main #123 后追加复验：前端 Biome、TypeScript 与 103 个测试文件全部通过（1572 passed，25.35s）；秘密扫描、git diff --check 和证据内部链接检查通过。此次主分支增量未改动服务端，沿用本任务已完成的全量服务端证据，不重复执行全量 PG。
+
+## 第二次主分支同步（#124）
+
+上次冲突修复后，main 新增 2f4fc9c9（#124 字号、品牌与 IP 文案流程），两份公共任务记录再次冲突。本次在原分支合入，保留 main 的 UI-TYPOGRAPHY 记录及本分支 ORAL-VIDEO-TTS、PUBLISH-INLINE-QR 记录。共享前端文件自动合并经检查，人物 IP 编辑和文案工坊增量保留，视频分身与独立声音档案改造保留。完整前端检查通过：Biome、TypeScript、103 文件 / 1598 passed（25.42s）；秘密扫描及差异检查通过。服务端新增 main 文件与本任务 materials/oral_routes 无直接重叠，完整集成门禁交由本次 PR CI 核验，未重复本地全量 PG。

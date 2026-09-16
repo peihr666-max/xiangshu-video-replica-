@@ -40,7 +40,7 @@
 
 .admin-login__brand h1 {
   margin: 0;
-  font-size: clamp(28px, 3.2vw, 40px);
+  font-size: clamp(24px, 3.2vw, 28px);
   letter-spacing: 0.04em;
 }
 
@@ -48,7 +48,7 @@
   max-width: 46ch;
   margin: 0;
   color: var(--admin-copy-soft);
-  font-size: 15px;
+  font-size: var(--font-body);
   line-height: 1.8;
 }
 
@@ -58,7 +58,7 @@
   margin: 0;
   padding: 0;
   color: var(--admin-copy-faint);
-  font-size: 13px;
+  font-size: var(--font-label);
   line-height: 1.7;
   list-style: none;
 }
@@ -99,7 +99,7 @@
 
 .admin-login__card h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--font-section);
   letter-spacing: 0.03em;
 }
 
@@ -111,7 +111,7 @@
 .admin-login__hint {
   margin: 0;
   color: var(--admin-copy-faint);
-  font-size: 13px;
+  font-size: var(--font-label);
   line-height: 1.7;
 }
 
@@ -124,7 +124,7 @@
   display: grid;
   gap: 7px;
   color: var(--admin-copy-soft);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-login__control input {
@@ -155,7 +155,7 @@
   border: 1px solid var(--admin-line-strong);
   background: rgba(255, 255, 255, 0.04);
   color: var(--admin-copy-soft);
-  font-size: 13px;
+  font-size: var(--font-label);
   min-height: 42px;
   padding: 0 14px;
 }
@@ -181,7 +181,7 @@
   justify-self: start;
   background: transparent;
   color: var(--admin-copy-faint);
-  font-size: 13px;
+  font-size: var(--font-label);
   padding: 4px 0;
 }
 

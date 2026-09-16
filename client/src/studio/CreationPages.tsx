@@ -19,6 +19,7 @@ import {
   getLatestProjectShotCards,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
+  getScriptRewriteTask,
   listUserSavedPrompts,
   type Project,
   type ProjectMainCharacter,
@@ -53,6 +54,7 @@ import {
 } from "./live";
 import {
   clearScriptRewriteIdempotencyKey,
+  resolvePendingRewrite,
   type ScriptRewriteScope,
   scriptRewriteIdempotencyKey,
   shouldClearScriptRewriteIdempotencyKey,
@@ -63,6 +65,7 @@ import {
   DEFAULT_MAX_REFERENCE_AUDIOS,
   DEFAULT_MAX_REFERENCE_IMAGES,
   DEFAULT_MAX_REFERENCE_VIDEOS,
+  hasCopyResult,
   MAX_REFERENCE_MEDIA_SECONDS,
   SUPPORTED_VIDEO_RATIOS,
   validateReferences,
@@ -154,6 +157,78 @@ function ControlGroup({
   );
 }
 
+function copyProfile(person?: StudioPerson) {
+  if (!person) return "";
+  return JSON.stringify({
+    display_name: person.name.trim(),
+    role: person.role.trim(),
+    service_scope: person.scope.trim(),
+    target_audience: person.audience.trim(),
+    expression_style: person.expression.trim(),
+    audience_needs: person.audience_needs?.trim() ?? "",
+    factual_background: person.factual_background?.trim() ?? "",
+    sample_script: person.sample_script?.trim() ?? "",
+    forbidden_claims: person.forbidden_claims?.trim() ?? "",
+  });
+}
+function taskProfileMatches(task: ScriptRewriteTask, fingerprint: string) {
+  if (!task.identity_id) return !fingerprint;
+  const snapshot = task.ip_profile_snapshot;
+  if (!snapshot || !fingerprint) return false;
+  const expected = JSON.parse(fingerprint) as Record<string, string>;
+  return Object.entries(expected).every(
+    ([key, value]) =>
+      ((snapshot as unknown as Record<string, unknown>)[key] ?? "") === value,
+  );
+}
+function pendingRewriteStorageKey(accountId: string) {
+  return `studio:pending-copy:${accountId}`;
+}
+function readPendingRewrite(accountId: string): StudioDraft["pendingRewrite"] {
+  try {
+    const value = JSON.parse(
+      sessionStorage.getItem(pendingRewriteStorageKey(accountId)) ?? "null",
+    );
+    return value &&
+      typeof value.scopeKey === "string" &&
+      typeof value.resultText === "string"
+      ? value
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function storePendingRewrite(
+  accountId: string,
+  value: StudioDraft["pendingRewrite"],
+) {
+  try {
+    if (value)
+      sessionStorage.setItem(
+        pendingRewriteStorageKey(accountId),
+        JSON.stringify(value),
+      );
+    else sessionStorage.removeItem(pendingRewriteStorageKey(accountId));
+  } catch {
+    /* Cloud draft still persists recovery metadata. */
+  }
+}
+function copySource(draft: StudioDraft) {
+  return (
+    draft.script.original || (draft.script.resultKind ? "" : draft.script.text)
+  ).trim();
+}
+function copyInstructions(draft: StudioDraft) {
+  return [
+    draft.rewriteLength && draft.rewriteLength !== "original"
+      ? `目标约 ${draft.rewriteLength === "custom" ? (draft.rewriteWordCount ?? "") : draft.rewriteLength} 字。`
+      : "",
+    draft.rewriteInstructions?.trim() ?? "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function CopyPage() {
   const {
     state,
@@ -171,9 +246,16 @@ export function CopyPage() {
     draftSaveStatus,
   } = useStudio();
   const readOnly = user.role === "auditor";
+  const method = state.draft.rewriteMethod ?? "ip";
+  const hasResult = hasCopyResult(state.draft.script);
+  const profileFingerprint =
+    method === "custom"
+      ? ""
+      : copyProfile(data.people.find((item) => item.id === state.draft.ipId));
+  const [rewriteError, setRewriteError] = useState("");
   const [tab, setTab] = useState<"rewrite" | "saved">("rewrite");
   const [rewriting, setRewriting] = useState(false);
-  const [candidate, setCandidate] = useState("");
+  const [candidate, setCandidate] = useState(state.draft.rewriteCandidate);
   const [savedLoading, setSavedLoading] = useState(false);
   const [savedError, setSavedError] = useState("");
   const savedOperation = useRef(0);
@@ -192,12 +274,10 @@ export function CopyPage() {
     state.draft.sourceAssetId,
     state.draft.ipId,
     state.draft.script.id,
-    state.draft.script.version,
-    state.draft.script.title,
-    state.draft.script.original,
-    state.draft.script.text,
-    state.draft.script.confirmed,
-    state.draft.scriptEdited,
+    copySource(state.draft),
+    method,
+    copyInstructions(state.draft),
+    profileFingerprint,
   ]);
   const activeScopeRef = useRef({ key: rewriteScopeKey, generation: 0 });
   if (activeScopeRef.current.key !== rewriteScopeKey) {
@@ -232,9 +312,15 @@ export function CopyPage() {
         if (
           completed.status !== "SUCCEEDED" ||
           completed.project_id !== current.projectId ||
-          completed.identity_id !== current.ipId ||
+          completed.identity_id !==
+            (current.rewriteMethod === "custom" ? null : current.ipId) ||
           completed.source_asset_id !== currentSourceAssetId ||
-          completed.source_text !== current.script.text ||
+          completed.source_text !== copySource(current) ||
+          (completed.instructions ?? "") !== copyInstructions(current) ||
+          !taskProfileMatches(
+            completed,
+            requestScope.profileFingerprint ?? "",
+          ) ||
           !rewritten
         )
           throw completed.status === "FAILED" ||
@@ -244,30 +330,58 @@ export function CopyPage() {
                 completed.error_message || "改写未返回完整正文，请重试。",
               );
         clearScriptRewriteIdempotencyKey(requestScope, idempotencyKey);
-        if (current.script.text !== requestScope.text) {
+        storePendingRewrite(requestScope.accountId, undefined);
+        if (current.script.text !== requestScope.resultText) {
           // 改写期间用户手改了正文：保留人工稿，结果转候选待显式应用。
-          setCandidate(rewritten);
+          const scopedCandidate = {
+            scopeKey: expectedScope.key,
+            text: rewritten,
+          };
+          setCandidate(scopedCandidate);
+          currentRef.current.patchDraft({
+            pendingRewrite: undefined,
+            rewriteCandidate: scopedCandidate,
+          });
           currentRef.current.notify(
             "改写已完成，当前正文保持不变；可对照后应用候选稿。",
           );
           return;
         }
         currentRef.current.patchDraft({
-          script: { ...current.script, text: rewritten, confirmed: false },
+          pendingRewrite: undefined,
+          rewriteCandidate: undefined,
+          script: {
+            ...current.script,
+            text: rewritten,
+            confirmed: false,
+            resultKind: "rewritten",
+            rewriteTaskId: completed.id,
+          },
           scriptEdited: true,
         });
         currentRef.current.notify("改写已完成，请核对并保存当前版本。");
       } catch (cause) {
         if (shouldClearScriptRewriteIdempotencyKey(cause)) {
           clearScriptRewriteIdempotencyKey(requestScope, idempotencyKey);
+          if (
+            rewriteOperationRef.current === operation &&
+            activeScopeRef.current === expectedScope
+          ) {
+            storePendingRewrite(requestScope.accountId, undefined);
+            currentRef.current.patchDraft({ pendingRewrite: undefined });
+          }
         }
         if (
           rewriteOperationRef.current === operation &&
           activeScopeRef.current === expectedScope
-        )
-          currentRef.current.notify(
-            customerVisibleErrorMessage(cause, "文案改写失败，请重试。"),
+        ) {
+          const message = customerVisibleErrorMessage(
+            cause,
+            "文案改写失败，请重试。",
           );
+          setRewriteError(message);
+          currentRef.current.notify(message);
+        }
       } finally {
         if (
           rewriteOperationRef.current === operation &&
@@ -285,32 +399,53 @@ export function CopyPage() {
     const operation = ++rewriteOperationRef.current;
     rewritePendingRef.current = false;
     setRewriting(false);
-    setCandidate("");
     const draft = currentRef.current.state.draft;
+    setCandidate(
+      draft.rewriteCandidate?.scopeKey === activeScope.key
+        ? draft.rewriteCandidate
+        : undefined,
+    );
+    setRewriteError("");
+    const localPending = readPendingRewrite(user.id);
+    const recoverPending = resolvePendingRewrite(
+      activeScope.key,
+      draft.pendingRewrite,
+      localPending,
+    );
+    if (localPending && localPending.scopeKey !== activeScope.key)
+      storePendingRewrite(user.id, undefined);
     if (
       !review &&
       user.role !== "auditor" &&
       draft.projectId &&
       draft.sourceId &&
-      draft.ipId &&
-      draft.script.text.trim() &&
-      draft.scriptEdited !== true
+      (draft.rewriteMethod === "custom" || draft.ipId) &&
+      copySource(draft) &&
+      (!recoverPending || recoverPending.taskId) &&
+      (recoverPending || !hasCopyResult(draft.script))
     ) {
       const sourceAssetId = draft.sourceAssetId ?? draft.sourceId;
       const requestScope: ScriptRewriteScope = {
         accountId: user.id,
         projectId: draft.projectId,
         sourceAssetId,
-        identityId: draft.ipId,
+        identityId: draft.rewriteMethod === "custom" ? "" : (draft.ipId ?? ""),
         scriptId: draft.script.id,
         scriptVersion: draft.script.version,
-        text: draft.script.text,
+        text: copySource(draft),
+        instructions: copyInstructions(draft),
+        resultText: recoverPending?.resultText ?? draft.script.text,
+        profileFingerprint,
       };
       const idempotencyKey = scriptRewriteIdempotencyKey(requestScope);
-      void getLatestScriptRewriteTask(
-        draft.projectId,
-        draft.ipId,
-        sourceAssetId,
+      void (
+        recoverPending?.taskId
+          ? getScriptRewriteTask(recoverPending.taskId)
+          : getLatestScriptRewriteTask(
+              draft.projectId,
+              draft.rewriteMethod === "custom" ? null : draft.ipId,
+              sourceAssetId,
+            )
       )
         .then((task) => {
           if (
@@ -318,7 +453,10 @@ export function CopyPage() {
             activeScopeRef.current !== activeScope ||
             !task ||
             task.source_asset_id !== sourceAssetId ||
-            task.source_text !== draft.script.text
+            task.source_text !== copySource(draft) ||
+            (task.instructions ?? "") !== copyInstructions(draft) ||
+            !taskProfileMatches(task, profileFingerprint) ||
+            task.id === draft.script.rewriteTaskId
           )
             return;
           rewritePendingRef.current = true;
@@ -347,7 +485,14 @@ export function CopyPage() {
     return () => {
       rewriteOperationRef.current += 1;
     };
-  }, [activeScope, finishRewrite, review, user.id, user.role]);
+  }, [
+    activeScope,
+    finishRewrite,
+    review,
+    user.id,
+    user.role,
+    profileFingerprint,
+  ]);
 
   const refreshSaved = useCallback(async () => {
     const operation = ++savedOperation.current;
@@ -373,59 +518,92 @@ export function CopyPage() {
     };
   }, [tab, review, refreshSaved]);
 
-  const rewriteUnavailableReason = review
-    ? "审核示例不调用业务接口。"
-    : user.role === "auditor"
-      ? "当前账号为只读权限，不能改写文案。"
-      : !state.draft.projectId
-        ? "当前文案缺少来源项目，暂不能按 IP 二创。"
-        : !state.draft.sourceId
-          ? "当前文案缺少来源视频，请重新选择来源。"
-          : !state.draft.ipId
-            ? "请先选择参与二创的人物 IP。"
-            : !state.draft.script.text.trim()
-              ? "请输入待改写正文。"
-              : state.draft.script.text.length > 20_000
-                ? "待改写正文不能超过 20000 字符。"
-                : state.draft.scriptEdited === true
-                  ? "请先保存当前编辑，再按 IP 二创。"
-                  : "";
+  const customWordCountInvalid =
+    state.draft.rewriteLength === "custom" &&
+    (!Number.isInteger(state.draft.rewriteWordCount) ||
+      (state.draft.rewriteWordCount ?? 0) < 1 ||
+      (state.draft.rewriteWordCount ?? 0) > 5000);
+  const rewriteUnavailableReason = customWordCountInvalid
+    ? "请输入1至5000之间的整数文案字数。"
+    : review
+      ? "审核示例不调用业务接口。"
+      : readOnly
+        ? "当前账号为只读权限，不能改写文案。"
+        : !state.draft.projectId
+          ? "当前文案缺少来源项目。"
+          : !state.draft.sourceId
+            ? "当前文案缺少来源视频，请重新选择来源。"
+            : method === "ip" && !state.draft.ipId
+              ? "请先选择参与二创的人物 IP。"
+              : !copySource(state.draft)
+                ? "请先提取待改写正文。"
+                : copySource(state.draft).length > 20000
+                  ? "待改写正文不能超过 20000 字符。"
+                  : copyInstructions(state.draft).length > 2000
+                    ? "本次改写要求不能超过 2000 字符。"
+                    : method === "custom" &&
+                        !state.draft.rewriteInstructions?.trim()
+                      ? "请填写本次改写要求，或选择一个快捷要求。"
+                      : "";
 
   const rewrite = async () => {
     if (rewriteUnavailableReason || rewriting || rewritePendingRef.current)
       return;
     const draft = state.draft;
     const projectId = draft.projectId;
-    const identityId = draft.ipId;
+    const identityId = method === "custom" ? undefined : draft.ipId;
     const sourceAssetId = draft.sourceAssetId ?? draft.sourceId;
-    if (!projectId || !identityId || !sourceAssetId) return;
+    if (!projectId || !sourceAssetId) return;
     const operation = ++rewriteOperationRef.current;
     const expectedScope = activeScopeRef.current;
+    const retryPending = resolvePendingRewrite(
+      expectedScope.key,
+      draft.pendingRewrite,
+      readPendingRewrite(user.id),
+    );
     const requestScope: ScriptRewriteScope = {
       accountId: user.id,
       projectId,
       sourceAssetId,
-      identityId,
+      identityId: identityId ?? "",
       scriptId: draft.script.id,
       scriptVersion: draft.script.version,
-      text: draft.script.text,
+      text: copySource(draft),
+      instructions: copyInstructions(draft),
+      resultText: retryPending?.resultText ?? draft.script.text,
+      profileFingerprint,
     };
-    const idempotencyKey = scriptRewriteIdempotencyKey(requestScope);
+    const idempotencyKey =
+      retryPending?.requestKey ?? scriptRewriteIdempotencyKey(requestScope);
+    const pending = {
+      scopeKey: expectedScope.key,
+      resultText: requestScope.resultText ?? draft.script.text,
+      requestKey: idempotencyKey,
+      startedAt: retryPending?.startedAt ?? Date.now(),
+    };
+    storePendingRewrite(user.id, pending);
+    patchDraft({ pendingRewrite: pending, rewriteCandidate: undefined });
     rewritePendingRef.current = true;
+    setRewriteError("");
+    setCandidate(undefined);
     setRewriting(true);
     try {
       const task = await rewriteProjectScript(
         projectId,
-        draft.script.text,
+        copySource(draft),
         identityId,
         sourceAssetId,
         idempotencyKey,
+        copyInstructions(draft),
       );
       if (
         rewriteOperationRef.current !== operation ||
         activeScopeRef.current !== expectedScope
       )
         return;
+      const acceptedPending = { ...pending, taskId: task.id };
+      storePendingRewrite(user.id, acceptedPending);
+      currentRef.current.patchDraft({ pendingRewrite: acceptedPending });
       await finishRewrite(
         task,
         expectedScope,
@@ -436,6 +614,10 @@ export function CopyPage() {
     } catch (cause) {
       if (shouldClearScriptRewriteIdempotencyKey(cause)) {
         clearScriptRewriteIdempotencyKey(requestScope, idempotencyKey);
+        if (activeScopeRef.current === expectedScope) {
+          storePendingRewrite(user.id, undefined);
+          currentRef.current.patchDraft({ pendingRewrite: undefined });
+        }
       }
       if (
         rewriteOperationRef.current === operation &&
@@ -443,9 +625,12 @@ export function CopyPage() {
       ) {
         rewritePendingRef.current = false;
         setRewriting(false);
-        notify(
-          customerVisibleErrorMessage(cause, "提交文案改写失败，请重试。"),
+        const message = customerVisibleErrorMessage(
+          cause,
+          "提交文案改写失败，请重试。",
         );
+        setRewriteError(message);
+        notify(message);
       }
     }
   };
@@ -468,7 +653,7 @@ export function CopyPage() {
       voiceId: undefined,
       audioId: undefined,
       videoBatchId: undefined,
-      script: { ...script, confirmed: false },
+      script: { ...script, confirmed: false, resultKind: "manual" },
       scriptEdited: true,
     });
     patchState({
@@ -495,7 +680,7 @@ export function CopyPage() {
     <section className="creation-page creation-copy">
       <header className="creation-heading">
         <h1>文案工坊</h1>
-        <p>提取与二创文案，优化表达，匹配乡墅场景</p>
+        <p>核对视频原文，设置二创要求，生成后编辑定稿</p>
         {state.returnTo && state.returnTo !== "copy" ? (
           <Button
             variant="quiet"
@@ -560,13 +745,24 @@ export function CopyPage() {
       ) : (
         <>
           <SourceStrip source={source} />
+          <p id="copy-resize-hint" className="creation-resize-hint">
+            拖动文本框右下角可调整高度
+          </p>
+
           <div className="creation-copy-grid">
             <Panel className="creation-copy-source">
-              <div className="creation-panel-title">原文（提取自来源）</div>
+              <h2 className="creation-panel-title">
+                <span className="creation-step-number">01</span>
+                原文（提取自来源）
+              </h2>
               {state.draft.script.original ? (
-                <div className="creation-script-copy">
-                  {state.draft.script.original}
-                </div>
+                <textarea
+                  aria-label="来源原文"
+                  aria-describedby="copy-resize-hint"
+                  className="creation-textarea creation-source-textarea"
+                  readOnly
+                  value={state.draft.script.original}
+                />
               ) : (
                 <Empty
                   title="尚未提取文案"
@@ -582,75 +778,284 @@ export function CopyPage() {
                 />
               )}
             </Panel>
+            <Panel className="creation-copy-settings">
+              <h2 className="creation-panel-title">
+                <span className="creation-step-number">02</span>设置二创
+              </h2>
+              <fieldset
+                className="copy-methods"
+                disabled={readOnly || rewriting}
+              >
+                <legend>选择二创方式</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="copy-method"
+                    checked={method === "ip"}
+                    onChange={() => patchDraft({ rewriteMethod: "ip" })}
+                  />
+                  <strong>按人物 IP</strong>
+                  <small>带入人物定位、受众和表达风格</small>
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="copy-method"
+                    checked={method === "custom"}
+                    onChange={() => patchDraft({ rewriteMethod: "custom" })}
+                  />
+                  <strong>按要求二创</strong>
+                  <small>直接描述这次想怎么改</small>
+                </label>
+              </fieldset>
+              {method === "ip" ? (
+                <div className="copy-person-summary">
+                  <div>
+                    <strong>
+                      {person
+                        ? `${person.name} · ${person.role}`
+                        : "未选择人物 IP"}
+                    </strong>
+                    <p>
+                      {person
+                        ? `${person.audience} · ${person.expression}`
+                        : "选择人物后自动带入已保存的 IP 档案。"}
+                    </p>
+                  </div>
+                  <Button
+                    disabled={readOnly || rewriting}
+                    variant="outline"
+                    onClick={() => openPicker("person")}
+                  >
+                    更换人物
+                  </Button>
+                  {person ? (
+                    <Button
+                      variant="quiet"
+                      onClick={() =>
+                        navigate("person-ip", {
+                          selectedPersonId: person.id,
+                          returnTo: "copy",
+                        })
+                      }
+                    >
+                      完善 IP 档案
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="copy-requirements">
+                <label>
+                  文案字数
+                  <select
+                    aria-label="文案字数"
+                    disabled={readOnly || rewriting}
+                    value={state.draft.rewriteLength ?? "original"}
+                    onChange={(event) =>
+                      patchDraft({
+                        rewriteLength: event.target
+                          .value as StudioDraft["rewriteLength"],
+                      })
+                    }
+                  >
+                    <option value="original">接近原文</option>
+                    <option value="100">约100字</option>
+                    <option value="200">约200字</option>
+                    <option value="300">约300字</option>
+                    <option value="custom">自定义字数</option>
+                  </select>
+                  {state.draft.rewriteLength === "custom" ? (
+                    <input
+                      aria-label="自定义文案字数"
+                      aria-invalid={customWordCountInvalid}
+                      className="creation-input"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={5000}
+                      step={1}
+                      disabled={readOnly || rewriting}
+                      placeholder="输入1–5000字"
+                      value={state.draft.rewriteWordCount ?? ""}
+                      onChange={(event) =>
+                        patchDraft({
+                          rewriteWordCount:
+                            event.target.value === ""
+                              ? undefined
+                              : Number(event.target.value),
+                        })
+                      }
+                    />
+                  ) : null}
+                  <small>生成字数为近似值，可在结果中调整。</small>
+                </label>
+                <label>
+                  {method === "ip" ? "补充要求（选填）" : "本次改写要求"}
+                  <textarea
+                    aria-label="本次改写要求"
+                    className="creation-textarea copy-instructions"
+                    maxLength={1900}
+                    disabled={readOnly || rewriting}
+                    value={state.draft.rewriteInstructions ?? ""}
+                    onChange={(event) =>
+                      patchDraft({ rewriteInstructions: event.target.value })
+                    }
+                    placeholder="例如：面向准备回乡建房的家庭，语气朴实，先讲问题再给建议，不添加报价。"
+                  />
+                </label>
+              </div>
+              <div className="copy-quick-actions">
+                {["更口语化", "精简内容", "知识讲解", "调整开头"].map(
+                  (label) => (
+                    <Button
+                      key={label}
+                      variant="outline"
+                      disabled={readOnly || rewriting}
+                      onClick={() =>
+                        patchDraft({
+                          rewriteInstructions: [
+                            state.draft.rewriteInstructions?.trim(),
+                            label,
+                          ]
+                            .filter(Boolean)
+                            .join("；")
+                            .slice(0, 1900),
+                        })
+                      }
+                    >
+                      {label}
+                    </Button>
+                  ),
+                )}
+              </div>
+              <div className="copy-generate-row">
+                <Hint>
+                  保留原文信息，生成后可继续编辑；发布前请核对事实、案例与承诺。
+                </Hint>
+                <Button
+                  variant="primary"
+                  onClick={() => void rewrite()}
+                  disabled={Boolean(rewriteUnavailableReason) || rewriting}
+                >
+                  {rewriting ? "正在生成…" : "生成二创文案"}
+                </Button>
+              </div>
+              {rewriteUnavailableReason ? (
+                <Hint>{rewriteUnavailableReason}</Hint>
+              ) : null}
+              {rewriteError ? <p role="alert">{rewriteError}</p> : null}
+            </Panel>
             <Panel className="creation-copy-editor">
               <div className="creation-panel-title-row">
-                <span>二创文案（可编辑）</span>
-                <small>
-                  {state.draft.script.confirmed ? "终稿" : "草稿"} V
-                  {state.draft.script.version}
-                </small>
+                <h2 className="creation-panel-title">
+                  <span className="creation-step-number">03</span>
+                  二创结果
+                </h2>
+                {hasResult ? (
+                  <small>
+                    {state.draft.script.confirmed ? "终稿" : "草稿"} V
+                    {state.draft.script.version}
+                  </small>
+                ) : null}
               </div>
-              <input
-                aria-label="作品名称"
-                className="creation-input"
-                disabled={readOnly}
-                onChange={(event) =>
-                  patchDraft({
-                    script: {
-                      ...state.draft.script,
-                      title: event.target.value,
-                      confirmed: false,
-                    },
-                  })
-                }
-                placeholder="作品名称"
-                value={state.draft.script.title}
-              />
-              <textarea
-                aria-label="二创文案"
-                className="creation-textarea creation-copy-textarea"
-                disabled={readOnly}
-                onChange={(event) =>
-                  patchDraft({
-                    script: {
-                      ...state.draft.script,
-                      text: event.target.value,
-                      confirmed: false,
-                    },
-                  })
-                }
-                placeholder="在这里编辑乡墅口播文案"
-                value={state.draft.script.text}
-              />
-              <div className="creation-saved-state" aria-live="polite">
-                {draftSaveStatus === "dirty"
-                  ? "有未保存修改"
-                  : draftSaveStatus === "saving"
-                    ? "正在保存到云端…"
-                    : draftSaveStatus === "saved"
-                      ? "已保存到云端"
-                      : draftSaveStatus === "error"
-                        ? "云端保存失败，可点击保存版本重试"
-                        : "内容变动后需重新确认终稿"}
-              </div>
-              <Hint>
-                {state.draft.script.text.length} / 10000
-                字符（数字人口播上限）；标题 {state.draft.script.title.length} /
-                120 字符。AI 改写最多 20000 字符。
-              </Hint>
-              {candidate ? (
-                <Panel>
-                  <p>{candidate}</p>
-                  <Button
-                    onClick={() => {
+              {hasResult ? (
+                <>
+                  <input
+                    aria-label="作品名称"
+                    className="creation-input"
+                    disabled={readOnly}
+                    onChange={(event) =>
                       patchDraft({
                         script: {
                           ...state.draft.script,
-                          text: candidate,
+                          title: event.target.value,
                           confirmed: false,
                         },
+                      })
+                    }
+                    placeholder="作品名称"
+                    value={state.draft.script.title}
+                  />
+                  <textarea
+                    aria-label="二创文案"
+                    aria-describedby="copy-resize-hint"
+                    className="creation-textarea creation-copy-textarea"
+                    disabled={readOnly}
+                    onChange={(event) =>
+                      patchDraft({
+                        script: {
+                          ...state.draft.script,
+                          text: event.target.value,
+                          confirmed: false,
+                          resultKind: "manual",
+                        },
+                      })
+                    }
+                    placeholder="在这里编辑乡墅口播文案"
+                    value={state.draft.script.text}
+                  />
+                  <div className="creation-saved-state" aria-live="polite">
+                    {draftSaveStatus === "dirty"
+                      ? "有未保存修改"
+                      : draftSaveStatus === "saving"
+                        ? "正在保存到云端…"
+                        : draftSaveStatus === "saved"
+                          ? "已保存到云端"
+                          : draftSaveStatus === "error"
+                            ? "云端保存失败，可点击保存版本重试"
+                            : "内容变动后需重新确认终稿"}
+                  </div>
+                  <Hint>
+                    实际字数：
+                    {state.draft.script.text.replace(/\s/g, "").length}；
+                    {state.draft.script.text.length} / 10000
+                    字符（数字人口播上限）；标题{" "}
+                    {state.draft.script.title.length} / 120 字符。AI 改写最多
+                    20000 字符。
+                  </Hint>
+                </>
+              ) : (
+                <Empty
+                  title={rewriting ? "正在生成二创文案" : "等待生成二创文案"}
+                  description="在上方选择方式并点击生成，结果将在这里出现。"
+                  action={
+                    !state.draft.script.original && !rewriting ? (
+                      <Button
+                        variant="quiet"
+                        disabled={readOnly}
+                        onClick={() =>
+                          patchDraft({
+                            script: {
+                              ...state.draft.script,
+                              resultKind: "manual",
+                              text: "",
+                              confirmed: false,
+                            },
+                          })
+                        }
+                      >
+                        手动写稿
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              )}
+              {candidate?.scopeKey === activeScope.key ? (
+                <Panel>
+                  <p>{candidate.text}</p>
+                  <Button
+                    onClick={() => {
+                      patchDraft({
+                        rewriteCandidate: undefined,
+                        pendingRewrite: undefined,
+                        script: {
+                          ...state.draft.script,
+                          text: candidate.text,
+                          confirmed: false,
+                          resultKind: "rewritten",
+                        },
                       });
-                      setCandidate("");
+                      setCandidate(undefined);
                     }}
                   >
                     应用候选稿
@@ -658,94 +1063,41 @@ export function CopyPage() {
                 </Panel>
               ) : null}
             </Panel>
-            <Panel className="creation-copy-person">
-              <div className="creation-panel-title">IP 选择</div>
-              {person ? (
-                <div className="creation-person-card">
-                  <Media
-                    asset={
-                      person.portrait
-                        ? {
-                            id: person.id,
-                            name: person.name,
-                            kind: "image",
-                            url: person.portrait,
-                            group: "人物",
-                            source: "人物库",
-                            saved: true,
-                          }
-                        : undefined
-                    }
-                    alt={person.name}
-                    className="creation-avatar"
-                  />
-                  <div>
-                    <strong>
-                      {person.name} · {person.role}
-                    </strong>
-                    <p>{person.scope}</p>
-                    <small>{person.expression}</small>
-                  </div>
-                </div>
-              ) : (
-                <Empty
-                  title="未选择人物 IP"
-                  description="二创时可带入人物定位与表达方式。"
-                />
-              )}
+          </div>
+          {hasResult ? (
+            <footer className="creation-action-bar">
               <Button
-                variant="outline"
-                onClick={() => void rewrite()}
-                disabled={Boolean(rewriteUnavailableReason) || rewriting}
-              >
-                {rewriting ? "正在按 IP 二创…" : "按 IP 二创"}
-              </Button>
-              {rewriteUnavailableReason ? (
-                <Hint>{rewriteUnavailableReason}</Hint>
-              ) : null}
-              <Button
-                disabled={readOnly}
-                variant="outline"
-                onClick={() => {
-                  if (readOnly) return;
-                  openPicker("person");
-                }}
-              >
-                更换人物
-              </Button>
-              <Button
-                variant="quiet"
-                onClick={() => {
-                  if (readOnly) return;
-                  confirmFinalDraft();
-                }}
-                disabled={readOnly || !state.draft.script.text.trim()}
+                variant="primary"
+                disabled={
+                  readOnly ||
+                  !state.draft.script.text.trim() ||
+                  oralLengthExceeded
+                }
+                onClick={() => confirmFinalDraft()}
               >
                 确认终稿
               </Button>
-            </Panel>
-          </div>
-          <footer className="creation-action-bar">
-            <Button
-              variant="outline"
-              disabled={readOnly}
-              onClick={() => {
-                if (readOnly) return;
-                saveDraft();
-              }}
-            >
-              保存版本
-            </Button>
-            <Button
-              variant="primary"
-              disabled={
-                !state.draft.script.confirmed || !person || oralLengthExceeded
-              }
-              onClick={() => navigate("oral", { returnTo: "copy" })}
-            >
-              用于数字人口播
-            </Button>
-          </footer>
+              <Button
+                variant="outline"
+                disabled={readOnly}
+                onClick={() => {
+                  if (readOnly) return;
+                  saveDraft();
+                }}
+              >
+                保存版本
+              </Button>
+              <Button
+                variant="primary"
+                disabled={
+                  !state.draft.script.confirmed || !person || oralLengthExceeded
+                }
+                onClick={() => navigate("oral", { returnTo: "copy" })}
+              >
+                用于数字人口播
+              </Button>
+            </footer>
+          ) : null}
         </>
       )}
     </section>
@@ -1670,6 +2022,43 @@ export function ReplicaPage() {
                   >
                     保存为自定义提示词
                   </Button>
+                  <label>
+                    单条生成时长
+                    <select
+                      aria-label="复刻单条时长"
+                      disabled={readOnly || generating}
+                      value={replicaDuration}
+                      onChange={(event) =>
+                        patchDraft({ duration: Number(event.target.value) })
+                      }
+                    >
+                      <option value={4}>4秒</option>
+                      <option value={15}>15秒</option>
+                    </select>
+                  </label>
+                  <label>
+                    生成数量
+                    <select
+                      aria-label="复刻生成数量"
+                      disabled={readOnly || generating}
+                      value={replicaQuantity}
+                      onChange={(event) =>
+                        patchDraft({ count: Number(event.target.value) })
+                      }
+                    >
+                      {[1, 2, 4].map((count) => (
+                        <option key={count} value={count}>
+                          {count}条
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {state.draft.duration !== replicaDuration ? (
+                    <Hint>
+                      旧草稿时长 {state.draft.duration} 秒，当前按可用档位{" "}
+                      {replicaDuration} 秒报价，请核对上方选择。
+                    </Hint>
+                  ) : null}
                   {replicaQuoteStatus === "loading" ? (
                     <Hint>正在读取复刻报价…</Hint>
                   ) : null}
@@ -1685,8 +2074,8 @@ export function ReplicaPage() {
                     <Hint>
                       预计费用{" "}
                       {replicaQuote.estimated_credits !== undefined
-                        ? `${replicaQuote.estimated_credits} 积分（${replicaQuote.unit_credits} 积分/秒 × ${replicaQuote.estimated_seconds} 秒）`
-                        : `${(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元（${replicaQuote.unit_price_fen_per_second} 分/秒 × ${replicaQuote.estimated_seconds} 秒）`}
+                        ? `${replicaQuote.estimated_credits} 积分（${replicaQuote.unit_credits} 积分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`
+                        : `${(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元（${replicaQuote.unit_price_fen_per_second} 分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`}
                     </Hint>
                   ) : null}
                   <Button

@@ -1,0 +1,401 @@
+.FFFFFFF                                                                 [100%]
+=================================== FAILURES ===================================
+_____ test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost _____
+
+pg_state = 'postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_test'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57d8d550>
+
+    def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_state, monkeypatch):
+        from types import SimpleNamespace
+
+        from app.usage_billing import accept_operation
+
+        _seed_base(pg_state)
+        _configure_deepseek(monkeypatch)
+        _seed_script_rewrite_task(pg_state, task_id="sr-truncated")
+        _exec(
+            pg_state,
+            "INSERT INTO wallets(user_id,available_credits) VALUES('u1',100) ON CONFLICT(user_id) "
+            "DO UPDATE SET available_credits=100",
+        )
+        _exec(
+            pg_state,
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('rewrite',true,5,2)",
+        )
+        with pg_transaction() as raw:
+            accept_operation(
+                BusinessConnection.postgres(raw),
+                user_id="u1",
+                service="rewrite",
+                source_id="sr-truncated",
+                units=1,
+            )
+        monkeypatch.setattr(
+            "curl_cffi.requests.post",
+            lambda *args, **kwargs: SimpleNamespace(
+                status_code=200,
+                content=b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}'
+            ),
+        )
+        assert _run_worker("truncated-cost") == 1
+        assert _task_status(pg_state, "script_rewrite_tasks", "sr-truncated") == "FAILED"
+        assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u1'") == 100
+>       assert _one(pg_state, "SELECT cost_fen FROM billing_attempts WHERE service='rewrite'") == 2
+E       assert None == 2
+E        +  where None = _one('postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_test', "SELECT cost_fen FROM billing_attempts WHERE service='rewrite'")
+
+tests/test_cw030_worker_pg_matrix.py:1324: AssertionError
+__________ test_text_ai_purposes_use_same_deepseek_transport[rewrite] __________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57b61580>
+purpose = 'rewrite'
+
+    @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
+    def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
+        from types import SimpleNamespace
+
+        import app.script_rewrite as rewrite
+
+        requests = []
+
+        def respond(url, **_kwargs):
+            assert _kwargs["timeout"] == 240
+            assert _kwargs["stream"] is False
+            assert _kwargs["allow_redirects"] is False
+            requests.append((url, _kwargs["data"]))
+            return SimpleNamespace(status_code=200, content=json.dumps(
+                    {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
+                ).encode())
+
+        monkeypatch.setattr("curl_cffi.requests.post", respond)
+>       result = rewrite.request_deepseek_text(
+            base_url="https://api.deepseek.com",
+            api_key="fake",
+            model="deepseek-chat",
+            source_text="来源文本",
+            instructions="简洁表达",
+            purpose=purpose,
+        )
+
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+base_url = 'https://api.deepseek.com', api_key = 'fake'
+model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
+instructions = '简洁表达', purpose = 'rewrite'
+
+    def request_deepseek_text(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        source_text: str,
+        ip_profile_snapshot: dict[str, object] | None = None,
+        instructions: str = "",
+        purpose: Literal["rewrite", "analysis", "title", "prompt", "json_repair"] = "rewrite",
+    ) -> str:
+        """Single DeepSeek transport for text AI; visual/audio providers stay separate."""
+        from curl_cffi import requests as curl_requests
+>       from curl_cffi.requests.exceptions import RequestsError
+E       ImportError: cannot import name 'RequestsError' from 'curl_cffi.requests.exceptions' (/work/server/.venv/lib/python3.12/site-packages/curl_cffi/requests/exceptions.py)
+
+app/script_rewrite.py:994: ImportError
+_________ test_text_ai_purposes_use_same_deepseek_transport[analysis] __________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57be79e0>
+purpose = 'analysis'
+
+    @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
+    def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
+        from types import SimpleNamespace
+
+        import app.script_rewrite as rewrite
+
+        requests = []
+
+        def respond(url, **_kwargs):
+            assert _kwargs["timeout"] == 240
+            assert _kwargs["stream"] is False
+            assert _kwargs["allow_redirects"] is False
+            requests.append((url, _kwargs["data"]))
+            return SimpleNamespace(status_code=200, content=json.dumps(
+                    {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
+                ).encode())
+
+        monkeypatch.setattr("curl_cffi.requests.post", respond)
+>       result = rewrite.request_deepseek_text(
+            base_url="https://api.deepseek.com",
+            api_key="fake",
+            model="deepseek-chat",
+            source_text="来源文本",
+            instructions="简洁表达",
+            purpose=purpose,
+        )
+
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+base_url = 'https://api.deepseek.com', api_key = 'fake'
+model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
+instructions = '简洁表达', purpose = 'analysis'
+
+    def request_deepseek_text(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        source_text: str,
+        ip_profile_snapshot: dict[str, object] | None = None,
+        instructions: str = "",
+        purpose: Literal["rewrite", "analysis", "title", "prompt", "json_repair"] = "rewrite",
+    ) -> str:
+        """Single DeepSeek transport for text AI; visual/audio providers stay separate."""
+        from curl_cffi import requests as curl_requests
+>       from curl_cffi.requests.exceptions import RequestsError
+E       ImportError: cannot import name 'RequestsError' from 'curl_cffi.requests.exceptions' (/work/server/.venv/lib/python3.12/site-packages/curl_cffi/requests/exceptions.py)
+
+app/script_rewrite.py:994: ImportError
+___________ test_text_ai_purposes_use_same_deepseek_transport[title] ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57c1c5f0>
+purpose = 'title'
+
+    @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
+    def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
+        from types import SimpleNamespace
+
+        import app.script_rewrite as rewrite
+
+        requests = []
+
+        def respond(url, **_kwargs):
+            assert _kwargs["timeout"] == 240
+            assert _kwargs["stream"] is False
+            assert _kwargs["allow_redirects"] is False
+            requests.append((url, _kwargs["data"]))
+            return SimpleNamespace(status_code=200, content=json.dumps(
+                    {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
+                ).encode())
+
+        monkeypatch.setattr("curl_cffi.requests.post", respond)
+>       result = rewrite.request_deepseek_text(
+            base_url="https://api.deepseek.com",
+            api_key="fake",
+            model="deepseek-chat",
+            source_text="来源文本",
+            instructions="简洁表达",
+            purpose=purpose,
+        )
+
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+base_url = 'https://api.deepseek.com', api_key = 'fake'
+model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
+instructions = '简洁表达', purpose = 'title'
+
+    def request_deepseek_text(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        source_text: str,
+        ip_profile_snapshot: dict[str, object] | None = None,
+        instructions: str = "",
+        purpose: Literal["rewrite", "analysis", "title", "prompt", "json_repair"] = "rewrite",
+    ) -> str:
+        """Single DeepSeek transport for text AI; visual/audio providers stay separate."""
+        from curl_cffi import requests as curl_requests
+>       from curl_cffi.requests.exceptions import RequestsError
+E       ImportError: cannot import name 'RequestsError' from 'curl_cffi.requests.exceptions' (/work/server/.venv/lib/python3.12/site-packages/curl_cffi/requests/exceptions.py)
+
+app/script_rewrite.py:994: ImportError
+__________ test_text_ai_purposes_use_same_deepseek_transport[prompt] ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57c1d490>
+purpose = 'prompt'
+
+    @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
+    def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
+        from types import SimpleNamespace
+
+        import app.script_rewrite as rewrite
+
+        requests = []
+
+        def respond(url, **_kwargs):
+            assert _kwargs["timeout"] == 240
+            assert _kwargs["stream"] is False
+            assert _kwargs["allow_redirects"] is False
+            requests.append((url, _kwargs["data"]))
+            return SimpleNamespace(status_code=200, content=json.dumps(
+                    {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
+                ).encode())
+
+        monkeypatch.setattr("curl_cffi.requests.post", respond)
+>       result = rewrite.request_deepseek_text(
+            base_url="https://api.deepseek.com",
+            api_key="fake",
+            model="deepseek-chat",
+            source_text="来源文本",
+            instructions="简洁表达",
+            purpose=purpose,
+        )
+
+tests/test_cw030_worker_pg_matrix.py:2388:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+base_url = 'https://api.deepseek.com', api_key = 'fake'
+model = 'deepseek-chat', source_text = '来源文本', ip_profile_snapshot = None
+instructions = '简洁表达', purpose = 'prompt'
+
+    def request_deepseek_text(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        source_text: str,
+        ip_profile_snapshot: dict[str, object] | None = None,
+        instructions: str = "",
+        purpose: Literal["rewrite", "analysis", "title", "prompt", "json_repair"] = "rewrite",
+    ) -> str:
+        """Single DeepSeek transport for text AI; visual/audio providers stay separate."""
+        from curl_cffi import requests as curl_requests
+>       from curl_cffi.requests.exceptions import RequestsError
+E       ImportError: cannot import name 'RequestsError' from 'curl_cffi.requests.exceptions' (/work/server/.venv/lib/python3.12/site-packages/curl_cffi/requests/exceptions.py)
+
+app/script_rewrite.py:994: ImportError
+___________ test_deepseek_total_deadline_stops_continuous_keep_alive ___________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x76de57d8cb60>
+
+    def test_deepseek_total_deadline_stops_continuous_keep_alive(monkeypatch):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Event, Thread
+        from time import monotonic
+
+        import app.script_rewrite as rewrite
+
+        stop = Event()
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.end_headers()
+                try:
+                    while not stop.wait(0.02):
+                        self.wfile.write(b"\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        monkeypatch.setattr(rewrite, "DEEPSEEK_TIMEOUT_SECONDS", 0.2)
+        started = monotonic()
+        try:
+            with pytest.raises(HTTPException) as failure:
+>               rewrite.request_deepseek_text(
+                    base_url=f"http://127.0.0.1:{server.server_port}",
+                    api_key="fake", model="test-model", source_text="原文",
+                )
+
+tests/test_cw030_worker_pg_matrix.py:2435:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+base_url = 'http://127.0.0.1:33405', api_key = 'fake', model = 'test-model'
+source_text = '原文', ip_profile_snapshot = None, instructions = ''
+purpose = 'rewrite'
+
+    def request_deepseek_text(
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        source_text: str,
+        ip_profile_snapshot: dict[str, object] | None = None,
+        instructions: str = "",
+        purpose: Literal["rewrite", "analysis", "title", "prompt", "json_repair"] = "rewrite",
+    ) -> str:
+        """Single DeepSeek transport for text AI; visual/audio providers stay separate."""
+        from curl_cffi import requests as curl_requests
+>       from curl_cffi.requests.exceptions import RequestsError
+E       ImportError: cannot import name 'RequestsError' from 'curl_cffi.requests.exceptions' (/work/server/.venv/lib/python3.12/site-packages/curl_cffi/requests/exceptions.py)
+
+app/script_rewrite.py:994: ImportError
+______ test_rewrite_submission_refreshes_valid_lease_and_rejects_expired _______
+
+pg_state = 'postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_test'
+
+    def test_rewrite_submission_refreshes_valid_lease_and_rejects_expired(pg_state):
+        _seed_base(pg_state)
+        _seed_script_rewrite_task(pg_state, task_id="sr-deadline")
+        lease = _rewrite_lease(pg_state, "deadline-worker")
+        assert lease is not None
+        _exec(pg_state, "UPDATE script_rewrite_tasks SET locked_until=now()+interval '5 seconds' WHERE id='sr-deadline'")
+        with pg_transaction() as raw:
+            mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+>       assert _one(pg_state, "SELECT locked_until > now()+interval '250 seconds' FROM script_rewrite_tasks WHERE id='sr-deadline'")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_cw030_worker_pg_matrix.py:2456:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests/test_cw030_worker_pg_matrix.py:191: in _one
+    row = pg.execute(sql, params).fetchone()
+          ^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <psycopg.Connection [BAD] at 0x76de553c8290>
+query = "SELECT locked_until > now()+interval '250 seconds' FROM script_rewrite_tasks WHERE id='sr-deadline'"
+params = (), prepare = None, binary = False
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> Cursor[Row]:
+        """Execute a query and return a cursor to read its results."""
+        try:
+            cur = self.cursor()
+            if binary:
+                cur.format = BINARY
+
+            if isinstance(query, Template):
+                if params is not None:
+                    raise TypeError(
+                        "'execute()' with string template query doesn't support parameters"
+                    )
+                return cur.execute(query, prepare=prepare)
+            else:
+                return cur.execute(query, params, prepare=prepare)
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.UndefinedFunction: operator does not exist: text > timestamp with time zone
+E           LINE 1: SELECT locked_until > now()+interval '250 seconds' FROM scri...
+E                                       ^
+E           HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+
+/work/server/.venv/lib/python3.12/site-packages/psycopg/connection.py:300: UndefinedFunction
+=============================== warnings summary ===============================
+../../work/server/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /work/server/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_cw030_worker_pg_matrix.py::test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost
+FAILED tests/test_cw030_worker_pg_matrix.py::test_text_ai_purposes_use_same_deepseek_transport[rewrite]
+FAILED tests/test_cw030_worker_pg_matrix.py::test_text_ai_purposes_use_same_deepseek_transport[analysis]
+FAILED tests/test_cw030_worker_pg_matrix.py::test_text_ai_purposes_use_same_deepseek_transport[title]
+FAILED tests/test_cw030_worker_pg_matrix.py::test_text_ai_purposes_use_same_deepseek_transport[prompt]
+FAILED tests/test_cw030_worker_pg_matrix.py::test_deepseek_total_deadline_stops_continuous_keep_alive
+FAILED tests/test_cw030_worker_pg_matrix.py::test_rewrite_submission_refreshes_valid_lease_and_rejects_expired
+7 failed, 1 passed, 70 deselected, 1 warning in 39.76s

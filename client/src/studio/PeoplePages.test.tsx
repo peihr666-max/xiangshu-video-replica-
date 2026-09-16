@@ -456,7 +456,7 @@ describe("PeoplePages", () => {
   it("renders the IP tab without exposing authorization settings", () => {
     render(<PersonPage />);
     expect(
-      screen.getByRole("heading", { name: "人物定位" }),
+      screen.getByRole("heading", { name: "身份与业务" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("授权与状态")).not.toBeInTheDocument();
   });
@@ -555,6 +555,10 @@ describe("PeoplePages", () => {
       service_scope: "乡墅方案",
       target_audience: "准备建房的家庭",
       expression_style: "专业",
+      audience_needs: "",
+      factual_background: "",
+      sample_script: "",
+      forbidden_claims: "",
     });
   });
 

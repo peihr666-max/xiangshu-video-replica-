@@ -383,6 +383,11 @@ function printManifest(entries, label) {
 function assertCustomerArtifactShape(manifest) {
   const problems = [];
   const indexEntry = manifest.find((entry) => entry.rel === "index.html");
+  for (const asset of ["studio/logo-mark.svg", "favicon.svg", "favicon.png", "favicon.ico"]) {
+    if (!manifest.some((entry) => entry.rel === asset && entry.bytes > 0)) {
+      problems.push(`品牌资源缺失或为空：${asset}`);
+    }
+  }
   if (!indexEntry) {
     problems.push("index.html 缺失（客户 SPA 入口不存在）");
   } else if (indexEntry.bytes === 0) {
@@ -525,10 +530,13 @@ function runAdminBaseStylesheetControl() {
 // ─────────────────────────────────────────────────────────────────────────────
 // 主流程
 // ─────────────────────────────────────────────────────────────────────────────
-function assertProductionPublicAssets(manifest) {
+export function assertProductionPublicAssets(manifest) {
   const required = [
     "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
     "studio/brand.png",
+    "studio/logo-mark.svg",
     "platforms/douyin.ico",
     "platforms/wechat_channels.ico",
     "platforms/xiaohongshu.ico",
@@ -542,7 +550,7 @@ function assertProductionPublicAssets(manifest) {
     }
   }
   const reviewImages = manifest.filter(
-    (entry) => entry.rel.startsWith("studio/") && entry.rel !== "studio/brand.png",
+    (entry) => entry.rel.startsWith("studio/") && !required.includes(entry.rel),
   );
   if (reviewImages.length > 0) {
     throw new Error(`Review-only assets in customer bundle: ${reviewImages.map((entry) => entry.rel).join(", ")}`);
@@ -650,4 +658,6 @@ function main() {
   );
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

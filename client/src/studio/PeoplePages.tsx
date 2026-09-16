@@ -411,6 +411,10 @@ function IpPanel({ person }: { person: StudioPerson }) {
     scope: person.scope,
     audience: person.audience,
     expression: person.expression,
+    audience_needs: person.audience_needs ?? "",
+    factual_background: person.factual_background ?? "",
+    sample_script: person.sample_script ?? "",
+    forbidden_claims: person.forbidden_claims ?? "",
   }));
   const update = (key: keyof typeof draft, value: string) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -434,6 +438,10 @@ function IpPanel({ person }: { person: StudioPerson }) {
         service_scope: draft.scope,
         target_audience: draft.audience,
         expression_style: draft.expression,
+        audience_needs: draft.audience_needs,
+        factual_background: draft.factual_background,
+        sample_script: draft.sample_script,
+        forbidden_claims: draft.forbidden_claims,
       });
       updateData((data) => ({
         ...data,
@@ -451,7 +459,10 @@ function IpPanel({ person }: { person: StudioPerson }) {
   return (
     <div className="ip-layout">
       <Panel>
-        <h2>人物定位</h2>
+        <h2>身份与业务</h2>
+        <Hint>
+          这些信息长期用于文案二创；本次长度和临时要求在文案工坊设置。
+        </Hint>
         <Field label="姓名">
           <input
             disabled={readOnly}
@@ -475,6 +486,7 @@ function IpPanel({ person }: { person: StudioPerson }) {
             onChange={(event) => update("scope", event.target.value)}
           />
         </Field>
+        <h3>目标受众</h3>
         <Field label="目标人群">
           <textarea
             rows={3}
@@ -483,6 +495,18 @@ function IpPanel({ person }: { person: StudioPerson }) {
             onChange={(event) => update("audience", event.target.value)}
           />
         </Field>
+        <Field label="客户关心的问题">
+          <textarea
+            aria-label="客户关心的问题"
+            rows={3}
+            maxLength={600}
+            disabled={readOnly}
+            value={draft.audience_needs}
+            onChange={(event) => update("audience_needs", event.target.value)}
+            placeholder="例如：预算如何规划、布局是否实用、施工如何避坑"
+          />
+        </Field>
+        <h3>表达风格</h3>
         <Field label="表达特点">
           <textarea
             rows={3}
@@ -493,6 +517,45 @@ function IpPanel({ person }: { person: StudioPerson }) {
         </Field>
       </Panel>
       <Panel>
+        <h2>真实素材与表达边界</h2>
+        <Field label="可引用的真实资料">
+          <textarea
+            aria-label="可引用的真实资料"
+            rows={5}
+            maxLength={2000}
+            disabled={readOnly}
+            value={draft.factual_background}
+            onChange={(event) =>
+              update("factual_background", event.target.value)
+            }
+            placeholder="填写已核实的服务、资质或案例，注明来源或适用范围。没有资料可以留空。"
+          />
+        </Field>
+        <Field label="代表性口播">
+          <textarea
+            aria-label="代表性口播"
+            rows={5}
+            maxLength={2000}
+            disabled={readOnly}
+            value={draft.sample_script}
+            onChange={(event) => update("sample_script", event.target.value)}
+            placeholder="粘贴一段你认可的口播，用于参考句式、节奏和用词。不会直接移植其中的经历或数字。"
+          />
+        </Field>
+        <Field label="禁用表达与承诺">
+          <textarea
+            aria-label="禁用表达与承诺"
+            rows={3}
+            maxLength={600}
+            disabled={readOnly}
+            value={draft.forbidden_claims}
+            onChange={(event) => update("forbidden_claims", event.target.value)}
+            placeholder="例如：不承诺最低价、不保证固定工期、不虚构客户案例"
+          />
+        </Field>
+        <Hint>
+          选填。真实资料最多2000字符，代表口播最多2000字符，其余补充项最多600字符。
+        </Hint>
         <h2>人物简介预览</h2>
         <p className="ip-preview">
           大家好，我是{draft.name}，一名{draft.role}。我专注于{draft.scope}

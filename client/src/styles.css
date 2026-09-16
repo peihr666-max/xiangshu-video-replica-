@@ -1,3 +1,5 @@
+@import "./typography.css";
+
 /* 管理端与内部壳基础样式表。
  * 客户 lane 专属样式已拆出：customer/customer-access.css（RootApp 引入）、legacy-panels.css（LiveWorkspacePanel 引入）。
  * 管理入口经 admin-main.tsx 引入本文件（ADMIN-UI-AUDIT-20260911）；客户制品禁止包含本文件（CW-019）。
@@ -103,7 +105,7 @@ button.nav-button {
   padding: 12px 14px;
   color: #9b988f;
   background: transparent;
-  font-size: 14.5px;
+  font-size: var(--font-body);
   font-weight: 560;
   text-align: left;
 }
@@ -211,12 +213,12 @@ input:focus {
   gap: 8px;
   margin-top: 18px;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .eyebrow {
   color: #c9a35c;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.14em;
 }
@@ -227,7 +229,7 @@ input:focus {
   margin-top: 4px;
   color: #aaa69f;
   text-align: center;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .customer-access-form .customer-access-alternative .btn-secondary,
@@ -238,7 +240,7 @@ input:focus {
   color: #e8e4dc;
   background: transparent;
   box-shadow: none;
-  font-size: 15px;
+  font-size: var(--font-body);
 }
 
 .customer-access-form
@@ -305,14 +307,14 @@ input:focus {
 
 .app-brand strong {
   color: #f4f2fa;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   letter-spacing: -0.02em;
 }
 
 .app-brand__subtitle,
 .sidebar-user__subtitle {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
   letter-spacing: 0.08em;
 }
 
@@ -432,7 +434,7 @@ button.sidebar-user__menu-item {
   padding: 10px 11px;
   color: #c8c5ce;
   background: transparent;
-  font-size: 14px;
+  font-size: var(--font-body);
   font-weight: 560;
   text-align: left;
 }
@@ -468,7 +470,7 @@ button.sidebar-user__menu-item--active {
 .workspace-breadcrumb {
   margin: 0 0 8px;
   color: #8d8b9b;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .workspace-title-row {
@@ -489,7 +491,7 @@ button.sidebar-user__menu-item--active {
 .workspace-title-row h1 {
   margin: 0;
   color: #f6f4fb;
-  font-size: 24px;
+  font-size: var(--font-title);
   font-weight: 700;
   letter-spacing: -0.02em;
   line-height: 1.25;
@@ -499,7 +501,7 @@ button.sidebar-user__menu-item--active {
 .workspace-subtitle {
   margin: 0;
   color: #8d8b9b;
-  font-size: 13px;
+  font-size: var(--font-label);
   line-height: 1.5;
 }
 
@@ -568,13 +570,13 @@ button.sidebar-user__menu-item--active {
 
 .projects-upload-item__aside .secondary-button {
   padding: 7px 13px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .projects-list__actions .secondary-button,
 .projects-generate-button {
   padding: 7px 13px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 @keyframes upload-pulse {
@@ -631,7 +633,7 @@ button.sidebar-user__menu-item--active {
   place-items: center;
   background: #0e0e12;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-variant-numeric: tabular-nums;
 }
 
@@ -640,7 +642,7 @@ button.sidebar-user__menu-item--active {
   z-index: 1;
   overflow: hidden;
   padding-right: 6px;
-  font-size: 13px;
+  font-size: var(--font-label);
   font-weight: 560;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -682,7 +684,7 @@ button.sidebar-user__menu-item--active {
   border-radius: 999px;
   padding: 5px 12px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -717,7 +719,7 @@ button.workspace-tab--active {
 }
 
 .workspace-tab__badge {
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
 }
@@ -741,7 +743,7 @@ button.workspace-tab--active {
 .stage-block__status {
   margin-left: auto;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-variant-numeric: tabular-nums;
 }
 
@@ -780,7 +782,7 @@ button.workspace-tab--active {
 .autosave-status {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12.5px;
+  font-size: var(--font-label);
   font-variant-numeric: tabular-nums;
 }
 
@@ -799,7 +801,7 @@ button.workspace-tab--active {
 
 .source-frame-selection h3 {
   margin: 0 0 5px;
-  font-size: 17px;
+  font-size: var(--font-subtitle);
 }
 
 .source-frame-selection p {
@@ -815,7 +817,7 @@ button.workspace-tab--active {
   padding: 5px 10px;
   color: #e6bd68;
   background: rgba(58, 42, 16, 0.54);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 800;
   white-space: nowrap;
 }
@@ -834,7 +836,7 @@ button.workspace-tab--active {
 
 .source-frame-option small {
   color: #aaa297;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 500;
 }
 
@@ -887,7 +889,7 @@ button.history-version {
   border: 1px solid #3a3a44;
   color: #d8d4cc;
   background: #141419;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 button.history-version--active {
@@ -920,7 +922,7 @@ button.history-version--active {
   display: grid;
   gap: 6px;
   color: #d8d4cc;
-  font-size: 13px;
+  font-size: var(--font-label);
   font-weight: 700;
 }
 
@@ -955,15 +957,15 @@ button.history-version--active {
   gap: 2px;
   margin: 10px 0 0;
   padding: 8px 14px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .paid-task-warning--toolbar strong {
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .paid-task-warning--toolbar span {
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .paid-task-warning--toolbar--empty {
@@ -989,7 +991,7 @@ button.history-version--active {
   padding: 6px 9px;
   color: #ffcf8a;
   background: #332519;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 800;
 }
 
@@ -1035,7 +1037,7 @@ button.history-version--active {
   color: #8d8798;
   background: #0e0e12;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--font-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1056,7 +1058,7 @@ button.history-version--active {
 .section-description {
   margin: 8px 0 0;
   color: #aaa297;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .batch-history-card {
@@ -1089,7 +1091,7 @@ button.history-version--active {
   gap: 8px;
   min-width: 72px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .video-stage-step:not(:last-child)::after {
@@ -1228,7 +1230,7 @@ button.history-version--active {
   padding: 5px 8px;
   color: #c7c4d0;
   background: #161620;
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 750;
   white-space: nowrap;
 }
@@ -1338,7 +1340,7 @@ button.identity-list-item--active:not(:disabled):hover {
 
 .identity-list-item small {
   color: #8f8c86;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .character-library-main {
@@ -1375,14 +1377,14 @@ button.identity-list-item--active:not(:disabled):hover {
 .identity-facts dt,
 .quality-result dt {
   color: #8f8c86;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .identity-facts dd,
 .quality-result dd {
   margin: 4px 0 0;
   color: #e2dfeb;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .evidence-note,
@@ -1391,7 +1393,7 @@ button.identity-list-item--active:not(:disabled):hover {
 .human-review-label {
   margin: 14px 0 0;
   color: #e8c37a;
-  font-size: 12px;
+  font-size: var(--font-caption);
   line-height: 1.5;
 }
 
@@ -1445,7 +1447,7 @@ button.version-tab small {
 button.persona-tab small,
 button.version-tab small {
   color: #8f8c86;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 button.persona-tab--active,
@@ -1481,7 +1483,7 @@ button.version-tab--active:not(:disabled):hover {
   display: grid;
   gap: 6px;
   color: #d8d4cc;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
 }
 
@@ -1520,7 +1522,7 @@ button.version-tab--active:not(:disabled):hover {
 
 .view-slot-heading span {
   color: #74716b;
-  font-size: 10px;
+  font-size: var(--font-caption);
   font-weight: 700;
 }
 
@@ -1565,7 +1567,7 @@ button.version-tab--active:not(:disabled):hover {
   border-left: 2px solid #6b4baa;
   padding-left: 9px;
   color: #aaa297;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .auto-quality-note strong {
@@ -1582,7 +1584,7 @@ button.version-tab--active:not(:disabled):hover {
   align-items: center;
   gap: 8px;
   color: #91deb4;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
 }
 
@@ -1602,7 +1604,7 @@ button.version-tab--active:not(:disabled):hover {
 button.regenerate-button {
   justify-self: start;
   padding: 8px 10px;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .view-slot-empty,
@@ -1632,7 +1634,7 @@ button.regenerate-button {
   padding: 6px 8px;
   color: #aaa297;
   background: #101019;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .publish-panel {
@@ -1651,7 +1653,7 @@ button.regenerate-button {
 
 .asset-thumbnail--placeholder {
   color: #74716b;
-  font-size: 10px;
+  font-size: var(--font-caption);
   text-align: center;
 }
 
@@ -1703,7 +1705,7 @@ button.regenerate-button {
   border-bottom: 2px solid #34313e;
   padding: 8px 4px;
   color: #7e7a8a;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
 }
 
@@ -1743,7 +1745,7 @@ button.regenerate-button {
   position: absolute;
   inset: 5px 10px;
   color: #fff;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .identity-skeleton,
@@ -1891,19 +1893,19 @@ button.regenerate-button {
 
 .character-preview-card__actions .secondary-button {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .character-scene-card__body .secondary-button {
   justify-self: start;
   margin-top: 4px;
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .character-preview-item .secondary-button {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .status-badge {
@@ -1912,7 +1914,7 @@ button.regenerate-button {
   background: #162a21;
   padding: 3px 10px;
   color: #91deb4;
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 700;
 }
 
@@ -1926,7 +1928,7 @@ button.regenerate-button {
   border-radius: 999px;
   padding: 7px 12px;
   color: #aaa297;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .device-online-state.is-online {
@@ -1987,7 +1989,7 @@ button.regenerate-button {
   min-width: 620px;
   border-collapse: collapse;
   color: #e8e3db;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .internal-table th,
@@ -2044,7 +2046,7 @@ button.regenerate-button {
 
 .admin-header h1 {
   margin: 8px 0 0;
-  font-size: clamp(28px, 3vw, 40px);
+  font-size: clamp(24px, 3vw, 28px);
   letter-spacing: 0.04em;
 }
 
@@ -2057,7 +2059,7 @@ button.regenerate-button {
   max-width: 560px;
   margin: 0;
   color: var(--admin-copy-soft);
-  font-size: 14px;
+  font-size: var(--font-body);
   line-height: 1.7;
 }
 
@@ -2089,7 +2091,7 @@ button.regenerate-button {
 
 .admin-tab small {
   color: var(--admin-copy-faint);
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-tab.is-active {
@@ -2127,7 +2129,7 @@ button.regenerate-button {
 .admin-panel h2,
 .admin-form h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   letter-spacing: 0.03em;
 }
 
@@ -2163,7 +2165,7 @@ button.regenerate-button {
   display: grid;
   gap: 7px;
   color: var(--admin-copy-soft);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-form input[readonly] {
@@ -2209,7 +2211,7 @@ button.regenerate-button {
   background: rgba(16, 20, 31, 0.82);
   padding: 12px 14px;
   color: var(--admin-copy-soft);
-  font-size: 13px;
+  font-size: var(--font-label);
   box-shadow: var(--admin-shadow);
 }
 
@@ -2220,7 +2222,7 @@ button.regenerate-button {
 .admin-hint {
   margin: 0;
   color: var(--admin-copy-faint);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-stage {
@@ -2259,13 +2261,13 @@ button.regenerate-button {
 
 .admin-sidebar__top h2 {
   margin: 8px 0 0;
-  font-size: 24px;
+  font-size: var(--font-title);
 }
 
 .admin-sidebar__label {
   margin: 0;
   color: var(--admin-accent-strong);
-  font-size: 11px;
+  font-size: var(--font-caption);
   letter-spacing: 0.22em;
   text-transform: uppercase;
 }
@@ -2273,7 +2275,7 @@ button.regenerate-button {
 .admin-sidebar__helper {
   margin: 10px 0 0;
   color: var(--admin-copy-faint);
-  font-size: 13px;
+  font-size: var(--font-label);
   line-height: 1.6;
 }
 
@@ -2296,7 +2298,7 @@ button.regenerate-button {
 .admin-nav-group h3 {
   margin: 0;
   color: var(--admin-copy-faint);
-  font-size: 12px;
+  font-size: var(--font-caption);
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
@@ -2318,13 +2320,13 @@ button.regenerate-button {
 
 .admin-page-header h1 {
   margin: 0;
-  font-size: clamp(24px, 2.4vw, 32px);
+  font-size: clamp(24px, 2.4vw, 28px);
 }
 
 .admin-page-header p {
   margin: 0;
   color: var(--admin-copy-soft);
-  font-size: 14px;
+  font-size: var(--font-body);
   line-height: 1.7;
 }
 
@@ -2354,7 +2356,7 @@ button.regenerate-button {
 .admin-summary-card span,
 .customer-detail-metric span {
   color: var(--admin-copy-faint);
-  font-size: 12px;
+  font-size: var(--font-caption);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -2362,7 +2364,7 @@ button.regenerate-button {
 .admin-summary-card strong,
 .customer-detail-metric strong {
   color: var(--admin-copy);
-  font-size: 28px;
+  font-size: var(--font-title);
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -2391,7 +2393,7 @@ button.regenerate-button {
 
 .admin-toolbar__field span {
   color: var(--admin-copy-soft);
-  font-size: 12px;
+  font-size: var(--font-caption);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -2448,7 +2450,7 @@ button.regenerate-button {
 .customer-detail-section h3 {
   margin: 0;
   color: #8a847b;
-  font-size: 9px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.1em;
 }
@@ -2477,7 +2479,7 @@ button.regenerate-button {
 
 .customer-detail-meta dt {
   color: var(--admin-copy-faint);
-  font-size: 12px;
+  font-size: var(--font-caption);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -2563,7 +2565,7 @@ button.regenerate-button {
   .admin-data-table td::before {
     content: attr(data-label);
     color: var(--admin-copy-faint);
-    font-size: 12px;
+    font-size: var(--font-caption);
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
@@ -2603,14 +2605,14 @@ button.regenerate-button {
   max-width: 430px;
   margin: 0;
   color: #aaa297;
-  font-size: 13px;
+  font-size: var(--font-label);
   line-height: 1.65;
 }
 
 .activation-generator__eyebrow {
   margin: 0;
   color: #d6a94d;
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.12em;
 }
@@ -2626,7 +2628,7 @@ button.regenerate-button {
 .activation-amount-picker legend {
   margin-bottom: 10px;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .activation-amount-grid {
@@ -2641,7 +2643,7 @@ button.activation-amount-option {
   border-radius: 10px;
   color: #d8d1c8;
   background: #17181b;
-  font-size: 15px;
+  font-size: var(--font-body);
   font-weight: 650;
 }
 
@@ -2662,12 +2664,12 @@ button.activation-amount-option.is-active {
   max-width: 360px;
   gap: 7px;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .activation-generator__field span {
   color: #8f8981;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .activation-generator__summary {
@@ -2680,12 +2682,12 @@ button.activation-amount-option.is-active {
   padding: 15px 17px;
   color: #aaa297;
   background: rgba(214, 169, 77, 0.06);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .activation-generator__summary strong {
   color: #f2ede5;
-  font-size: 22px;
+  font-size: var(--font-lead);
 }
 
 button.activation-generator__submit {
@@ -2714,7 +2716,7 @@ button.activation-generator__submit {
 .activation-code-result__warning {
   margin: 0;
   color: #e3c989;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .activation-code-result__list {
@@ -2759,13 +2761,13 @@ button.activation-generator__submit {
 
 .admin-result h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--font-body);
 }
 
 .admin-result p {
   margin: 0;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
   word-break: break-all;
 }
 
@@ -2777,7 +2779,7 @@ button.activation-generator__submit {
   border: 1px dashed var(--line);
   border-radius: 8px;
   color: #f2ede5;
-  font-size: 14px;
+  font-size: var(--font-body);
   word-break: break-all;
 }
 
@@ -2792,7 +2794,7 @@ button.activation-generator__submit {
   display: grid;
   gap: 6px;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-filters button {
@@ -2845,7 +2847,7 @@ button.activation-generator__submit {
 .admin-breadcrumb {
   overflow: hidden;
   color: #a49f97;
-  font-size: 16px;
+  font-size: var(--font-body);
   letter-spacing: 0.03em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2860,7 +2862,7 @@ button.activation-generator__submit {
 
 .admin-shell--control .admin-session time {
   color: #77736d;
-  font-size: 14px;
+  font-size: var(--font-body);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2875,7 +2877,7 @@ button.activation-generator__submit {
 .admin-shell--control .admin-session button {
   margin-left: 0;
   padding: 7px 11px;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-stage {
@@ -2930,7 +2932,7 @@ button.activation-generator__submit {
 
 .admin-brand span {
   color: var(--admin-gold);
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -2952,7 +2954,7 @@ button.activation-generator__submit {
 .admin-nav-group h3 {
   margin: 0 0 5px 9px;
   color: var(--admin-gold);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.03em;
 }
@@ -2973,7 +2975,7 @@ button.activation-generator__submit {
   gap: 12px;
   color: #8f8a82;
   background: transparent;
-  font-size: 14px;
+  font-size: var(--font-body);
   font-weight: 520;
   text-align: left;
 }
@@ -2981,7 +2983,7 @@ button.activation-generator__submit {
 .admin-shell--control button.admin-tab small {
   display: none;
   color: var(--admin-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
   line-height: 1.45;
 }
 
@@ -3019,12 +3021,12 @@ button.activation-generator__submit {
   border-top: 1px solid var(--admin-line-soft);
   padding: 8px 10px 2px;
   color: #b0aaa0;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-sidebar__footer small {
   color: #66625c;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-workspace {
@@ -3058,7 +3060,7 @@ button.activation-generator__submit {
 
 .admin-page-heading > span {
   color: var(--admin-gold);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.15em;
 }
@@ -3067,7 +3069,7 @@ button.activation-generator__submit {
 .admin-page-header h1 {
   margin: 0;
   color: var(--admin-text);
-  font-size: clamp(24px, 2.1vw, 31px);
+  font-size: clamp(24px, 2.1vw, 24px);
   font-weight: 560;
   letter-spacing: -0.035em;
 }
@@ -3076,7 +3078,7 @@ button.activation-generator__submit {
 .admin-page-header p {
   margin: 0;
   color: var(--admin-muted);
-  font-size: 16px;
+  font-size: var(--font-body);
   line-height: 1.6;
 }
 
@@ -3108,7 +3110,7 @@ button.activation-generator__submit {
   display: grid;
   gap: 5px;
   color: #b6afa5;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0;
 }
@@ -3119,7 +3121,7 @@ button.activation-generator__submit {
   display: grid;
   gap: 7px;
   color: #b6afa5;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-toolbar input,
@@ -3132,7 +3134,7 @@ button.activation-generator__submit {
   color: #d8d2c8;
   outline: none;
   background: #111110;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-toolbar button {
@@ -3141,7 +3143,7 @@ button.activation-generator__submit {
   padding: 0 15px;
   color: #18140c;
   background: var(--admin-gold);
-  font-size: 14px;
+  font-size: var(--font-body);
   font-weight: 700;
 }
 
@@ -3159,7 +3161,7 @@ button.activation-generator__submit {
   border-radius: 7px;
   color: #8d887f;
   background: #171716;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 
 .admin-attention-strip strong {
@@ -3169,7 +3171,7 @@ button.activation-generator__submit {
   padding: 0 17px;
   color: #d6c59e;
   background: rgba(198, 164, 95, 0.08);
-  font-size: 10px;
+  font-size: var(--font-caption);
   letter-spacing: 0.08em;
 }
 
@@ -3182,14 +3184,14 @@ button.activation-generator__submit {
   margin-left: 7px;
   color: var(--admin-gold-bright);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-attention-strip small {
   margin-left: auto;
   padding: 0 16px;
   color: #5f5b55;
-  font-size: 9px;
+  font-size: var(--font-caption);
 }
 
 .admin-table-card {
@@ -3206,7 +3208,7 @@ button.activation-generator__submit {
   width: 100%;
   border-collapse: collapse;
   color: #c9c2b8;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-data-table {
@@ -3227,7 +3229,7 @@ button.activation-generator__submit {
 .admin-shell--control .internal-table th {
   color: #b6afa5;
   background: #242321;
-  font-size: 14px;
+  font-size: var(--font-body);
   font-weight: 700;
   letter-spacing: 0.08em;
   white-space: nowrap;
@@ -3249,7 +3251,7 @@ button.activation-generator__submit {
 .admin-data-table code {
   color: #c9c2b8;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-data-table .status-badge {
@@ -3261,7 +3263,7 @@ button.activation-generator__submit {
   padding: 0 8px;
   color: #92bd9e;
   background: rgba(54, 103, 69, 0.12);
-  font-size: 12px;
+  font-size: var(--font-caption);
   white-space: nowrap;
 }
 
@@ -3286,7 +3288,7 @@ button.activation-generator__submit {
   padding: 7px 10px;
   color: #d9bd82;
   background: rgba(198, 164, 95, 0.08);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-data-table button:not(:disabled):hover,
@@ -3305,7 +3307,7 @@ button.activation-generator__submit {
 .activation-device-page .admin-page-header h2 {
   margin: 0 0 5px;
   color: var(--admin-text);
-  font-size: 18px;
+  font-size: var(--font-subtitle);
 }
 
 .activation-device-page .admin-page-header p {
@@ -3339,13 +3341,13 @@ button.activation-generator__submit {
   padding: 10px 12px;
   border-bottom: 1px solid var(--admin-line-soft);
   color: #aaa39a;
-  font-size: 10px;
+  font-size: var(--font-caption);
   text-align: left;
 }
 
 .activation-device-subtable th {
   color: #706b64;
-  font-size: 9px;
+  font-size: var(--font-caption);
   letter-spacing: 0.06em;
 }
 
@@ -3387,14 +3389,14 @@ button.activation-generator__submit {
 .customer-detail-panel__header h2 {
   margin: 0 0 4px;
   color: #ded8cd;
-  font-size: 13px;
+  font-size: var(--font-label);
   font-weight: 600;
 }
 
 .customer-detail-panel__header p {
   margin: 0;
   color: #6e6962;
-  font-size: 10px;
+  font-size: var(--font-caption);
 }
 
 .customer-detail-grid {
@@ -3416,13 +3418,13 @@ button.activation-generator__submit {
 .customer-detail-metric span,
 .customer-detail-meta dt {
   color: #706b64;
-  font-size: 9px;
+  font-size: var(--font-caption);
 }
 
 .customer-detail-metric strong {
   color: #d9d2c7;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 550;
 }
 
@@ -3454,7 +3456,7 @@ button.activation-generator__submit {
   margin: 0;
   overflow: hidden;
   color: #aaa49b;
-  font-size: 10px;
+  font-size: var(--font-caption);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3472,7 +3474,7 @@ button.activation-generator__submit {
   justify-content: flex-end;
   gap: 11px;
   color: #6f6a63;
-  font-size: 10px;
+  font-size: var(--font-caption);
 }
 
 .admin-shell--control .pagination button {
@@ -3480,7 +3482,7 @@ button.activation-generator__submit {
   padding: 7px 10px;
   color: #a19b92;
   background: #171716;
-  font-size: 10px;
+  font-size: var(--font-caption);
 }
 
 .admin-shell--control .pagination button:disabled {
@@ -3522,12 +3524,12 @@ button.activation-generator__submit {
 
 .admin-orders-page .admin-metrics small {
   color: #b6afa5;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-orders-page .admin-metrics strong {
   color: var(--admin-gold-bright);
-  font-size: 30px;
+  font-size: var(--font-title);
   font-weight: 600;
 }
 
@@ -3539,7 +3541,7 @@ button.activation-generator__submit {
 
 .customers-page > .admin-table-card .admin-data-table td {
   padding: 18px 10px;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-devices-sessions-layout > .devices-page {
@@ -3564,13 +3566,13 @@ button.activation-generator__submit {
 
 .admin-devices-sessions-layout .admin-data-table td {
   padding: 17px 8px;
-  font-size: 12px;
+  font-size: var(--font-caption);
   overflow-wrap: anywhere;
 }
 
 .admin-devices-sessions-layout th {
   padding: 12px 6px;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-devices-sessions-layout th:nth-child(1) {
@@ -3616,7 +3618,7 @@ button.activation-generator__submit {
 
 .admin-devices-sessions-layout .admin-data-table .admin-actions button {
   padding: 6px;
-  font-size: 12px;
+  font-size: var(--font-caption);
   white-space: nowrap;
 }
 
@@ -3662,19 +3664,19 @@ button.activation-generator__submit {
   color: #77726b;
   background: #171716;
   box-shadow: none;
-  font-size: 9px;
+  font-size: var(--font-caption);
 }
 
 .admin-summary-card strong {
   color: #d7d0c5;
   font-family: var(--mono);
-  font-size: 20px;
+  font-size: var(--font-section);
   font-weight: 520;
 }
 
 .admin-summary-card small {
   color: #5e5a54;
-  font-size: 9px;
+  font-size: var(--font-caption);
 }
 
 .admin-shell--control .admin-panel > .table-scroll {
@@ -3730,7 +3732,7 @@ button.activation-generator__submit {
     padding: 0 11px;
     color: #c8c1b7;
     background: #181817;
-    font-size: 10px;
+    font-size: var(--font-caption);
   }
   .admin-shell--control .admin-session {
     display: none;
@@ -3806,7 +3808,7 @@ button.activation-generator__submit {
     padding: 0 11px;
     color: #c8c1b7;
     background: #181817;
-    font-size: 10px;
+    font-size: var(--font-caption);
   }
   .admin-shell--control .admin-session time,
   .admin-shell--control .admin-session button {
@@ -3929,7 +3931,7 @@ button.activation-generator__submit {
   .admin-data-table tbody > tr:not(.admin-detail-row) td::before {
     content: attr(data-label);
     color: #6d6861;
-    font-size: 9px;
+    font-size: var(--font-caption);
     font-weight: 600;
     text-align: left;
   }
@@ -4007,7 +4009,7 @@ button.activation-generator__submit {
 .admin-dialog h2 {
   margin: 0;
   color: var(--admin-gold-bright, #e0c17c);
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 
 .admin-dialog__description {
@@ -4018,7 +4020,7 @@ button.activation-generator__submit {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-dialog .admin-actions {
@@ -4064,7 +4066,7 @@ button.activation-generator__submit {
   border-radius: 999px;
   padding: 2px 9px;
   color: var(--admin-muted, #a49e95);
-  font-size: 11px;
+  font-size: var(--font-caption);
   white-space: nowrap;
 }
 
@@ -4103,7 +4105,7 @@ button.activation-generator__submit {
   background: transparent;
   color: var(--admin-muted, #a49e95);
   cursor: pointer;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   font-weight: 600;
   padding: 18px 24px;
   border-radius: 0;
@@ -4190,7 +4192,7 @@ button.activation-generator__submit {
 
 .dashboard-trend__col > span {
   color: var(--admin-muted, #a49e95);
-  font-size: 11px;
+  font-size: var(--font-caption);
   text-align: center;
 }
 
@@ -4264,7 +4266,7 @@ button.activation-generator__submit {
 .admin-shell--control .rates-manager .admin-data-table th,
 .admin-shell--control .rates-manager .admin-data-table td {
   padding: 9px 14px;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-shell--control .rates-manager .admin-data-table button {
@@ -4277,7 +4279,7 @@ button.activation-generator__submit {
 
 .admin-shell--control .rates-manager .rate-current-price {
   color: #e4b453;
-  font-size: 17px;
+  font-size: var(--font-subtitle);
   font-variant-numeric: tabular-nums;
 }
 
@@ -4290,7 +4292,7 @@ button.activation-generator__submit {
 .admin-shell--control .rates-manager__notice p {
   margin: 0;
   color: #e4b453;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-shell--control .admin-payment-settings {
@@ -4342,15 +4344,15 @@ button.activation-generator__submit {
   padding: 9px 14px;
   text-decoration: none;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .admin-shell--control .economics-kpis article span {
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-shell--control .economics-kpis article strong {
-  font-size: 30px;
+  font-size: var(--font-title);
 }
 
 .admin-shell--control .cost-bars__stack {
@@ -4359,7 +4361,7 @@ button.activation-generator__submit {
 }
 
 .admin-shell--control .cost-bars__column {
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .profit-mini-chart svg {
@@ -4377,7 +4379,7 @@ button.activation-generator__submit {
 }
 
 .admin-shell--control .pagination {
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 @media (max-height: 540px) {
@@ -4406,7 +4408,7 @@ button.activation-generator__submit {
 .billing-rates-table td > small {
   display: block;
   margin-top: 5px;
-  font-size: 11px;
+  font-size: var(--font-caption);
   color: var(--admin-muted);
 }
 .billing-rates-table td > input {
@@ -4441,10 +4443,10 @@ button.activation-generator__submit {
 
 /* 管理端正文、辅助信息、标题统一使用同一组字体令牌。 */
 .admin-shell--control {
-  --admin-font-body: 14px;
-  --admin-font-caption: 13px;
-  --admin-font-section: 16px;
-  --admin-font-title: 20px;
+  --admin-font-body: var(--font-body);
+  --admin-font-caption: var(--font-label);
+  --admin-font-section: var(--font-section);
+  --admin-font-title: var(--font-title);
   font-size: var(--admin-font-body);
   line-height: 1.5;
 }
@@ -4760,7 +4762,7 @@ button.activation-generator__submit {
   margin: 8px 0 0;
   color: #a9a49a;
   line-height: 1.65;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .admin-shell--control .admin-services .config-state {
   white-space: nowrap;
@@ -4788,7 +4790,7 @@ button.activation-generator__submit {
   gap: 8px;
   min-width: 0;
   color: #c7c1b5;
-  font-size: 14px;
+  font-size: var(--font-body);
   font-weight: 400;
 }
 .admin-shell--control .admin-services :is(input, select) {
@@ -4811,7 +4813,7 @@ button.activation-generator__submit {
 .admin-shell--control .admin-services .form-actions > span {
   flex-basis: 100%;
   line-height: 1.6;
-  font-size: 12px;
+  font-size: var(--font-caption);
   overflow-wrap: anywhere;
 }
 .admin-shell--control
@@ -5032,7 +5034,7 @@ button.activation-generator__submit {
 .h3-accounts__header strong {
   white-space: nowrap;
   color: #d2b570;
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .h3-accounts__list {
   display: grid;
@@ -5135,7 +5137,7 @@ button.activation-generator__submit {
   flex-wrap: wrap;
   padding: 10px 0;
   color: #aaa49a;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .admin-viral-summary strong {
   color: #ede5d8;
@@ -5199,7 +5201,7 @@ button.activation-generator__submit {
   gap: 9px;
   flex-wrap: wrap;
   color: #aaa49a;
-  font-size: 12px;
+  font-size: var(--font-caption);
   line-height: 1.5;
   margin-bottom: 7px;
 }
@@ -5223,7 +5225,7 @@ button.activation-generator__submit {
   flex-wrap: wrap;
   gap: 3px 12px;
   color: #aaa49a;
-  font-size: 12px;
+  font-size: var(--font-caption);
   line-height: 1.6;
   margin-top: 8px;
 }
@@ -5245,7 +5247,7 @@ button.activation-generator__submit {
 }
 .admin-viral-metrics dt {
   color: #aaa49a;
-  font-size: 12px;
+  font-size: var(--font-caption);
   margin-bottom: 2px;
 }
 .admin-viral-metrics dd {
@@ -5256,7 +5258,7 @@ button.activation-generator__submit {
 }
 .admin-viral-statistics-time {
   margin: 10px 0 0;
-  font-size: 11px;
+  font-size: var(--font-caption);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
@@ -5265,7 +5267,7 @@ button.activation-generator__submit {
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .admin-viral-featured {
   color: #e2c17b;
@@ -5281,7 +5283,7 @@ button.activation-generator__submit {
 .admin-shell--control .admin-viral-actions button {
   padding: 6px 4px;
   min-height: 32px;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .admin-viral-actions button:last-child:not(:nth-child(2)) {
   grid-column: 1 / -1;
@@ -5308,7 +5310,7 @@ button.activation-generator__submit {
 }
 .admin-viral-detail dt {
   color: #aaa49a;
-  font-size: 12px;
+  font-size: var(--font-caption);
   margin-bottom: 5px;
 }
 .admin-viral-detail dd {
@@ -5321,7 +5323,7 @@ button.activation-generator__submit {
 }
 .admin-viral-storage dd {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .admin-viral-danger-zone {
   display: flex;
@@ -5331,7 +5333,7 @@ button.activation-generator__submit {
   border-top: 1px solid #35322d;
   padding-top: 14px;
   margin-top: 18px;
-  font-size: 12px;
+  font-size: var(--font-caption);
   color: #aaa49a;
 }
 .admin-shell--control .admin-viral-danger-zone button {

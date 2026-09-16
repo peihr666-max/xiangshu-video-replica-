@@ -494,7 +494,7 @@ def configured_only_message(provider: str) -> str:
     if provider == "deepseek":
         return "".join(
             (
-                "AI 改写服务参数已保存。点击工作台「AI 改写」按钮时会实际调用；",
+                "DeepSeek 文本 AI 参数已保存。提交文案二创等文本任务时会实际调用；",
                 "测试设置不会发起计费请求。",
             )
         )

@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_REFERENCE_IMAGES,
   DEFAULT_MAX_REFERENCE_VIDEOS,
   draftFromTask,
+  hasCopyResult,
   patchStudioDraft,
   routeFromHash,
   studioHashForState,
@@ -17,6 +18,15 @@ import {
 import type { StudioAsset } from "./types";
 
 describe("V1.4 交接合同", () => {
+  it("提取原文不冒充二创结果，历史人工稿仍可编辑", () => {
+    const script = { ...createDraft().script, original: "原文", text: "原文" };
+    expect(hasCopyResult(script)).toBe(false);
+    expect(hasCopyResult({ ...script, text: "人工改写" })).toBe(true);
+    expect(hasCopyResult({ ...script, confirmed: true })).toBe(true);
+    expect(
+      hasCopyResult({ ...script, text: "", resultKind: "rewritten" }),
+    ).toBe(true);
+  });
   it("选择另一条来源时清空旧项目、资产和终稿，保留已选人物", () => {
     const draft = {
       ...createDraft(),

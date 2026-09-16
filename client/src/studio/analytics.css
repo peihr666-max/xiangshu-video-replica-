@@ -12,7 +12,7 @@
 }
 
 .analytics-heading h1 {
-  font-size: 28px;
+  font-size: var(--font-title);
   line-height: 1.15;
   margin: 0 0 14px;
 }
@@ -21,7 +21,7 @@
   align-items: center;
   color: #8f9089;
   display: flex;
-  font-size: 13px;
+  font-size: var(--font-label);
   gap: 16px;
   margin: -4px 0 14px;
 }
@@ -130,7 +130,7 @@
 
 .analytics-metric strong {
   display: block;
-  font-size: 30px;
+  font-size: var(--font-title);
   line-height: 1.12;
   margin: 5px 0 2px;
   white-space: nowrap;
@@ -152,14 +152,14 @@
 .analytics-trend h2,
 .analytics-share h2,
 .analytics-performance h2 {
-  font-size: 20px;
+  font-size: var(--font-section);
   margin: 0;
 }
 
 .analytics-trend h2 small,
 .analytics-share h2 small {
   color: #aaa9a3;
-  font-size: 14px;
+  font-size: var(--font-body);
   font-weight: 400;
   margin-left: 10px;
 }
@@ -178,7 +178,7 @@
 
 .analytics-trend-chart text {
   fill: #b6b7b2;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .analytics-trend-chart .analytics-point-value {
@@ -237,7 +237,7 @@
 }
 
 .analytics-donut strong {
-  font-size: 21px;
+  font-size: var(--font-section);
   position: relative;
   z-index: 1;
 }
@@ -253,7 +253,7 @@
 .analytics-share dt {
   align-items: center;
   display: flex;
-  font-size: 16px;
+  font-size: var(--font-body);
   gap: 9px;
 }
 
@@ -277,7 +277,7 @@
 
 .analytics-share dd {
   color: #cacbc5;
-  font-size: 16px;
+  font-size: var(--font-body);
   margin: 5px 0 0 21px;
 }
 
@@ -304,7 +304,7 @@
 .analytics-performance th,
 .analytics-performance td {
   border: 1px solid #2d2e2b;
-  font-size: 14px;
+  font-size: var(--font-body);
   height: 52px;
   padding: 7px 10px;
   text-align: left;
@@ -365,7 +365,7 @@
 }
 
 .analytics-actions .studio-button {
-  font-size: 13px;
+  font-size: var(--font-label);
   height: 34px;
   padding: 0 13px;
 }
@@ -431,7 +431,7 @@
   align-items: center;
   color: #b4b5af;
   display: flex;
-  font-size: 13px;
+  font-size: var(--font-label);
   gap: 16px;
   margin: 6px 0 0;
 }
