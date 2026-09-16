@@ -253,7 +253,7 @@ class AvatarCloneRequest(BaseModel):
     identity_id: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=60)
     source_asset_id: str = Field(min_length=1, max_length=128)
-    source_kind: Literal["VIDEO", "IMAGE"]
+    source_kind: Literal["VIDEO"]
     consent_id: str = Field(min_length=1, max_length=128)
     idempotency_key: str = Field(min_length=8, max_length=128)
 

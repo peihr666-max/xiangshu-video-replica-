@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -739,13 +740,31 @@ def _reuse_registered_material(
     # Only skip the transfer when the bytes are actually still there.
     if storage.head_object(existing.object_key) is None:
         return None
-    content = retain_existing_content_object(conn, existing.id)
     source = conn.execute(
         "SELECT id, metadata_json FROM assets WHERE content_object_id = %s "
-        "ORDER BY created_at LIMIT 1",
-        (content.id,),
+        "ORDER BY CASE WHEN metadata_json::jsonb ->> 'audio_duration_verified' = 'true' "
+        "THEN 0 ELSE 1 END, created_at LIMIT 1",
+        (existing.id,),
     ).fetchone()
     source_metadata = _metadata(source["metadata_json"]) if source is not None else {}
+    if media_type == "audio":
+        duration = source_metadata.get("duration_seconds")
+        if (
+            source_metadata.get("audio_duration_verified") is not True
+            or not isinstance(duration, (int, float))
+            or isinstance(duration, bool)
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            # Older rows may lack trustworthy probe metadata. Upload and probe
+            # again rather than blessing the duration supplied by the client.
+            return None
+        validate_audio_contract(
+            media_type=media_type,
+            audio_purpose=request.audio_purpose,
+            duration_seconds=duration,
+        )
+    content = retain_existing_content_object(conn, existing.id)
     asset_id = str(uuid4())
     metadata: dict[str, Any] = {
         "upload_status": "READY",
@@ -758,7 +777,8 @@ def _reuse_registered_material(
     }
     if request.audio_purpose is not None:
         metadata["audio_purpose"] = request.audio_purpose
-        metadata["duration_seconds"] = request.duration_seconds
+        metadata["duration_seconds"] = source_metadata["duration_seconds"]
+        metadata["audio_duration_verified"] = True
     elif "duration_seconds" in source_metadata:
         # Carry the probing work over from the upload that stored these bytes;
         # re-probing would cost a download and a media-tool invocation.

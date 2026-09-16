@@ -210,7 +210,7 @@ function studio(
               name: "设计室讲解",
               imageId: "target-1",
               ready: true,
-              origin: "照片制作",
+              origin: "视频制作",
               duration: "00:42",
             },
           ],
@@ -1878,17 +1878,16 @@ describe("V1.4 创作页面", () => {
     expect(current.patchDraft).not.toHaveBeenCalled();
   });
 
-  it("音频驱动不显示终稿、声音、TTS和模板字段", () => {
-    const value = studio({
-      state: { ...studio().state, page: "oral-audio" },
-    });
-    useStudio.mockReturnValue(value);
+  it("旧音频口播入口也只展示视频分身、克隆声音和文案", () => {
+    useStudio.mockReturnValue(
+      studio({ state: { ...studio().state, page: "oral-audio" } }),
+    );
     render(<OralPage />);
-    expect(screen.getByText("口播音频")).toBeInTheDocument();
-    expect(screen.queryByText("口播文案")).not.toBeInTheDocument();
-    expect(screen.queryByText("声音档案")).not.toBeInTheDocument();
-    expect(screen.queryByText("网感模板")).not.toBeInTheDocument();
-    expect(screen.queryByText("文字转语音")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "口播文案" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("选择口播音频")).toBeNull();
+    expect(screen.queryByRole("tab", { name: "用已有音频生成" })).toBeNull();
   });
 
   it("文案口播不再把未实现的网感模板表现为可用", () => {
@@ -1899,123 +1898,12 @@ describe("V1.4 创作页面", () => {
     expect(screen.getByText("标准口播")).toBeInTheDocument();
   });
 
-  it("口播模式切换只占左侧输入栏，不下推右侧人物预览", () => {
-    useStudio.mockReturnValue(studio());
-
-    const { container } = render(<OralPage />);
-
-    expect(
-      container.querySelector(
-        ".creation-oral-grid > .creation-oral-left > .studio-tabs",
-      ),
-    ).not.toBeNull();
-  });
-
-  it("音频驱动上传完成后写入真实云资产且不需要TTS声音", async () => {
-    const value = studio({
-      state: {
-        ...studio().state,
-        page: "oral-audio",
-        draft: { ...studio().state.draft, audioId: "target-1" },
-      },
-      review: false,
-    });
-    replicaLive.uploadOralAudioMaterial.mockImplementation(
-      async (_file, purpose, duration, onProgress) => {
-        expect(purpose).toBe("oral_audio");
-        expect(duration).toBe(42);
-        onProgress(60);
-        return {
-          id: "uploaded-audio",
-          name: "完整口播.mp3",
-          kind: "audio",
-          duration: "00:42",
-          group: "完整口播音频",
-          source: "我的上传",
-          saved: true,
-          allowedUses: ["oral_audio"],
-        };
-      },
-    );
+  it("照片分身即使处于就绪状态也不能用于新的口播", () => {
+    const value = studio();
+    value.data.people[0].avatars[0].origin = "照片制作";
     useStudio.mockReturnValue(value);
     render(<OralPage />);
     expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("选择口播音频"), {
-      target: {
-        files: [new File(["ID3audio"], "完整口播.mp3", { type: "audio/mpeg" })],
-      },
-    });
-    await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({
-        audioId: "uploaded-audio",
-        voiceId: undefined,
-      }),
-    );
-    expect(value.updateData).toHaveBeenCalled();
-    expect(value.openPicker).not.toHaveBeenCalled();
-  });
-
-  it("取消口播音频上传后忽略迟到完成结果", async () => {
-    const value = studio({
-      state: { ...studio().state, page: "oral-audio" },
-      review: false,
-    });
-    let finishUpload!: (asset: StudioAsset) => void;
-    replicaLive.uploadOralAudioMaterial.mockImplementation(
-      () =>
-        new Promise<StudioAsset>((resolve) => {
-          finishUpload = resolve;
-        }),
-    );
-    useStudio.mockReturnValue(value);
-    render(<OralPage />);
-    fireEvent.change(screen.getByLabelText("选择口播音频"), {
-      target: {
-        files: [new File(["ID3audio"], "完整口播.mp3", { type: "audio/mpeg" })],
-      },
-    });
-    expect(
-      await screen.findByRole("button", { name: "取消上传" }),
-    ).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "取消上传" }));
-    finishUpload({
-      id: "late-audio",
-      name: "迟到音频.mp3",
-      kind: "audio",
-      group: "完整口播音频",
-      source: "我的上传",
-      saved: true,
-    });
-    await Promise.resolve();
-    expect(value.patchDraft).not.toHaveBeenCalled();
-    expect(value.updateData).not.toHaveBeenCalled();
-  });
-
-  it("错误格式和上传失败不会写入口播草稿", async () => {
-    const value = studio({
-      state: { ...studio().state, page: "oral-audio" },
-      review: false,
-    });
-    replicaLive.validateOralAudioFile.mockReturnValueOnce("仅支持 MP3 音频。");
-    useStudio.mockReturnValue(value);
-    render(<OralPage />);
-    fireEvent.change(screen.getByLabelText("选择口播音频"), {
-      target: { files: [new File(["bad"], "错误.wav", { type: "audio/wav" })] },
-    });
-    expect(value.notify).toHaveBeenCalledWith("仅支持 MP3 音频。");
-    expect(replicaLive.uploadOralAudioMaterial).not.toHaveBeenCalled();
-
-    replicaLive.validateOralAudioFile.mockReturnValue(undefined);
-    replicaLive.uploadOralAudioMaterial.mockRejectedValue(
-      new Error("上传失败"),
-    );
-    fireEvent.change(screen.getByLabelText("选择口播音频"), {
-      target: {
-        files: [new File(["ID3audio"], "失败.mp3", { type: "audio/mpeg" })],
-      },
-    });
-    await waitFor(() => expect(value.notify).toHaveBeenCalledWith("上传失败"));
-    expect(value.patchDraft).not.toHaveBeenCalled();
   });
 
   it("更换口播IP只打开人物选择器，由统一草稿层执行防串人清理", () => {
@@ -2088,7 +1976,7 @@ describe("V1.4 创作页面", () => {
       screen.getByRole("button", { name: "去人物库制作口播分身" }),
     );
     expect(missingAvatar.navigate).toHaveBeenCalledWith("person-avatars", {
-      returnTo: "oral-audio",
+      returnTo: "oral",
       selectedPersonId: "person-1",
     });
   });
