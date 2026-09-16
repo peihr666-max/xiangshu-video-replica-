@@ -52,7 +52,7 @@ def test_customer_git_rollout_injects_the_cloud_admin_origin() -> None:
 def test_customer_git_rollout_only_rolls_optional_services_when_configured() -> None:
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 
-    assert "OPTIONAL_SERVICES=(worker-viral)" in script
+    assert "OPTIONAL_SERVICES=(worker-viral worker-publish)" in script
     assert (
         'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)'
     ) in script

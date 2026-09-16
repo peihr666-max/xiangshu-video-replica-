@@ -49,6 +49,7 @@ ROLLOUT_SERVICES = (
     "worker-3",
     "worker-4",
     "worker-viral",
+    "worker-publish",
 )
 
 # Fail-fast matrix: dependency -> (executable acceptance target, marker).
@@ -133,12 +134,12 @@ def test_connection_pool_budget_fits_the_database_limit() -> None:
     default_max = int(re.search(r"DEFAULT_POOL_MAX = (\d+)", text).group(1))
     assert default_max == 8
     processes = sum(1 for service in ROLLOUT_SERVICES if service.startswith(("api", "worker")))
-    assert processes == 7
+    assert processes == 8
     budget = processes * default_max
     compose = _compose_text()
     max_connections = int(re.search(r"max_connections=(\d+)", compose).group(1))
     reserved = int(re.search(r"superuser_reserved_connections=(\d+)", compose).group(1))
-    # 48 + 1 transient migrate + 3 reserved <= declared limit (README §3).
+    # 64 + 1 transient migrate + 3 reserved <= declared limit (README §3).
     assert budget + 1 + reserved <= max_connections, (budget, max_connections)
     assert "VIDEO_REPLICA_PG_POOL_MAX" in compose
 
@@ -164,9 +165,11 @@ def test_rollout_consumes_the_registered_package() -> None:
     assert "uv sync --locked --no-dev" in bootstrap
     assert "python -m compileall -q app migrations" in bootstrap
     assert (
-        "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker"
-        in bootstrap
+        "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker, "
+        "app.publish_worker" in bootstrap
     )
+    # Douyin protocol signing runs a Node.js subprocess inside the publish worker.
+    assert "ffmpeg ca-certificates nodejs" in bootstrap and "command -v node" in bootstrap
     assert "historical SQLite tooling in the customer image" in bootstrap
 
 
