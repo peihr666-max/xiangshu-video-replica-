@@ -1304,6 +1304,7 @@ export function ReplicaPage() {
   patchDraftRef.current = patchDraft;
   useEffect(
     () => () => {
+      analysisProjectRef.current = undefined;
       uploadOperationRef.current += 1;
       uploadAbortRef.current?.abort();
       restoreOperationRef.current += 1;

@@ -2526,6 +2526,7 @@ describe("V1.4 创作页面", () => {
 describe("视频复刻（模块①）", () => {
   beforeEach(() => {
     useStudio.mockReset();
+    replicaApi.startVideoAnalysis.mockClear();
     replicaApi.getLatestProjectShotCards.mockReset();
     replicaApi.getLatestProjectAnalysis.mockReset();
     replicaApi.getLatestGenerationPrompt.mockReset();
@@ -2655,6 +2656,29 @@ describe("视频复刻（模块①）", () => {
       expect(screen.getByText(/最终稿来源已绑定/)).toBeInTheDocument(),
     );
   }
+
+  it("离开内容配置后迟到拆解回执不写入当前草稿", async () => {
+    const value = replicaStudio();
+    mockAnalysisSuccess();
+    let finish!: (result: unknown) => void;
+    replicaApi.waitForAnalysisTask.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    useStudio.mockReturnValue(value);
+    const view = render(<ReplicaPage />);
+    await screen.findByRole("button", { name: "重新拆解" });
+    fireEvent.click(screen.getByRole("button", { name: "重新拆解" }));
+    await waitFor(() => expect(finish).toBeDefined());
+    view.unmount();
+    vi.mocked(value.patchDraft).mockClear();
+    finish({ id: "task-1", status: "SUCCEEDED" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(value.patchDraft).not.toHaveBeenCalled();
+  });
 
   it("首帧置换前只准备文案与分镜，选定首帧后才展示最终合成", async () => {
     const value = replicaStudio();
