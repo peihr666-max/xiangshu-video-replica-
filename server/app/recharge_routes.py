@@ -982,6 +982,7 @@ def list_customer_wallet_transactions(
         "rewrite",
         "asr",
         "link_resolution",
+        "prompt_optimize",
         "avatar_clone",
         "voice_clone",
         "viral_data",

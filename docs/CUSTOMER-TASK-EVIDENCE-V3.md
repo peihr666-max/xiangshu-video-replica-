@@ -1466,3 +1466,11 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 本地实现及独立评审完成，远程凭据不可用，未推送、合并或部署。范围：统一字号/用户名入口/透明图标/任务中心操作、文案工坊纵向流程、人物IP档案、自定义二创及1–5000文案字数、DeepSeek统一文本通道、复刻时长和数量明示。前端1594测试；后端全量2391通过/1既有skip/5个Git路径环境错误，5项修正环境后全部复验通过；最终新增7项专项通过，静态检查通过。无真实付费调用，测试Docker资源已清理。独立评审review_copy_ip的恢复隔离意见已修复。具体范围、限制及原始结果见 [独立证据](evidence/UI-TYPOGRAPHY-BRAND-20260916.md)。
 
 2026-09-16 UI-TYPOGRAPHY-BRAND 后续评审修复：四项问题已处理（Logo生产资源、云端/本地任务恢复、总超时与有效租约、JSON修复统一DeepSeek），并补齐跨设备重试及终态失败清理。最终前端1600通过，相关后端148通过、最终租约/构建契约2项复验通过，静态检查及独立复审通过。新增DeepSeek内部成本科目隔离旧Apilio费率，不向用户新增收费；新分析须配置Apilio与DeepSeek。仍未远程推送/合并/部署，正式安装包与付费5000字验收未做。详见 [修复复验记录](evidence/ui-typography-brand/review-fixes.md)。
+
+## 2026-09-16 PUBLISH-INLINE-QR-20260916
+
+个人中心三平台内嵌扫码增量，独立分支 `fix/publish-inline-qr-20260916`，基线 `f0b45b2`，Owner 当前 Codex；Reviewer 执行者自检及 PR 门禁。点击无账号的平台直接在当前面板加载二维码，桌面扫码窗口默认隐藏，成功后直接加入对应平台列表；已有账号平台仅切换列表。本地完整 Linux 静态门（1582 前端测试）及 PostgreSQL 2389 passed / 1 既有 skipped 通过，三平台实际取码和组件浏览器验证通过。实现提交 `d6564d7`，提交 Draft PR；未合并部署、未声称手机真实登录验收。详见[独立证据](evidence/PUBLISH-INLINE-QR-20260916.md)。
+
+## 2026-09-16 PROMPT-OPTIMIZE-20260916 · 证据登记
+
+用户已授权 Codex 接手 Claude 会话 fbeae78e 的既有独立 worktree/分支，原进程已停止且成果已备份；不重复开发。H01—H14 实现与代码自检完成；本地静态门和后端全量后的全部失败项/新增专项通过，H15 已提交 [PR #125](https://github.com/peihr666-max/xiangshu-video-replica-/pull/125) 并触发 CI，当前为 REVIEW 交付状态。改动范围、规格映射、评审与测试见 [H3 实施证据](evidence/PROMPT-OPTIMIZE-20260916-EVIDENCE.md)。AUTOMATED_VERIFIED（本地）；远程三门禁以 PR 当前 head 的 Checks 为准，未宣称独立评审、真实链路、合并或部署完成。

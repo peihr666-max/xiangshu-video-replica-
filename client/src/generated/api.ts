@@ -2625,6 +2625,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/control/viral/videos/{platform}/{video_id}/archive": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Archive Collected Viral Video */
+    post: operations["archive_collected_viral_video_api_control_viral_videos__platform___video_id__archive_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/control/viral/videos/wechat_channels/{video_id}/statistics": {
     parameters: {
       query?: never;
@@ -4265,6 +4282,40 @@ export interface paths {
     };
     /** Read Viral Import Task */
     get: operations["read_viral_import_task_api_viral_import_tasks__task_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/prompt-optimizations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create Prompt Optimization */
+    post: operations["create_prompt_optimization_api_prompt_optimizations_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/prompt-optimizations/{task_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Prompt Optimization */
+    get: operations["read_prompt_optimization_api_prompt_optimizations__task_id__get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -6657,6 +6708,7 @@ export interface components {
        * @default false
        */
       reuse_existing: boolean;
+      generation_context?: components["schemas"]["GenerationContext"] | null;
     };
     /** CreateApiKeyRequest */
     CreateApiKeyRequest: {
@@ -7348,7 +7400,10 @@ export interface components {
       /** Quantity */
       quantity: number;
       /** Prompt Version Id */
-      prompt_version_id: string;
+      prompt_version_id?: string | null;
+      /** Prompt Text */
+      prompt_text?: string | null;
+      prompt_context?: components["schemas"]["PromptContext"] | null;
       /** First Frame Asset Id */
       first_frame_asset_id: string;
       /** Output Duration Seconds */
@@ -7379,6 +7434,47 @@ export interface components {
        * @enum {string}
        */
       fake_audio_quality: "ok" | "missing";
+    };
+    /** GenerationContext */
+    GenerationContext: {
+      /**
+       * Route
+       * @default replica
+       * @enum {string}
+       */
+      route: "text_image" | "reference" | "replica";
+      /**
+       * Duration Seconds
+       * @default 15
+       */
+      duration_seconds: number;
+      /**
+       * Ratio
+       * @default adaptive
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
+      /** Project Id */
+      project_id?: string | null;
+      /** Analysis Version Id */
+      analysis_version_id?: string | null;
+      /** Shot Card Version Id */
+      shot_card_version_id?: string | null;
+      /** Script Version Id */
+      script_version_id?: string | null;
+      /** Source Asset Id */
+      source_asset_id?: string | null;
+      /** First Frame Asset Id */
+      first_frame_asset_id?: string | null;
+      /** Last Frame Asset Id */
+      last_frame_asset_id?: string | null;
+      /** References */
+      references?: components["schemas"]["Reference"][];
+      /**
+       * Instructions
+       * @default
+       */
+      instructions: string;
     };
     /** GenerationPriceQuote */
     GenerationPriceQuote: {
@@ -7576,6 +7672,11 @@ export interface components {
       /** Last Frame Enabled */
       last_frame_enabled: boolean;
       /**
+       * L2V Enabled
+       * @default false
+       */
+      l2v_enabled: boolean;
+      /**
        * Max Reference Images
        * @default 8
        */
@@ -7599,7 +7700,7 @@ export interface components {
        * Mode
        * @enum {string}
        */
-      mode: "t2v" | "i2v" | "r2v";
+      mode: "t2v" | "i2v" | "l2v" | "r2v";
       /** Prompt Text */
       prompt_text: string;
       /** First Frame Asset Id */
@@ -7849,7 +7950,7 @@ export interface components {
        * Upload Required
        * @default true
        */
-      upload_required?: boolean;
+      upload_required: boolean;
       /** Reused From Asset Id */
       reused_from_asset_id?: string | null;
     };
@@ -8384,6 +8485,72 @@ export interface components {
        */
       ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
     };
+    /** PromptContext */
+    PromptContext: {
+      /**
+       * Source
+       * @default manual
+       * @enum {string}
+       */
+      source: "analysis" | "manual" | "ai" | "imported";
+      /** Analysis Version Id */
+      analysis_version_id?: string | null;
+      /** Shot Card Version Id */
+      shot_card_version_id?: string | null;
+      /** Script Version Id */
+      script_version_id?: string | null;
+      /** Optimization Task Id */
+      optimization_task_id?: string | null;
+      /** Context Hash */
+      context_hash?: string | null;
+    };
+    /** PromptOptimizeRequest */
+    PromptOptimizeRequest: {
+      /**
+       * Route
+       * @default replica
+       * @enum {string}
+       */
+      route: "text_image" | "reference" | "replica";
+      /**
+       * Duration Seconds
+       * @default 15
+       */
+      duration_seconds: number;
+      /**
+       * Ratio
+       * @default adaptive
+       * @enum {string}
+       */
+      ratio: "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
+      /** Project Id */
+      project_id?: string | null;
+      /** Analysis Version Id */
+      analysis_version_id?: string | null;
+      /** Shot Card Version Id */
+      shot_card_version_id?: string | null;
+      /** Script Version Id */
+      script_version_id?: string | null;
+      /** Source Asset Id */
+      source_asset_id?: string | null;
+      /** First Frame Asset Id */
+      first_frame_asset_id?: string | null;
+      /** Last Frame Asset Id */
+      last_frame_asset_id?: string | null;
+      /** References */
+      references?: components["schemas"]["Reference"][];
+      /**
+       * Instructions
+       * @default
+       */
+      instructions: string;
+      /** Idempotency Key */
+      idempotency_key: string;
+      /** Editor Revision */
+      editor_revision: number;
+      /** Prompt Text */
+      prompt_text: string;
+    };
     /** PromptPreviewRequest */
     PromptPreviewRequest: {
       /** Output Duration Seconds */
@@ -8665,6 +8832,13 @@ export interface components {
       /** Pending Order Count */
       pending_order_count: number;
     };
+    /** Reference */
+    Reference: {
+      /** Asset Id */
+      asset_id: string;
+      /** Purpose */
+      purpose: string;
+    };
     /** RefreshRequest */
     RefreshRequest: {
       /** Videoids */
@@ -8737,6 +8911,10 @@ export interface components {
     };
     /** SavedPromptListItem */
     SavedPromptListItem: {
+      /** Generation Context */
+      generation_context?: {
+        [key: string]: unknown;
+      } | null;
       /** Id */
       id: string;
       /** Project Id */
@@ -8761,6 +8939,7 @@ export interface components {
       prompt_text: string;
       /** Base Prompt Version Id */
       base_prompt_version_id?: string | null;
+      generation_context?: components["schemas"]["GenerationContext"] | null;
     };
     /** SavedScriptDeleteResponse */
     SavedScriptDeleteResponse: {
@@ -9723,6 +9902,12 @@ export interface components {
     VideoMetadata: {
       /** Duration Seconds */
       duration_seconds: number;
+      /** Width */
+      width?: number | null;
+      /** Height */
+      height?: number | null;
+      /** Fps */
+      fps?: number | null;
     };
     /** ViralAvailabilityResponse */
     ViralAvailabilityResponse: {
@@ -15879,6 +16064,44 @@ export interface operations {
       };
     };
   };
+  archive_collected_viral_video_api_control_viral_videos__platform___video_id__archive_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        platform: "douyin" | "wechat_channels";
+        video_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   refresh_collected_wechat_statistics_api_control_viral_videos_wechat_channels__video_id__statistics_post: {
     parameters: {
       query?: never;
@@ -17568,6 +17791,7 @@ export interface operations {
               | "rewrite"
               | "asr"
               | "link_resolution"
+              | "prompt_optimize"
               | "avatar_clone"
               | "voice_clone"
               | "viral_data"
@@ -18879,6 +19103,77 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ViralImportTaskResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_prompt_optimization_api_prompt_optimizations_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PromptOptimizeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_prompt_optimization_api_prompt_optimizations__task_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        task_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
         };
       };
       /** @description Validation Error */

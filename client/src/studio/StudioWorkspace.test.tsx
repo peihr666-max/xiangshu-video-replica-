@@ -1707,7 +1707,7 @@ describe("V1.4 workspace integration", () => {
         "project-1",
         "identity-1",
       );
-      expect(screen.getByText(/已保存到我的文案/)).toBeInTheDocument();
+      expect(await screen.findByText(/已保存到我的文案/)).toBeInTheDocument();
       expect(
         screen.getByRole("button", { name: "生成二创文案" }),
       ).toBeEnabled();

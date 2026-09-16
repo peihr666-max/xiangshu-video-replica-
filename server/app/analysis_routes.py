@@ -34,6 +34,7 @@ from app.auth import AuthenticatedUser, CurrentUser, Database, Role
 from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
 from app.db_portable import BusinessConnection
+from app.h3_prompts import GenerationContext
 from app.media import (
     DURATION_ROUNDING_TOLERANCE_SECONDS,
     MAX_DURATION_SECONDS,
@@ -47,7 +48,7 @@ from app.permissions import (
     require_project_access,
     write_audit,
 )
-from app.script_rewrite import load_script_rewrite_configuration
+from app.prompt_context import attach_context_media, resolve_context
 from app.settings import SettingsRepository, SettingsUnavailableError
 from app.storage import (
     StorageAdapter,
@@ -106,7 +107,6 @@ def get_video_analysis_provider(conn: Database) -> VideoAnalysisProvider:
         # Keeping the origin fixed prevents an imported legacy base_url from
         # receiving the configured bearer token.
         base_url=APILIO_DEFAULT_BASE_URL,
-        text_ai_config=load_script_rewrite_configuration(conn),
     )
 
 
@@ -146,6 +146,7 @@ class CreateAnalysisRequest(BaseModel):
     # keep the analysis time axis bounded by the same contract.
     duration_seconds: float | None = Field(default=None, gt=0, le=MAX_ANALYSIS_DURATION_SECONDS)
     reuse_existing: bool = False
+    generation_context: GenerationContext | None = None
 
 
 class UpdateShotCardsRequest(BaseModel):
@@ -203,6 +204,8 @@ class AnalysisTaskWork:
     provider: VideoAnalysisProvider
     video_uri: str
     asset_uri: str
+    generation_context: dict[str, Any] | None = None
+    generation_media: list[dict[str, Any]] | None = None
 
 
 def require_async_analysis_route(project_id: str) -> None:
@@ -386,12 +389,33 @@ def create_project_analysis_task(
                     "message": "当前视频位于本地，云端分析无法读取。请配置云端素材存储后重新上传。",
                 },
             )
+        target = request.generation_context or GenerationContext(
+            project_id=project_id, source_asset_id=request.asset_id
+        )
+        if target.project_id not in (None, project_id):
+            raise HTTPException(422, detail={"code": "PROMPT_PROJECT_MISMATCH"})
+        target = target.model_copy(
+            update={"project_id": project_id, "source_asset_id": request.asset_id}
+        )
+        context = resolve_context(conn, actor=actor, request=target)
+        metadata = json.loads(str(asset["metadata_json"] or "{}"))
+        context["media_info"] = {
+            key: metadata[key] for key in ("fps", "resolution", "aspect_ratio") if key in metadata
+        }
+        if len(context["media_info"]) != 3:
+            context["issues"].append(
+                {
+                    "code": "MEDIA_METADATA_REQUIRED",
+                    "message": "视频元数据不完整，请重新上传探测后生成。",
+                }
+            )
         row, created = enqueue_analysis_task(
             conn,
             project_id=project_id,
             asset_id=request.asset_id,
             created_by_user_id=actor.id,
             duration_seconds=measured_duration,
+            generation_context=context,
         )
         if not created:
             return analysis_task_response(row)
@@ -663,9 +687,7 @@ def acquire_analysis_task(
 ) -> AnalysisTaskLease | None:
     now = datetime.now(UTC)
     now_text = now.strftime("%Y-%m-%d %H:%M:%S")
-    # One analysis can use the primary 240-second request plus one 240-second
-    # structural repair request. Keep the lease longer than both attempts so a
-    # second worker cannot mark a still-running paid request as interrupted.
+    # One provider request; the lease also covers transfer and persistence.
     locked_until = (now + timedelta(minutes=ANALYSIS_TASK_LEASE_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
@@ -734,7 +756,7 @@ def prepare_analysis_task(
 ) -> AnalysisTaskWork:
     row = conn.execute(
         """
-        SELECT task.status, task.locked_by, asset.project_id,
+        SELECT task.status, task.locked_by, task.generation_context_json, asset.project_id,
                asset.storage_uri, asset.sha256, asset.size_bytes
         FROM analysis_tasks AS task
         JOIN assets AS asset ON asset.id = task.asset_id
@@ -763,23 +785,86 @@ def prepare_analysis_task(
     video_uri = asset_uri
     if resolved_provider.requires_https_video_url:
         video_uri = signed_video_url_for_provider(storage, asset_uri=asset_uri)
+    context = (
+        json.loads(str(row["generation_context_json"])) if row["generation_context_json"] else None
+    )
+    media: list[dict[str, Any]] = []
+    if (
+        context is not None
+        and context["generation_assets"]
+        and isinstance(resolved_provider, ApilioGemini)
+    ):
+        user = conn.execute(
+            "SELECT id, username, display_name, role FROM users WHERE id=%s",
+            (lease.created_by_user_id,),
+        ).fetchone()
+        if user is None:
+            raise HTTPException(404, detail={"code": "USER_NOT_FOUND"})
+        from app.auth import CurrentUser
+
+        actor = CurrentUser(
+            id=str(user["id"]),
+            username=str(user["username"]),
+            display_name=str(user["display_name"]),
+            role=cast(Role, str(user["role"])),
+        )
+        try:
+            media = attach_context_media(conn, actor=actor, context=context, storage=storage)
+        except HTTPException:
+            context["issues"].append(
+                {
+                    "code": "GENERATION_MEDIA_UNAVAILABLE",
+                    "message": "生成素材暂不可读；已保留源视频拆解，请重新选择素材。",
+                }
+            )
+            context["generation_assets"] = []
     conn.commit()
     return AnalysisTaskWork(
         lease=lease,
         provider=resolved_provider,
         video_uri=video_uri,
         asset_uri=asset_uri,
+        generation_context=context,
+        generation_media=media,
     )
 
 
 def perform_analysis_task(
     work: AnalysisTaskWork, *, on_provider_result: Callable[[], None] | None = None
 ) -> AnalysisResult:
+    duration = work.lease.duration_seconds
+    context = work.generation_context
+    if context is not None and isinstance(work.provider, ApilioGemini):
+        # Imported historical videos may only carry a provider-estimated duration.
+        # Probe the authorized signed source outside the DB transaction, before paying.
+        if len(context.get("media_info", {})) != 3:
+            from math import gcd
+
+            from app.media import FFprobeVideoProbe, VideoProbeFailed, VideoProbeUnavailable
+
+            try:
+                metadata = FFprobeVideoProbe().probe_file(work.video_uri)
+                if not metadata.width or not metadata.height or not metadata.fps:
+                    raise VideoProbeFailed("missing video stream metadata")
+            except (VideoProbeFailed, VideoProbeUnavailable) as exc:
+                raise AnalysisProviderFailed("视频元数据无法读取，请重新上传后拆解。") from exc
+            duration = metadata.duration_seconds
+            divisor = gcd(metadata.width, metadata.height)
+            context["media_info"] = {
+                "fps": metadata.fps,
+                "resolution": f"{metadata.width}x{metadata.height}",
+                "aspect_ratio": f"{metadata.width // divisor}:{metadata.height // divisor}",
+            }
+            context["issues"] = [
+                item for item in context["issues"] if item["code"] != "MEDIA_METADATA_REQUIRED"
+            ]
     return analyze_video(
         video_uri=work.video_uri,
-        video_duration_seconds=work.lease.duration_seconds,
+        video_duration_seconds=duration,
         provider=work.provider,
         on_provider_result=on_provider_result,
+        generation_context=work.generation_context,
+        generation_media=work.generation_media,
     )
 
 

@@ -492,7 +492,10 @@ def _signed_notify_params(
 # ---------------------------------------------------------------------------
 
 
-def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn: str) -> None:
+@pytest.mark.parametrize("inline_prompt", [False, True])
+def test_customer_chain_activation_to_direct_task(
+    client: TestClient, chain_dsn: str, inline_prompt: bool
+) -> None:
     """Activate, create the project, lock the prompt and submit the batch
     through the customer API, then drain the queue with the real worker:
     the task lands SUCCEEDED/DIRECT, the batch closes, and the fair-queue
@@ -554,7 +557,14 @@ def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn:
         headers=_bearer(session_token),
         json={
             "quantity": 1,
-            "prompt_version_id": prompt_version_id,
+            **(
+                {
+                    "prompt_text": "用户当前编辑的最终提示词",
+                    "prompt_context": {"source": "manual", "shot_card_version_id": shot_card_id},
+                }
+                if inline_prompt
+                else {"prompt_version_id": prompt_version_id}
+            ),
             "first_frame_asset_id": first_frame_id,
             "output_duration_seconds": 4,
             "resolution": "768P",
@@ -567,6 +577,25 @@ def test_customer_chain_activation_to_direct_task(client: TestClient, chain_dsn:
     assert payload["status"] == "QUEUED", payload
     assert payload["tasks"][0]["status"] == "PENDING", payload
     assert payload["tasks"][0]["prompt_snapshot"]["status"] == "LOCKED", payload
+    if inline_prompt:
+        assert payload["tasks"][0]["prompt_snapshot"]["prompt_text"] == "用户当前编辑的最终提示词"
+        assert payload["prompt_version_id"] != prompt_version_id
+        replay = client.post(
+            f"{PROJECTS_PATH}/{project_id}/generation-batches",
+            headers=_bearer(session_token),
+            json={
+                "quantity": 1,
+                "prompt_text": "用户当前编辑的最终提示词",
+                "prompt_context": {"source": "manual", "shot_card_version_id": shot_card_id},
+                "first_frame_asset_id": first_frame_id,
+                "output_duration_seconds": 4,
+                "resolution": "768P",
+                "idempotency_key": "e2e-batch-chain-a",
+                "provider": "fake_h3",
+            },
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["id"] == payload["id"]
     batch_id = str(payload["id"])
 
     batch_detail = client.get(f"/api/generation-batches/{batch_id}", headers=_bearer(session_token))

@@ -58,6 +58,8 @@ export function GenerationComposer({
       ) : null}
 
       <GenerationLauncher
+        projectId={drafts.projectId}
+        promptScope={drafts.promptScope}
         analysisVersionId={analysisVersionId}
         busyAction={drafts.busyAction}
         canCompile={drafts.canCompile}

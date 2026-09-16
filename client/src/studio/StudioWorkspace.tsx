@@ -969,6 +969,10 @@ export function StudioWorkspace({
       generationRef.current === "视频生成" &&
       studioPageRef.current === page &&
       JSON.stringify(latestDraftRef.current) === draftFingerprint;
+    if (draft.promptBindingsStale) {
+      notify("请先核对当前提示词与参考素材的绑定。");
+      return;
+    }
     const quoteInput = videoQuoteInput(draft);
     if (
       videoQuoteStatus !== "ready" ||
@@ -982,7 +986,13 @@ export function StudioWorkspace({
     setVideoSubmitError("");
     setVideoSubmitRejected(false);
     try {
-      const mode = resolveVideoMode(state.page, Boolean(draft.firstFrameId));
+      const mode = resolveVideoMode(
+        state.page,
+        Boolean(draft.firstFrameId),
+        Boolean(draft.tailFrameId),
+      );
+      if (mode === "l2v")
+        throw new Error("仅尾帧生成尚待验证，可先编辑或优化提示词。");
       if (mode === "r2v") {
         const error = referenceDraftError(draft);
         if (error) throw new Error(error);
@@ -1453,6 +1463,7 @@ export function StudioWorkspace({
         const mode = resolveVideoMode(
           state.page,
           Boolean(state.draft.firstFrameId),
+          Boolean(state.draft.tailFrameId),
         );
         if (!state.draft.prompt.trim()) {
           throw new Error("请先填写提示词");

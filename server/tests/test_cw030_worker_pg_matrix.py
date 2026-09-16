@@ -2495,47 +2495,32 @@ def _analysis_with_deepseek(monkeypatch):
     repository.load_provider_config.side_effect = lambda provider: configs[provider]
     monkeypatch.setattr(analysis_routes, "SettingsRepository", lambda conn: repository)
     monkeypatch.setattr("app.script_rewrite.SettingsRepository", lambda conn: repository)
-    return analysis_routes.get_video_analysis_provider(Mock()), configs
+    provider = analysis_routes.get_video_analysis_provider(Mock())
+    # Explicit legacy repair tests retain the separately configured text provider.
+    from app.script_rewrite import load_script_rewrite_configuration
+
+    provider.text_ai_config = load_script_rewrite_configuration(Mock())
+    return provider, configs
 
 
-def test_analysis_factory_repairs_text_with_deepseek_and_preserves_visual_provider(monkeypatch):
-    from types import SimpleNamespace
+def test_analysis_factory_does_not_repair_invalid_json_or_switch_visual_provider(monkeypatch):
     from unittest.mock import Mock
 
-    from app.analysis import FakeGemini, analyze_video
+    from app.analysis import AnalysisProviderFailed, analyze_video
 
     provider, _ = _analysis_with_deepseek(monkeypatch)
-    valid = FakeGemini().analyze(video_uri="test", duration_seconds=10).text
     provider.transport = Mock()
     provider.transport.post.return_value = (
         b'{"choices":[{"message":{"content":"broken JSON"}}]}',
         {},
     )
-    requests = []
-
-    def respond(url, **kwargs):
-        requests.append((url, kwargs))
-        return SimpleNamespace(
-            status_code=200,
-            content=json.dumps(
-                {"choices": [{"message": {"content": valid}, "finish_reason": "stop"}]}
-            ).encode(),
+    text_request = Mock(side_effect=AssertionError("Unexpected paid JSON repair"))
+    monkeypatch.setattr("curl_cffi.requests.post", text_request)
+    with pytest.raises(AnalysisProviderFailed, match="未自动调用付费修复"):
+        analyze_video(
+            video_uri="https://example.com/source.mp4", video_duration_seconds=10, provider=provider
         )
-
-    monkeypatch.setattr("curl_cffi.requests.post", respond)
-    result = analyze_video(
-        video_uri="https://example.com/source.mp4", video_duration_seconds=10, provider=provider
-    )
-    assert result.analysis.duration_seconds == 10
-    assert len(requests) == 1
-    assert requests[0][0] == "https://api.deepseek.com/chat/completions"
-    assert requests[0][1]["headers"]["Authorization"] == "Bearer text-test-key"
-    payload = json.loads(requests[0][1]["data"])
-    assert payload["model"] == "deepseek-chat"
-    assert payload["temperature"] == 0
-    assert payload["response_format"] == {"type": "json_object"}
-    assert "broken JSON" in payload["messages"][-1]["content"]
-    assert "duration_seconds=10" in payload["messages"][-2]["content"]
+    text_request.assert_not_called()
     assert provider.transport.post.call_count == 1
     assert (
         provider.transport.post.call_args.kwargs["headers"]["Authorization"]
@@ -2568,17 +2553,18 @@ def test_deepseek_repair_http_errors_are_redacted_and_do_not_fall_back(
     provider.transport.post.assert_not_called()
 
 
-def test_analysis_factory_requires_text_ai_configuration_before_paid_analysis(monkeypatch):
+def test_analysis_factory_does_not_require_unused_text_ai_configuration(monkeypatch):
     from unittest.mock import Mock
 
     from app import analysis_routes
+    from app.analysis import ApilioGemini
 
     _, configs = _analysis_with_deepseek(monkeypatch)
     configs["deepseek"] = {}
-    with pytest.raises(HTTPException) as failure:
-        analysis_routes.get_video_analysis_provider(Mock())
-    assert failure.value.detail["code"] == "DEEPSEEK_NOT_CONFIGURED"
-    assert failure.value.detail["retryable"] is False
+    provider = analysis_routes.get_video_analysis_provider(Mock())
+    assert isinstance(provider, ApilioGemini)
+    assert provider.api_key == "vision-test-key"
+    assert provider.text_ai_config is None
 
 
 @pytest.mark.parametrize(
