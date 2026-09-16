@@ -1048,11 +1048,22 @@ def read_uploaded_object(
     return bytes(content)
 
 
+def verified_upload_object_key(*, asset_id: str, digest: str, source_key: str) -> str:
+    """The canonical destination key for a verified upload.
+
+    Exposed because deduplication needs the key **before** the bytes are
+    written: a caller that wants to reuse an existing copy must know where this
+    copy would have landed. Duplicating the format string in two places would
+    let them drift apart silently, and a drifted key means a duplicate object.
+    """
+    return f"verified-uploads/{asset_id}/{digest}/{Path(source_key).name}"
+
+
 def store_verified_upload(
     storage: StorageAdapter, *, asset_id: str, source_key: str, content: bytes, content_type: str
 ) -> StoredObject:
     digest = hashlib.sha256(content).hexdigest()
-    key = f"verified-uploads/{asset_id}/{digest}/{Path(source_key).name}"
+    key = verified_upload_object_key(asset_id=asset_id, digest=digest, source_key=source_key)
     # No upload-intent code ever signs this namespace. Every consumer persists
     # this exact byte snapshot after validating the same bytes.
     return storage.put_object(key, content, content_type=content_type)

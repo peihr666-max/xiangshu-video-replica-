@@ -159,6 +159,11 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # callback suite only runs on real PostgreSQL, reset per test and
         # migrated to alembic head.
         "cw070_wechat_callback_test",
+        # DEDUP-CAS-20260916 content-addressed storage registry: dedicated
+        # database for the content_objects reference-count / scope-isolation /
+        # reclaim-grace matrix (test_dedup_cas_pg.py), migrated to alembic head
+        # so content_objects and assets.content_object_id exist.
+        "dedup_cas_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):

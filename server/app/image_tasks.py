@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app import content_store
 from app.auth import CurrentUser, Role
 from app.character_asset_review import cleanup_publication_objects
 from app.db_portable import BusinessConnection
@@ -1248,7 +1249,12 @@ def complete_character_sheet_task(
         )
     if prepared.operation == "CREATE":
         try:
-            storage.delete_object(prepared.source_storage_key, actor_id=prepared.actor.id)
+            content_store.delete_object_if_unreferenced(
+                conn,
+                storage,
+                prepared.source_storage_key,
+                actor_id=prepared.actor.id,
+            )
         except (OSError, StorageBackendUnavailable):
             pass
 

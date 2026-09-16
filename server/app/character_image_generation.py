@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app import content_store
 from app.auth import CurrentUser
 from app.bootstrap import is_customer_production
 from app.character_asset_quality import inspect_fake_character_asset
@@ -917,7 +918,7 @@ def require_character_generation_lease_owned(
 
 def delete_character_object_quietly(storage: StorageAdapter, object_key: str) -> None:
     try:
-        storage.delete_object(object_key, actor_id=None)
+        content_store.delete_object_outside_content_namespace(storage, object_key)
     except Exception:
         logger.exception("Failed to clean an orphaned character image object")
 

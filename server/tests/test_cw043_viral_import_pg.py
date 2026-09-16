@@ -247,7 +247,14 @@ def test_expired_shared_attempt_cannot_publish_or_delete_successor(pg_state, sta
     assert row["attempt"] == 2
 
 
-def test_preview_and_import_share_media_but_keep_private_attempt_copies(pg_state, monkeypatch):
+def test_preview_and_import_share_one_object_across_every_import(pg_state, monkeypatch):
+    """DEDUP-CAS-20260916：导入不再为每个项目各写一份私有副本。
+
+    旧断言固定的是「每次导入一份 attempt 私有副本」（`new.stored.key !=
+    old.stored.key != other.stored.key`）。那正是本次要消除的重复：同一平台视频
+    导入 N 个项目就存 N 份完整视频。新不变量更强——三个导入（同属主两次 +
+    他属主一次）必须指向**同一个**对象，且下载只发生一次。
+    """
     from test_viral_media import _video
 
     from app import viral_media
@@ -271,6 +278,7 @@ def test_preview_and_import_share_media_but_keep_private_attempt_copies(pg_state
     preview = viral_media.ViralMediaPipeline(client=None, storage=storage, shared=True).fetch(
         video, prefer="video"
     )
+    objects_before_imports = len(storage._objects)
 
     def work(owner, attempt):
         return ViralImportWork(
@@ -295,15 +303,25 @@ def test_preview_and_import_share_media_but_keep_private_attempt_copies(pg_state
     other = perform_viral_import_task(work("u2", 1))
     discard_viral_import_outcome(storage, outcome=old, actor_id="u1")
     assert len(calls) == 1
-    assert new.stored.key != old.stored.key != other.stored.key
+    # One shared object serves every import, including the other user's.
+    assert new.stored.key == old.stored.key == other.stored.key
+    assert len(storage._objects) == objects_before_imports
     assert storage.head_object(new.stored.key) and storage.head_object(other.stored.key)
     assert (
         _rows(pg_state, "SELECT storage_uri FROM viral_media_preparations")[0]["storage_uri"]
         == preview.storage_uri
     )
+    # Discarding an outcome must not remove the shared bytes any more.
+    assert storage.head_object(old.stored.key) is not None
 
 
-def test_failed_project_copy_does_not_invalidate_shared_media(pg_state, monkeypatch):
+def test_broken_copy_backend_cannot_fail_an_import(pg_state, monkeypatch):
+    """DEDUP-CAS-20260916：导入不再调用 copy_object，故副本故障不再能拖垮导入。
+
+    旧版本用 ``BrokenCopy.copy_object`` 抛错来证明「副本失败不会污染共享媒体」——
+    那条路径如今根本不存在。保留同一个故障注入，断言的是更强的事实：整个导入
+    过程一次 copy 都不发起，共享媒体依旧是缓存命中。
+    """
     from test_viral_media import _video
 
     from app import viral_media
@@ -344,8 +362,8 @@ def test_failed_project_copy_does_not_invalidate_shared_media(pg_state, monkeypa
     viral_media.ViralMediaPipeline(client=None, storage=storage, shared=True).fetch(
         video, prefer="video"
     )
-    with pytest.raises(RuntimeError, match="copy failed"):
-        perform_viral_import_task(work)
+    outcome = perform_viral_import_task(work)
+    assert outcome.stored.key
     cached = viral_media.ViralMediaPipeline(client=None, storage=storage, shared=True).fetch(
         video, prefer="video"
     )

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app import content_store
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
 from app.storage import StorageAdapter, StoredObject
@@ -309,7 +310,7 @@ class ViralMediaPreparation:
                 )
             if not publishing:
                 try:
-                    self.storage.delete_object(lease.key)
+                    content_store.delete_object_outside_content_namespace(self.storage, lease.key)
                 except Exception:
                     logger.warning("Unpublished shared media cleanup deferred")
             raise

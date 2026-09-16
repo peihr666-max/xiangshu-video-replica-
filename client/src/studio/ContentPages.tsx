@@ -10,7 +10,6 @@ import type {
 } from "../api";
 import {
   clearMaterialCache,
-  completeMaterialUpload,
   createGenerationTaskPreviewUrl,
   createMaterialUploadIntent,
   createViralImportTask,
@@ -28,13 +27,13 @@ import {
   listMaterials,
   listViralFavorites,
   listViralVideos,
+  putMaterial,
   refreshViralVideoStatistics,
   removeViralFavorite,
   resolveMaterials,
   saveStudioDraft,
   saveViralFavorite,
   updateMaterial,
-  uploadMaterial,
 } from "../api";
 import { VideoPreview } from "../VideoPreview";
 import { CharacterMaterialViews } from "./CharacterMaterialViews";
@@ -2119,8 +2118,7 @@ function MaterialsPageContent() {
         title: file.name,
         group: "我的上传",
       });
-      await uploadMaterial(intent, file, setUploadProgress);
-      const completed = await completeMaterialUpload(intent.asset_id);
+      const completed = await putMaterial(intent, file, setUploadProgress);
       const asset = studioAssetFromMaterial(completed);
       retainForDraft(asset);
       setSelectedAsset(asset);
@@ -2958,9 +2956,8 @@ export function PublishPage() {
         title: file.name,
         group: "发布封面",
       });
-      await uploadMaterial(intent, file, () => {});
       const asset = studioAssetFromMaterial(
-        await completeMaterialUpload(intent.asset_id),
+        await putMaterial(intent, file, () => {}),
       );
       if (current !== operation.current) return;
       updateData((previous) => ({

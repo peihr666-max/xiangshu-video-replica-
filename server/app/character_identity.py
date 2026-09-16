@@ -16,6 +16,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app import content_store
 from app.analysis import (
     APILIO_DEFAULT_BASE_URL,
     APILIO_GEMINI_MODEL,
@@ -45,6 +46,7 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
     store_verified_upload,
+    verified_upload_object_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -419,6 +421,67 @@ def update_person_identity(
     return get_person_identity(conn, actor=actor, identity_id=identity_id)
 
 
+def _identity_owner_user_id(identity: sqlite3.Row, *, actor: CurrentUser) -> str:
+    """The tenant whose bytes an identity asset belongs to.
+
+    Identity documents and source photos are private material, so this value is
+    the deduplication scope owner: identical bytes belonging to a different
+    customer must never resolve to the same object, even though the hash matches.
+    """
+    return str(identity["owner_user_id"] or identity["created_by"] or actor.id)
+
+
+def _retain_identity_content(
+    conn: BusinessConnection,
+    *,
+    storage: StorageAdapter,
+    identity: sqlite3.Row,
+    actor: CurrentUser,
+    asset_id: str,
+    source_key: str,
+    content: bytes,
+    content_type: str,
+    sha256: str,
+    size_bytes: int,
+) -> tuple[bool, str, content_store.ContentObject]:
+    """Register identity bytes, reusing an existing copy when one already exists.
+
+    Returns ``(deduplicated, storage_uri, registered)``. The check runs **before**
+    the bytes are written because the verified key embeds the asset id: without
+    it an identical authorization file or source photo always lands on a brand
+    new key and gets stored twice.
+
+    The scope is always ``user``. Identity material is private, so two customers
+    who happen to upload byte-identical files must never share one object — the
+    hash matching is exactly the case we have to keep apart.
+    """
+    registered, deduplicated = content_store.retain_content_object(
+        conn,
+        sha256=sha256,
+        size_bytes=size_bytes,
+        content_type=content_type,
+        provider=storage.provider,
+        bucket=storage.bucket,
+        object_key=verified_upload_object_key(
+            asset_id=asset_id, digest=sha256, source_key=source_key
+        ),
+        scope="user",
+        owner_user_id=_identity_owner_user_id(identity, actor=actor),
+    )
+    if deduplicated:
+        # This owner already holds these bytes; point the asset at that copy
+        # instead of writing a second one.
+        return True, registered.storage_uri, registered
+    stored = store_verified_upload(
+        storage,
+        asset_id=asset_id,
+        source_key=source_key,
+        content=content,
+        content_type=content_type,
+    )
+    return False, stored.uri, registered
+
+
 def create_identity_upload_intent(
     conn: BusinessConnection,
     *,
@@ -556,25 +619,33 @@ def complete_authorization_upload(
         size_bytes=stored.size,
     )
     validate_authorization_content(content, content_type=content_type)
-    stored = store_verified_upload(
-        storage,
+    sha256 = hashlib.sha256(content).hexdigest()
+    source_key = storage_object_ref_from_uri(str(asset["storage_uri"])).key
+    deduplicated, stored_uri, registered = _retain_identity_content(
+        conn,
+        storage=storage,
+        identity=identity,
+        actor=actor,
         asset_id=asset_id,
-        source_key=storage_object_ref_from_uri(str(asset["storage_uri"])).key,
+        source_key=source_key,
         content=content,
         content_type=content_type,
+        sha256=sha256,
+        size_bytes=stored.size,
     )
-    sha256 = hashlib.sha256(content).hexdigest()
-    metadata = completed_asset_metadata(asset, stored_uri=stored.uri, stored_size=stored.size)
+    metadata = completed_asset_metadata(asset, stored_uri=stored_uri, stored_size=stored.size)
+    metadata["content_deduplicated"] = deduplicated
     state_error: HTTPException | None = None
     with conn:
         update_completed_asset(
             conn,
             asset_id=asset_id,
-            storage_uri=stored.uri,
+            storage_uri=stored_uri,
             sha256=sha256,
             size_bytes=stored.size,
             content_type=content_type,
             metadata=metadata,
+            content_object_id=registered.id,
         )
         latest_identity = read_identity_row(conn, identity_id, for_update=True)
         try:
@@ -658,14 +729,19 @@ def complete_source_upload(
         size_bytes=stored.size,
     )
     width, height = image_dimensions(content, content_type=content_type)
-    stored = store_verified_upload(
-        storage,
+    sha256 = hashlib.sha256(content).hexdigest()
+    deduplicated, stored_uri, registered = _retain_identity_content(
+        conn,
+        storage=storage,
+        identity=identity,
+        actor=actor,
         asset_id=asset_id,
         source_key=storage_object_ref_from_uri(str(asset["storage_uri"])).key,
         content=content,
         content_type=content_type,
+        sha256=sha256,
+        size_bytes=stored.size,
     )
-    sha256 = hashlib.sha256(content).hexdigest()
     started = time.monotonic()
     try:
         inspection = inspector.inspect(content, content_type=content_type)
@@ -673,13 +749,14 @@ def complete_source_upload(
         provider_state_error = persist_source_inspection_failure(
             conn,
             asset=asset,
-            stored_uri=stored.uri,
+            stored_uri=stored_uri,
             stored_size=stored.size,
             sha256=sha256,
             content_type=content_type,
             identity_id=identity_id,
             actor=actor,
             latency_ms=int((time.monotonic() - started) * 1000),
+            content_object_id=registered.id,
         )
         if provider_state_error is not None:
             raise provider_state_error
@@ -689,19 +766,21 @@ def complete_source_upload(
             "真人源图语义质检暂时不可用，请稍后重新完成上传。",
         ) from exc
     quality = evaluate_source_image_quality(width=width, height=height, inspection=inspection)
-    metadata = completed_asset_metadata(asset, stored_uri=stored.uri, stored_size=stored.size)
+    metadata = completed_asset_metadata(asset, stored_uri=stored_uri, stored_size=stored.size)
     metadata["quality"] = quality.model_dump(mode="json")
+    metadata["content_deduplicated"] = deduplicated
     state_error: HTTPException | None = None
     identity_source_updated = False
     with conn:
         update_completed_asset(
             conn,
             asset_id=asset_id,
-            storage_uri=stored.uri,
+            storage_uri=stored_uri,
             sha256=sha256,
             size_bytes=stored.size,
             content_type=content_type,
             metadata=metadata,
+            content_object_id=registered.id,
         )
         latest_identity = read_identity_row(conn, identity_id, for_update=True)
         try:
@@ -1666,6 +1745,7 @@ def update_completed_asset(
     size_bytes: int,
     content_type: str,
     metadata: dict[str, object],
+    content_object_id: str | None = None,
 ) -> None:
     metadata = dict(metadata)
     expected = metadata.pop("_completion_expected_state", None)
@@ -1677,13 +1757,35 @@ def update_completed_asset(
         raise character_error(409, "UPLOAD_STATE_CHANGED", "上传记录已变化，请重试完成上传。")
     if decode_object(current[3]).get("upload_status") == "EXPIRED":
         raise character_error(409, "UPLOAD_EXPIRED", "上传已过期，请重新创建上传。")
+    # ``content_object_id`` is optional so callers that predates the content
+    # registry keep working: without it the row simply stays unregistered.
+    if content_object_id is None:
+        conn.execute(
+            """
+            UPDATE assets
+            SET storage_uri = %s, sha256 = %s, size_bytes = %s, content_type = %s,
+                metadata_json = %s
+            WHERE id = %s
+            """,
+            (storage_uri, sha256, size_bytes, content_type, encode_json(metadata), asset_id),
+        )
+        return
     conn.execute(
         """
         UPDATE assets
-        SET storage_uri = %s, sha256 = %s, size_bytes = %s, content_type = %s, metadata_json = %s
+        SET storage_uri = %s, sha256 = %s, size_bytes = %s, content_type = %s,
+            metadata_json = %s, content_object_id = %s
         WHERE id = %s
         """,
-        (storage_uri, sha256, size_bytes, content_type, encode_json(metadata), asset_id),
+        (
+            storage_uri,
+            sha256,
+            size_bytes,
+            content_type,
+            encode_json(metadata),
+            content_object_id,
+            asset_id,
+        ),
     )
 
 
@@ -1698,6 +1800,7 @@ def persist_source_inspection_failure(
     identity_id: str,
     actor: CurrentUser,
     latency_ms: int,
+    content_object_id: str | None = None,
 ) -> HTTPException | None:
     metadata = completed_asset_metadata(asset, stored_uri=stored_uri, stored_size=stored_size)
     metadata["inspection_status"] = "ERROR"
@@ -1712,6 +1815,7 @@ def persist_source_inspection_failure(
             size_bytes=stored_size,
             content_type=content_type,
             metadata=metadata,
+            content_object_id=content_object_id,
         )
         latest_identity = read_identity_row(conn, identity_id, for_update=True)
         try:

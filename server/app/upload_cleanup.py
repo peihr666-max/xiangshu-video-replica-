@@ -15,6 +15,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 
+from app import content_store
 from app.db_pg import resolve_cli_pg_dsn
 from app.storage import (
     StorageAdapter,
@@ -121,15 +122,35 @@ def cleanup_upload_page(
                     # Only the expired pending asset's zero-byte staging reference
                     # is disposable; every ready reference (including another asset)
                     # protects the object from deletion.
+                    #
+                    # The carve-out is deliberately *narrower* than "ignore this
+                    # asset": it ignores one row — this asset's empty staging row —
+                    # not every row this asset holds. Delegating it to
+                    # excluding_asset_ids would widen it and delete objects a
+                    # completed asset still references, which is the exact failure
+                    # this whole gate exists to prevent.
+                    #
+                    # This check never consulted project_id, so unlike the
+                    # project-delete path it was already safe for references held
+                    # by assets with project_id IS NULL. The registry check defends
+                    # the other direction: content_objects rows record shared bytes
+                    # that have no asset row of their own.
                     referenced = conn.execute(
                         "SELECT 1 FROM assets WHERE storage_uri = %s "
                         "AND NOT (id = %s AND size_bytes = 0 AND sha256 = '') LIMIT 1",
                         (uri, asset_id),
                     ).fetchone()
-                    if referenced is not None or not apply:
+                    registered = content_store.object_referenced_by_content_registry(
+                        conn,
+                        provider=storage.provider,
+                        bucket=storage.bucket,
+                        object_key=key,
+                    )
+                    if referenced is not None or registered or not apply:
                         continue
-                    if storage.head_object(key) is not None:
-                        storage.delete_object(key)
+                    if storage.head_object(key) is not None and (
+                        content_store.delete_object_outside_content_namespace(storage, key)
+                    ):
                         result["deleted"] += 1
                 if len(keys) == 100:
                     result["next_asset_id"] = before_asset
@@ -148,6 +169,33 @@ def cleanup_upload_page(
     return result
 
 
+def reclaim_content_objects(
+    dsn: str,
+    *,
+    storage: StorageAdapter,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Sweep content objects whose reclaim grace window has elapsed.
+
+    This is the production entry point for :func:`content_store.reclaim_expired_content_objects`.
+    It is safe to run unconditionally: a row only becomes eligible after its
+    reference count reached zero *and* the 24h grace window passed, and the
+    sweeper re-reads the count under a lock before touching any bytes.
+    """
+    if not 1 <= limit <= 1000:
+        raise ValueError("reclaim requires a bounded page")
+    # No row_factory here: PostgresBackend installs its own on wrap, and passing a
+    # dict_row connection would also widen the type BusinessConnection.postgres
+    # accepts. The reclaim helpers read rows through the business surface.
+    with psycopg.connect(resolve_cli_pg_dsn(dsn)) as raw:
+        from app.db_portable import BusinessConnection
+
+        conn = BusinessConnection.postgres(raw)
+        result = content_store.reclaim_expired_content_objects(conn, storage, limit=limit)
+        raw.commit()
+    return dict(result)
+
+
 def main() -> int:
     from app.db_portable import BusinessConnection
     from app.media_routes import get_media_storage
@@ -158,10 +206,20 @@ def main() -> int:
     parser.add_argument("--object-cursor", default="")
     parser.add_argument("--object-asset-id", default="")
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument(
+        "--reclaim-content",
+        action="store_true",
+        help="sweep content objects past their reclaim grace window instead of scanning uploads",
+    )
+    parser.add_argument("--reclaim-limit", type=int, default=100)
     args = parser.parse_args()
     dsn = resolve_cli_pg_dsn()
     with psycopg.connect(dsn) as raw:
         storage = get_media_storage(BusinessConnection.postgres(raw))
+    if args.reclaim_content:
+        reclaimed = reclaim_content_objects(dsn, storage=storage, limit=args.reclaim_limit)
+        print(json.dumps({"reclaimed": reclaimed}, sort_keys=True))
+        return 1 if reclaimed.get("failed") else 0
     result = cleanup_upload_page(
         dsn,
         storage=storage,

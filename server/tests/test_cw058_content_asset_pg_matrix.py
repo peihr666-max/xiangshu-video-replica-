@@ -1087,7 +1087,17 @@ def test_w18_pg_material_and_identity_uploads_keep_verified_bytes(bus: BusinessC
             "SELECT storage_uri, sha256 FROM assets WHERE id=%s", (asset_id,)
         ).fetchone()
         assert row is not None
-        assert f"/verified-uploads/{asset_id}/" in row[0]
+        # The point of this loop is that a verified snapshot survives someone
+        # overwriting the *source* object afterwards: the bytes the client
+        # uploaded are what the asset must resolve to, not whatever is sitting
+        # under the intent key now.
+        #
+        # The asset id is deliberately no longer required in the key. Deduplication
+        # may point this asset at an earlier verified copy of the same bytes owned
+        # by the same user (here: the source photo reuses the material upload of
+        # the identical PNG). What must still hold is that the asset resolves into
+        # the verified namespace and to the right bytes.
+        assert "/verified-uploads/" in row[0]
         assert storage.get_object(storage_object_ref_from_uri(row[0]).key) == content
         assert row[1] == hashlib.sha256(content).hexdigest()
 

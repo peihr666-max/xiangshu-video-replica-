@@ -24,6 +24,7 @@ from typing import cast
 
 from fastapi import HTTPException
 
+from app import content_store
 from app.auth import CurrentUser
 from app.character_asset_review import (
     CHARACTER_PUBLICATION_SCHEMA_VERSION,
@@ -1767,6 +1768,10 @@ class CharacterStorageCleanupTarget:
     asset_id: str
     storage: StorageAdapter
     key: str
+    # True when the bytes survive this identity. Computed while the identity's own
+    # asset rows still existed, which is the only moment the question can be
+    # answered — after the cascade they are indistinguishable from "someone else's".
+    still_referenced: bool = False
 
 
 @dataclass(frozen=True)
@@ -1900,7 +1905,11 @@ def delete_simple_character_identity(
     placeholders = ",".join("%s" for _ in asset_ids)
     asset_rows = (
         conn.execute(
-            f"SELECT id, storage_uri FROM assets WHERE id IN ({placeholders})",  # noqa: S608
+            # content_object_id is selected so the registry check below can exclude
+            # this identity's own registration: without it, once character uploads
+            # are content-addressed every identity would look "still referenced" by
+            # itself and its bytes would never be reclaimed.
+            f"SELECT id, storage_uri, content_object_id FROM assets WHERE id IN ({placeholders})",  # noqa: S608,E501
             tuple(asset_ids),
         ).fetchall()
         if asset_ids
@@ -1909,15 +1918,43 @@ def delete_simple_character_identity(
 
     cleanup_targets: list[CharacterStorageCleanupTarget] = []
     storage_resolution_failed_count = 0
+    shared_object_count = 0
     for asset in asset_rows:
         uri = str(asset["storage_uri"])
         try:
             storage = storage_for_uri(conn, uri)
+            key = storage_key_from_uri(uri)
+            # Two ways these bytes outlive the identity: another asset still points
+            # at the same URI (the same portrait backing a second identity), or a
+            # content_objects row owns them with no asset row of its own. Both are
+            # checked now, excluding this identity's own assets, which are deleted
+            # in the transaction below.
+            own_content_id = asset["content_object_id"]
+            still_referenced = content_store.object_referenced_by_another_asset(
+                conn,
+                storage_uri=uri,
+                excluding_asset_ids=list(asset_ids),
+            ) or content_store.object_referenced_by_content_registry(
+                conn,
+                provider=storage.provider,
+                bucket=storage.bucket,
+                object_key=key,
+                # Exclude this identity's own registration. It is released in the
+                # transaction below, and the row survives until the sweeper runs —
+                # so counting it here would report every character upload as shared
+                # and leak the bytes forever.
+                excluding_content_object_id=(
+                    None if own_content_id is None else str(own_content_id)
+                ),
+            )
+            if still_referenced:
+                shared_object_count += 1
             cleanup_targets.append(
                 CharacterStorageCleanupTarget(
                     asset_id=str(asset["id"]),
                     storage=storage,
-                    key=storage_key_from_uri(uri),
+                    key=key,
+                    still_referenced=still_referenced,
                 )
             )
         except (HTTPException, StorageBackendUnavailable, OSError, ValueError):
@@ -1930,6 +1967,10 @@ def delete_simple_character_identity(
         WHERE persona.identity_id = %s
     """
     with conn:
+        # Registry references are dropped before the cascade removes the asset rows,
+        # in the same transaction, so a failed identity delete cannot leave a count
+        # already decremented. The bytes are only *scheduled* for reclaim here.
+        content_store.release_assets_content_objects(conn, asset_ids=list(asset_ids))
         conn.execute(
             "DELETE FROM character_generation_tasks WHERE character_version_id IN "
             f"({version_ids_sql})",  # noqa: S608
@@ -1978,6 +2019,7 @@ def delete_simple_character_identity(
         metadata={
             "deleted_asset_count": len(asset_rows),
             "storage_cleanup_planned_count": len(cleanup_targets),
+            "shared_storage_object_count": shared_object_count,
             "storage_resolution_failed_count": storage_resolution_failed_count,
         },
     )
@@ -1996,9 +2038,14 @@ def cleanup_deleted_character_objects(
     deleted_count = 0
     failed_count = plan.resolution_failed_count
     for target in plan.targets:
+        if target.still_referenced:
+            # Another identity or the content registry still serves these bytes.
+            continue
         try:
-            target.storage.delete_object(target.key, actor_id=plan.actor_id)
-            deleted_count += 1
+            if content_store.delete_object_outside_content_namespace(
+                target.storage, target.key, actor_id=plan.actor_id
+            ):
+                deleted_count += 1
         except Exception:  # noqa: BLE001 - DB deletion already committed
             failed_count += 1
             logger.warning(
@@ -2278,16 +2325,42 @@ def _store_source_asset(
     else:
         asset_id = prepared_asset.asset_id
         stored = prepared_asset.stored
+    # Register these bytes under this user so a later upload of the same photo
+    # resolves to the object that already exists. Character sources stay
+    # user-scoped: two customers uploading an identical portrait must never be
+    # served the same object, even though the hash matches.
+    registered, deduplicated = content_store.retain_content_object(
+        conn,
+        sha256=stored.sha256,
+        size_bytes=stored.size,
+        content_type=stored.content_type,
+        provider=stored.provider,
+        bucket=stored.bucket,
+        object_key=stored.key,
+        scope="user",
+        owner_user_id=actor.id,
+    )
+    if deduplicated and stored.key != registered.object_key:
+        # An earlier copy already holds these bytes for this user, so this asset
+        # points at that copy. The object this request just wrote is an orphan.
+        # Leaving it costs storage but never breaks a reference; deleting it
+        # here would have to happen before the surrounding transaction commits,
+        # and a premature delete is unrecoverable. upload_cleanup reaps it later.
+        stored_uri = registered.storage_uri
+        stored_key = registered.object_key
+    else:
+        stored_uri = stored.uri
+        stored_key = stored.key
     conn.execute(
         """
         INSERT INTO assets (
             id, project_id, kind, storage_uri, sha256, size_bytes,
-            content_type, created_by_user_id, metadata_json
-        ) VALUES (%s, NULL, 'character_source_image', %s, %s, %s, %s, %s, %s)
+            content_type, created_by_user_id, metadata_json, content_object_id
+        ) VALUES (%s, NULL, 'character_source_image', %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             asset_id,
-            stored.uri,
+            stored_uri,
             stored.sha256,
             stored.size,
             stored.content_type,
@@ -2295,11 +2368,13 @@ def _store_source_asset(
             encode_json(
                 {
                     "identity_id": identity_id,
-                    "object_key": stored.key,
+                    "object_key": stored_key,
                     "purpose": "simple_upload_source",
                     "upload_status": "UPLOADED",
+                    "content_deduplicated": deduplicated,
                 }
             ),
+            registered.id,
         ),
     )
     return asset_id

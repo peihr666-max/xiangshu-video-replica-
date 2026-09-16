@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from cryptography.fernet import Fernet
 
+from app import content_store
 from app.db_pg import (
     CUSTOMER_PRODUCTION_ENV,
     DatabaseMode,
@@ -536,7 +537,7 @@ def _probe_formal_service_write_path(storage: StorageAdapter) -> None:
     """
     probe_key = f".cw031-readiness/{uuid4().hex}"
     storage.put_object(probe_key, b"0", content_type="application/octet-stream")
-    storage.delete_object(probe_key)
+    content_store.delete_object_outside_content_namespace(storage, probe_key)
 
 
 def check_customer_production_runtime_dependencies() -> PgReadyInfo | None:

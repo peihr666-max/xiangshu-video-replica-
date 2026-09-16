@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from app import content_store
 from app.analysis import insert_version
 from app.auth import CurrentUser, Role
 from app.db_portable import BusinessConnection
@@ -951,7 +952,9 @@ def delete_created_source_frames(
 ) -> None:
     for _, storage_key in created_assets:
         try:
-            storage.delete_object(storage_key, actor_id=actor_id)
+            content_store.delete_object_outside_content_namespace(
+                storage, storage_key, actor_id=actor_id
+            )
         except (OSError, StorageBackendUnavailable):
             pass
 

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app import content_store
 from app.auth import CurrentUser
 from app.character_contracts import (
     CharacterAssetReview,
@@ -416,7 +417,7 @@ def prepare_approved_publication_objects(
 def cleanup_publication_objects(storage: StorageAdapter, object_keys: list[str]) -> None:
     for object_key in object_keys:
         try:
-            storage.delete_object(object_key, actor_id=None)
+            content_store.delete_object_outside_content_namespace(storage, object_key)
         except Exception:
             logger.exception("Failed to clean an orphaned approved character object")
 

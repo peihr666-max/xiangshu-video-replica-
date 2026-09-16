@@ -2553,6 +2553,32 @@ export async function completeMaterialUpload(
   );
 }
 
+/**
+ * 完成一次素材上传，并在服务端已持有相同字节时直接复用。
+ *
+ * 上传意图会先按内容哈希查登记表：命中时资产已按「已完成」状态建好，
+ * `upload_required` 为 false，此时既不能传输（URL 为空）也不能再调
+ * /complete（会重复计一次引用），只把这条素材解析回来即可。
+ */
+export async function putMaterial(
+  intent: MaterialUploadIntent,
+  file: File,
+  onProgress: (progressPercent: number) => void,
+  signal?: AbortSignal,
+): Promise<MaterialItem> {
+  if (intent.upload_required === false) {
+    // 复用分支只是一次轻量解析，不带 signal：中断发生在传输阶段才有意义。
+    const resolved = await resolveMaterials([intent.material_id]);
+    const item = resolved.items[0];
+    if (!item) {
+      throw new Error("复用素材后未能读取素材详情");
+    }
+    return item;
+  }
+  await uploadMaterial(intent, file, onProgress, signal);
+  return completeMaterialUpload(intent.asset_id, signal);
+}
+
 export async function updateMaterial(
   materialId: string,
   update: MaterialUpdate,

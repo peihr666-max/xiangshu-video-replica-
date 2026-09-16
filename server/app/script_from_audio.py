@@ -27,6 +27,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from app import content_store
 from app.asr import (
     AsrProvider,
     AsrProviderError,
@@ -830,8 +831,10 @@ def perform_script_from_audio_task(
                 # A superseded worker must not delete the current attempt's input.
                 if heartbeat is not None:
                     heartbeat()
-                work.storage.delete_object(
-                    work.audio_object_key, actor_id="script-from-audio-worker"
+                content_store.delete_object_outside_content_namespace(
+                    work.storage,
+                    work.audio_object_key,
+                    actor_id="script-from-audio-worker",
                 )
                 work.audio_deleted = True
             except Exception:
