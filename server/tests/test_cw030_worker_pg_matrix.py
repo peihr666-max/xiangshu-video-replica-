@@ -69,7 +69,12 @@ from app.generation import (
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
 )
-from app.generation_worker import run_pg_worker_once, run_pg_worker_round
+from app.generation_worker import (
+    _cleanup_audio_objects,
+    _pg_audio_connection,
+    run_pg_worker_once,
+    run_pg_worker_round,
+)
 from app.image_tasks import (
     acquire_character_sheet_task,
     acquire_first_frame_task,
@@ -78,6 +83,7 @@ from app.image_tasks import (
 from app.script_from_audio import (
     acquire_script_from_audio_task,
     fail_script_from_audio_task,
+    prepare_script_from_audio_task,
 )
 from app.script_rewrite import (
     _script_rewrite_request_hash,
@@ -95,6 +101,7 @@ CW030_DB_NAME = "cw030_worker_matrix_test"
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 
 _MATRIX_CLEANUP_ORDER = (
+    "viral_script_cache",
     # Reset only this isolated fixture, including new immutable billing descendants.
     "wallet_transactions",
     "generation_task_operations",
@@ -122,6 +129,7 @@ _MATRIX_CLEANUP_ORDER = (
     "wallets",
     "users",
     "runtime_settings",
+    "billing_tariffs",
 )
 
 _REQUEST_SNAPSHOT = '{"output_duration_seconds": 10, "resolution": "768P"}'
@@ -1385,6 +1393,188 @@ def _audio_lease(dsn: str, worker_id: str) -> Any:
         return acquire_script_from_audio_task(BusinessConnection.postgres(raw), worker_id=worker_id)
 
 
+def _seed_viral_copy(
+    dsn: str, user: str, *, platform: str = "douyin", imported: bool = True
+) -> None:
+    _exec(
+        dsn,
+        "INSERT INTO projects(id,name,owner_user_id) VALUES (%s,'copy',%s)",
+        (f"copy-{user}", user),
+    )
+    _exec(
+        dsn,
+        "INSERT INTO assets(id,project_id,kind,storage_uri,sha256,size_bytes,"
+        "content_type,created_by_user_id,metadata_json) VALUES (%s,%s,'reference_video',"
+        "'fake://copies/source.mp4',%s,16,'video/mp4',%s,%s)",
+        (
+            f"copy-asset-{user}",
+            f"copy-{user}",
+            "b" * 64,
+            user,
+            json.dumps({"duration_seconds": 12, "platform": platform, "video_id": "123"}),
+        ),
+    )
+    if imported:
+        _exec(
+            dsn,
+            "INSERT INTO viral_import_tasks(id,owner_user_id,project_id,source_asset_id,"
+            "platform,video_id,purpose,idempotency_key,request_hash,request_json,status) "
+            "VALUES (%s,%s,%s,%s,%s,'123','copy',%s,'hash','{}','SUCCEEDED')",
+            (f"import-{user}", user, f"copy-{user}", f"copy-asset-{user}", platform, user),
+        )
+
+
+def _enqueue_copy(dsn: str, user: str, key: str) -> Any:
+    from app.auth import CurrentUser
+    from app.script_from_audio import enqueue_script_from_audio_task
+
+    with psycopg.connect(dsn) as raw:
+        return enqueue_script_from_audio_task(
+            BusinessConnection.postgres(raw),
+            actor=CurrentUser(user, user, user, "employee"),
+            project_id=f"copy-{user}",
+            source_asset_id=f"copy-asset-{user}",
+            idempotency_key=key,
+        )
+
+
+def _copy_fixture(dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, list[str]]:
+    from app import script_from_audio as pipeline
+    from app.asr import TranscriptResult
+
+    _seed_base(dsn)
+    _exec(dsn, "DELETE FROM billing_tariffs WHERE service='asr'")
+    _exec(
+        dsn,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+        "VALUES ('asr',true,2,1)",
+    )
+    calls: list[str] = []
+
+    class Provider:
+        name = "fake-copy-asr"
+
+        def transcribe(self, url: str, *, duration_sec: float | None = None) -> TranscriptResult:
+            calls.append(url)
+            return TranscriptResult("服务器共享的原视频文案", 12, "zh")
+
+    monkeypatch.setattr(pipeline, "_configured_asr", lambda conn: Provider())
+    monkeypatch.setattr(pipeline, "resolve_media_binary", lambda name: name)
+    monkeypatch.setattr(
+        pipeline, "extract_audio", lambda binary, source, dest: dest.write_bytes(b"audio")
+    )
+    monkeypatch.setattr(pipeline, "probe_duration_seconds", lambda binary, path: 12)
+    storage = FakeStorageAdapter(provider="fake", bucket="copies")
+    storage.put_object("source.mp4", b"video", content_type="video/mp4")
+    return storage, calls
+
+
+def _run_copy(dsn: str, storage: Any, worker: str = "copy-worker") -> Any:
+    from app.generation_worker import _run_audio_lease
+
+    lease = _audio_lease(dsn, worker)
+    assert lease is not None
+    _run_audio_lease(lease, storage=storage, connection=_pg_audio_connection)
+    return lease
+
+
+def test_viral_copy_cache_reuses_result_but_bills_each_request(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    first = _enqueue_copy(pg_state, "u1", "first")
+    _run_copy(pg_state, storage)
+    assert len(calls) == 1
+    second = _enqueue_copy(pg_state, "u2", "second")
+    assert second["status"] == "SUCCEEDED"
+    assert json.loads(second["result_json"])["text"] == "服务器共享的原视频文案"
+    assert second["id"] != first["id"]
+    assert _enqueue_copy(pg_state, "u2", "second")["id"] == second["id"]
+    _exec(pg_state, "UPDATE billing_tariffs SET unit_credits=3 WHERE service='asr'")
+    third = _enqueue_copy(pg_state, "u2", "third")
+    assert third["status"] == "SUCCEEDED"
+    assert len(calls) == 1
+    assert _one(pg_state, "SELECT count(*) FROM billing_attempts WHERE service='asr'") == 1
+    assert sorted(
+        r["charged_credits"]
+        for r in _rows(
+            pg_state, "SELECT charged_credits FROM billing_operations WHERE service='asr'"
+        )
+    ) == [24, 24, 36]
+    assert _one(pg_state, "SELECT sum(reserved_credits) FROM wallets") == 0
+
+
+def test_viral_copy_cache_waiters_do_not_submit_twice(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    _enqueue_copy(pg_state, "u1", "first")
+    producer = _audio_lease(pg_state, "producer")
+    assert producer is not None
+    follower = _enqueue_copy(pg_state, "u2", "second")
+    _run_copy(pg_state, storage, "follower")
+    assert calls == []
+    assert _task_status(pg_state, "script_from_audio_tasks", follower["id"]) == "PENDING"
+    assert "请稍候" in _one(
+        pg_state,
+        "SELECT error_message_redacted FROM script_from_audio_tasks WHERE id=%s",
+        (follower["id"],),
+    )
+    from app.generation_worker import _run_audio_lease
+
+    _run_audio_lease(producer, storage=storage, connection=_pg_audio_connection)
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET next_attempt_at=NULL WHERE id=%s",
+        (follower["id"],),
+    )
+    _run_copy(pg_state, storage)
+    assert len(calls) == 1
+    assert (
+        _one(
+            pg_state,
+            "SELECT count(*) FROM billing_operations WHERE service='asr' AND state='SUCCEEDED'",
+        )
+        == 2
+    )
+
+
+def test_viral_copy_cache_hit_needs_no_provider_or_media(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _enqueue_copy(pg_state, "u1", "first")
+    _run_copy(pg_state, storage)
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("Cache hit must not access provider/media")
+
+    monkeypatch.setattr("app.script_from_audio._configured_asr", unavailable)
+    monkeypatch.setattr(storage, "get_object", unavailable)
+    monkeypatch.setattr("app.script_from_audio.resolve_media_binary", unavailable)
+    assert _enqueue_copy(pg_state, "u1", "again")["status"] == "SUCCEEDED"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("platform,imported", [("wechat_channels", True), ("douyin", False)])
+def test_viral_copy_cache_platform_and_trusted_import_isolation(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, platform: str, imported: bool
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2", platform=platform, imported=imported)
+    _enqueue_copy(pg_state, "u1", "first")
+    _run_copy(pg_state, storage)
+    assert _enqueue_copy(pg_state, "u2", "second")["status"] == "PENDING"
+    _run_copy(pg_state, storage)
+    assert len(calls) == 2
+
+
 def test_script_from_audio_claim_is_exclusive(pg_state: str) -> None:
     _seed_base(pg_state)
     _seed_source_frame_task(pg_state, task_id="sf-asset")  # ensures asset-ref exists
@@ -1392,6 +1582,370 @@ def test_script_from_audio_claim_is_exclusive(pg_state: str) -> None:
     first = _audio_lease(pg_state, "worker-a")
     assert first is not None
     assert _audio_lease(pg_state, "worker-b") is None
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_viral_copy_cache_uncertain_never_resubmits(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    from fastapi import HTTPException
+
+    from app.asr import AsrSubmissionUncertain
+
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    first = _enqueue_copy(pg_state, "u1", "first")
+    lease = _audio_lease(pg_state, "producer")
+    assert lease is not None
+    with pg_transaction() as raw:
+        from app.script_from_audio import mark_script_from_audio_submission_started
+
+        conn = BusinessConnection.postgres(raw)
+        mark_script_from_audio_submission_started(conn, lease=lease)
+        fail_script_from_audio_task(
+            conn, lease=lease, cause=AsrSubmissionUncertain("unknown"), submission_started=True
+        )
+    if legacy:
+        _exec(pg_state, "DELETE FROM viral_script_cache")
+        _exec(
+            pg_state,
+            "UPDATE script_from_audio_tasks SET request_json=%s WHERE id=%s",
+            (json.dumps({"source_asset_id": "copy-asset-u1"}), first["id"]),
+        )
+    with pytest.raises(HTTPException) as error:
+        _enqueue_copy(pg_state, "u2", "second")
+    assert error.value.detail["code"] == "SCRIPT_FROM_AUDIO_CACHE_UNCERTAIN"
+    assert calls == []
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u2'") == 1000
+
+
+def test_viral_copy_cache_adopts_legacy_running_then_success(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    first = _enqueue_copy(pg_state, "u1", "first")
+    producer = _audio_lease(pg_state, "producer")
+    assert producer is not None
+    _exec(pg_state, "DELETE FROM viral_script_cache")
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET request_json=%s WHERE id=%s",
+        (json.dumps({"source_asset_id": "copy-asset-u1"}), first["id"]),
+    )
+    follower = _enqueue_copy(pg_state, "u2", "second")
+    _run_copy(pg_state, storage, "follower")
+    assert calls == []
+    from app.generation_worker import _run_audio_lease
+
+    _run_audio_lease(producer, storage=storage, connection=_pg_audio_connection)
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET next_attempt_at=NULL WHERE id=%s",
+        (follower["id"],),
+    )
+    _run_copy(pg_state, storage)
+    assert len(calls) == 1
+    assert _task_status(pg_state, "script_from_audio_tasks", follower["id"]) == "SUCCEEDED"
+
+
+def test_viral_copy_cache_adopts_history_and_survives_project_deletion(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    _enqueue_copy(pg_state, "u1", "first")
+    _run_copy(pg_state, storage)
+    _exec(pg_state, "DELETE FROM viral_script_cache")
+    assert _enqueue_copy(pg_state, "u2", "second")["status"] == "SUCCEEDED"
+    _exec(pg_state, "DELETE FROM projects WHERE id='copy-u1'")
+    assert _enqueue_copy(pg_state, "u2", "third")["status"] == "SUCCEEDED"
+    assert len(calls) == 1
+
+
+def test_viral_copy_cache_deleted_inflight_producer_stays_blocked(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    _, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    _enqueue_copy(pg_state, "u1", "first")
+    _exec(pg_state, "DELETE FROM projects WHERE id='copy-u1'")
+    with pytest.raises(HTTPException) as error:
+        _enqueue_copy(pg_state, "u2", "second")
+    assert error.value.detail["code"] == "SCRIPT_FROM_AUDIO_CACHE_UNCERTAIN"
+    assert calls == []
+
+
+def test_viral_copy_cache_insufficient_balance_and_wrong_owner_cannot_read(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    from app.auth import CurrentUser
+    from app.script_from_audio import enqueue_script_from_audio_task
+
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    _enqueue_copy(pg_state, "u1", "first")
+    _run_copy(pg_state, storage)
+    _exec(pg_state, "UPDATE wallets SET available_credits=0 WHERE user_id='u2'")
+    with pytest.raises(HTTPException) as error:
+        _enqueue_copy(pg_state, "u2", "second")
+    assert error.value.status_code == 402
+    assert (
+        _one(pg_state, "SELECT count(*) FROM script_from_audio_tasks WHERE project_id='copy-u2'")
+        == 0
+    )
+    with pytest.raises(HTTPException):
+        with psycopg.connect(pg_state) as raw:
+            enqueue_script_from_audio_task(
+                BusinessConnection.postgres(raw),
+                actor=CurrentUser("u2", "u2", "u2", "employee"),
+                project_id="copy-u1",
+                source_asset_id="copy-asset-u1",
+                idempotency_key="unauthorized",
+            )
+    assert len(calls) == 1
+
+
+def test_viral_copy_cache_new_key_while_active_is_not_silently_free(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    first = _enqueue_copy(pg_state, "u1", "first")
+    assert _enqueue_copy(pg_state, "u1", "first")["id"] == first["id"]
+    with pytest.raises(HTTPException) as error:
+        _enqueue_copy(pg_state, "u1", "different")
+    assert error.value.status_code == 409
+    assert _one(pg_state, "SELECT count(*) FROM billing_operations WHERE service='asr'") == 1
+
+
+@pytest.mark.parametrize("same_request", [True, False])
+def test_viral_copy_cache_simultaneous_enqueues_have_one_producer(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, same_request: bool
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from app import script_from_audio as pipeline
+
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    barrier = Barrier(2)
+    original_lock = pipeline._lock_script_cache
+
+    def simultaneous(conn: BusinessConnection, source: tuple[str, str]) -> Any:
+        barrier.wait(timeout=10)
+        return original_lock(conn, source)
+
+    monkeypatch.setattr(pipeline, "_lock_script_cache", simultaneous)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(_enqueue_copy, pg_state, "u1", "first")
+        b = pool.submit(_enqueue_copy, pg_state, "u1" if same_request else "u2", "first")
+        rows = [a.result(timeout=15), b.result(timeout=15)]
+    monkeypatch.setattr(pipeline, "_lock_script_cache", original_lock)
+    assert len({row["id"] for row in rows}) == (1 if same_request else 2)
+    assert _one(pg_state, "SELECT count(*) FROM viral_script_cache") == 1
+    _run_copy(pg_state, storage)
+    if not same_request:
+        _run_copy(pg_state, storage)
+    assert len(calls) == 1
+    assert _one(pg_state, "SELECT count(*) FROM billing_operations WHERE service='asr'") == (
+        1 if same_request else 2
+    )
+    assert _one(
+        pg_state,
+        "SELECT count(*) FROM audit_logs WHERE action='project.script_from_audio_enqueued'",
+    ) == (1 if same_request else 2)
+
+
+def test_viral_copy_cache_presubmission_failure_allows_waiter_to_recover(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    _enqueue_copy(pg_state, "u1", "first")
+    lease = _audio_lease(pg_state, "producer")
+    assert lease is not None
+    _enqueue_copy(pg_state, "u2", "second")
+    with pg_transaction() as raw:
+        fail_script_from_audio_task(
+            BusinessConnection.postgres(raw),
+            lease=lease,
+            cause=RuntimeError("media unavailable before ASR"),
+            submission_started=False,
+        )
+    _run_copy(pg_state, storage)
+    assert len(calls) == 1
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u1'") == 1000
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u2'") == 976
+
+
+@pytest.mark.parametrize("text,duration", [("", 12), ("text", None), ("text", float("nan"))])
+def test_viral_copy_cache_invalid_result_is_not_cached_or_charged(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, text: str, duration: float | None
+) -> None:
+    from app.asr import TranscriptResult
+
+    storage, _ = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _enqueue_copy(pg_state, "u1", "first")
+
+    class InvalidProvider:
+        name = "fake-invalid-asr"
+
+        def transcribe(self, url: str, *, duration_sec: float | None = None) -> TranscriptResult:
+            return TranscriptResult(text, duration, "zh")
+
+    monkeypatch.setattr("app.script_from_audio._configured_asr", lambda conn: InvalidProvider())
+    _run_copy(pg_state, storage)
+    assert _one(pg_state, "SELECT result_json FROM viral_script_cache") is None
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u1'") == 1000
+    assert _one(pg_state, "SELECT reserved_credits FROM wallets WHERE user_id='u1'") == 0
+
+
+def test_viral_copy_cache_legacy_completion_during_lookup_does_not_resubmit(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import script_from_audio as pipeline
+    from app.generation_worker import _run_audio_lease
+
+    storage, calls = _copy_fixture(pg_state, monkeypatch)
+    _seed_viral_copy(pg_state, "u1")
+    _seed_viral_copy(pg_state, "u2")
+    first = _enqueue_copy(pg_state, "u1", "first")
+    producer = _audio_lease(pg_state, "producer")
+    assert producer is not None
+    _exec(pg_state, "DELETE FROM viral_script_cache")
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET request_json=%s WHERE id=%s",
+        (json.dumps({"source_asset_id": "copy-asset-u1"}), first["id"]),
+    )
+    original = pipeline._historical_transcripts
+
+    def finish_between_reads(
+        conn: BusinessConnection, source: tuple[str, str], *, exclude: str | None = None
+    ) -> Any:
+        rows = original(conn, source, exclude=exclude)
+        _run_audio_lease(producer, storage=storage, connection=_pg_audio_connection)
+        return rows
+
+    monkeypatch.setattr(pipeline, "_historical_transcripts", finish_between_reads)
+    assert _enqueue_copy(pg_state, "u2", "second")["status"] == "SUCCEEDED"
+    assert len(calls) == 1
+
+
+def test_viral_copy_cache_failed_legacy_leader_does_not_hide_other_uncertain_task(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fastapi import HTTPException
+
+    _, calls = _copy_fixture(pg_state, monkeypatch)
+    for user in ("u1", "u2", "u3"):
+        _seed_viral_copy(pg_state, user)
+    first = _enqueue_copy(pg_state, "u1", "first")
+    second = _enqueue_copy(pg_state, "u2", "second")
+    for user, task in (("u1", first), ("u2", second)):
+        _exec(
+            pg_state,
+            "UPDATE script_from_audio_tasks SET request_json=%s WHERE id=%s",
+            (json.dumps({"source_asset_id": f"copy-asset-{user}"}), task["id"]),
+        )
+    _exec(
+        pg_state, "UPDATE script_from_audio_tasks SET status='FAILED' WHERE id=%s", (first["id"],)
+    )
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET status='SUBMISSION_UNCERTAIN',"
+        "provider_started_at=now()::text WHERE id=%s",
+        (second["id"],),
+    )
+    with pytest.raises(HTTPException) as error:
+        _enqueue_copy(pg_state, "u3", "third")
+    assert error.value.detail["code"] == "SCRIPT_FROM_AUDIO_CACHE_UNCERTAIN"
+    assert _one(pg_state, "SELECT available_credits FROM wallets WHERE user_id='u3'") == 1000
+    assert calls == []
+
+
+@pytest.mark.parametrize("existing_key", [None, "legacy/input.m4a"])
+def test_asr_audio_uses_project_storage_and_preserves_existing_receipt(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, existing_key: str | None
+) -> None:
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="sf-asset")
+    _seed_audio_task(pg_state, task_id="sfa-storage", audio_object_key=existing_key)
+    _exec(
+        pg_state,
+        "UPDATE script_from_audio_tasks SET request_json=%s WHERE id='sfa-storage'",
+        (json.dumps({"source_asset_id": "asset-ref"}),),
+    )
+    monkeypatch.setattr("app.script_from_audio.resolve_media_binary", lambda name: name)
+    monkeypatch.setattr("app.script_from_audio._configured_asr", lambda conn: object())
+    lease = _audio_lease(pg_state, "worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        work = prepare_script_from_audio_task(
+            BusinessConnection.postgres(raw),
+            lease=lease,
+            storage=FakeStorageAdapter(provider="cos", bucket="bucket"),
+        )
+    assert work.audio_object_key == (existing_key or "projects/proj-1/asr/sfa-storage.m4a")
+
+
+def test_asr_cleanup_failure_backs_off_and_keeps_the_object_receipt(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="sf-asset")
+    _seed_audio_task(
+        pg_state,
+        task_id="sfa-cleanup",
+        status="FAILED",
+        audio_object_key="projects/proj-1/asr/cleanup.m4a",
+    )
+    storage = FakeStorageAdapter(provider="cos", bucket="bucket")
+    calls: list[str] = []
+
+    def failed_delete(key: str, *, actor_id: str | None = None) -> None:
+        calls.append(key)
+        raise RuntimeError("object store unavailable")
+
+    monkeypatch.setattr(storage, "delete_object", failed_delete)
+    _cleanup_audio_objects(_pg_audio_connection, storage)
+    _cleanup_audio_objects(_pg_audio_connection, storage)
+    assert calls == ["projects/proj-1/asr/cleanup.m4a"]
+    row = _rows(
+        pg_state,
+        "SELECT audio_object_key,next_attempt_at FROM script_from_audio_tasks "
+        "WHERE id='sfa-cleanup'",
+    )[0]
+    assert row["audio_object_key"] == calls[0]
+    assert row["next_attempt_at"] is not None
+    _exec(
+        pg_state, "UPDATE script_from_audio_tasks SET next_attempt_at=NULL WHERE id='sfa-cleanup'"
+    )
+    monkeypatch.setattr(storage, "delete_object", lambda key, **kwargs: calls.append(key))
+    _cleanup_audio_objects(_pg_audio_connection, storage)
+    assert len(calls) == 2
+    assert (
+        _rows(
+            pg_state, "SELECT audio_object_key FROM script_from_audio_tasks WHERE id='sfa-cleanup'"
+        )[0]["audio_object_key"]
+        is None
+    )
 
 
 def test_script_from_audio_expired_presubmission_lease_resets_to_pending(pg_state: str) -> None:

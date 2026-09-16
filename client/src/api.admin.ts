@@ -1659,6 +1659,8 @@ export async function updateViralVideoAvailability(
 // ---------------------------------------------------------------------------
 
 export type CollectedViralVideo = {
+  archive_status?: string | null;
+  archive_error?: string | null;
   statistics_checked_at?: string | null;
   statistics_retry_at?: string | null;
   cover_required?: boolean;
@@ -1699,6 +1701,21 @@ export async function listCollectedViralVideos(options: {
   if (!response.ok)
     throw await parseActivationError(response, "读取采集视频失败");
   return response.json();
+}
+
+export function archiveCollectedViralVideo(
+  video: CollectedViralVideo,
+  reason: string,
+  idempotencyKey: string,
+) {
+  return adminWrite(
+    `/api/control/viral/videos/${encodeURIComponent(video.platform)}/${encodeURIComponent(video.video_id)}/archive`,
+    {},
+    reason,
+    "提交转存失败",
+    idempotencyKey,
+    "POST",
+  );
 }
 
 export function curateViralVideo(

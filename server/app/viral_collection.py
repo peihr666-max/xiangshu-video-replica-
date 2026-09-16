@@ -85,7 +85,9 @@ def enqueue_due_viral_collections(conn: BusinessConnection) -> None:
             """UPDATE viral_refresh_tasks SET status='PENDING', retry_count=retry_count+1,
                 locked_by=NULL, locked_until=NULL, updated_at=CURRENT_TIMESTAMP
             WHERE status='FAILED' AND retryable=1 AND retry_count < 2
-                AND collection_config_json != '{}' AND updated_at::timestamptz <=
+                AND collection_config_json != '{}'
+                AND COALESCE(collection_config_json::jsonb->>'kind','') != 'single_archive'
+                AND updated_at::timestamptz <=
                     CURRENT_TIMESTAMP - interval '15 minutes'"""
         )
 
@@ -148,6 +150,40 @@ def _checkpoint(
     )
 
 
+def _run_single_archive(lease: ViralRefreshLease, storage: StorageAdapter, video_id: str) -> None:
+    """Prepare an existing item only; never search, bill customers or replace a list."""
+    with _keep_lease(lease) as check:
+        check()
+        with _connection() as conn:
+            video = get_viral_video(conn, platform=lease.platform, video_id=video_id)
+            client = viral_source_client_from_settings(conn)
+        if video is None:
+            raise ViralSourceError("视频已删除，停止归档。")
+        pipeline = ViralMediaPipeline(
+            client=client, storage=storage, shared=True, cancellation_check=check
+        )
+        pipeline.fetch(video, prefer="video")
+        check()
+        cover = CoverEnricher(
+            storage=storage, fetcher=UrlFetcher(max_bytes=10 * 1024 * 1024)
+        ).enrich(video)
+        check()
+        with _connection() as conn:
+            _require_lease(conn, lease)
+            if get_viral_video(conn, platform=lease.platform, video_id=video_id) is None:
+                raise ViralSourceError("视频已删除，停止归档。")
+            if pipeline.detail is not None:
+                update_viral_statistics(
+                    conn, platform=lease.platform, video_id=video_id, detail=pipeline.detail
+                )
+            if cover.cover_key:
+                update_viral_cover(
+                    conn, platform=lease.platform, video_id=video_id, cover_key=cover.cover_key
+                )
+        if video.cover_url and not cover.cover_key:
+            raise ViralSourceError("视频已转存，封面尚未完成，请重试。")
+
+
 def run_viral_collection(lease: ViralRefreshLease, storage: StorageAdapter) -> None:
     with _connection() as conn:
         _require_lease(conn, lease)
@@ -156,6 +192,11 @@ def run_viral_collection(lease: ViralRefreshLease, storage: StorageAdapter) -> N
             (lease.id,),
         ).fetchone()
         config, progress = json.loads(row[0]), json.loads(row[1])
+    if config.get("kind") == "single_archive":
+        _run_single_archive(lease, storage, str(config["video_id"]))
+        return
+    with _connection() as conn:
+        _require_lease(conn, lease)
         # Compatibility for already-queued development tasks: establish the batch
         # once under the task lease, never use the reused refresh-task ID as a bill.
         if "billing_batch_id" not in config:

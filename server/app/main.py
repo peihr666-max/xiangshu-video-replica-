@@ -41,6 +41,7 @@ from app.character_reference_routes import router as character_reference_router
 from app.character_routes import router as character_router
 from app.control_routes import router as control_router
 from app.credit_conversion import router as credit_conversion_router
+from app.customer_auth_routes import CustomerBrowserTransport
 from app.customer_auth_routes import router as customer_auth_router
 from app.customer_device_routes import router as customer_device_router
 from app.customer_pricing_routes import router as customer_pricing_router
@@ -193,6 +194,9 @@ async def settings_unavailable_handler(
             }
         },
     )
+
+
+app.add_middleware(CustomerBrowserTransport)
 
 
 @app.middleware("http")

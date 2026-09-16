@@ -37,6 +37,69 @@ DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 HEAD_REVISION = "20260915T1200_browser_accounts"
 
 
+def test_viral_script_cache_migration_preserves_results_without_task_foreign_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from alembic import command
+
+    monkeypatch.delenv("VIDEO_REPLICA_DATABASE_URL", raising=False)
+    # Reuse the module's isolated migration-rehearsal database, never business data.
+    dsn = _rehearsal_dsn()
+    _drop_database("t06_migrate_test")
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute('CREATE DATABASE "t06_migrate_test"')
+    try:
+        config = _alembic_config(dsn.replace("postgresql://", "postgresql+psycopg://"))
+        command.upgrade(config, "20260914T0000_local_joint_merge")
+        command.upgrade(config, HEAD_REVISION)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            columns = conn.execute(
+                "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='viral_script_cache' "
+                "ORDER BY ordinal_position"
+            ).fetchall()
+            assert columns == [
+                ("platform", "text", "NO"),
+                ("video_id", "text", "NO"),
+                ("producer_task_id", "text", "YES"),
+                ("result_json", "text", "YES"),
+                ("created_at", "timestamp with time zone", "NO"),
+                ("updated_at", "timestamp with time zone", "NO"),
+            ]
+            assert conn.execute(
+                "SELECT count(*) FROM pg_constraint WHERE conrelid='viral_script_cache'::regclass "
+                "AND contype IN ('f', 'c', 'u')"
+            ).fetchone() == (0,)
+            result_json = json.dumps({"full_text": "缓存文案", "segments": []}, ensure_ascii=False)
+            conn.execute(
+                "INSERT INTO viral_script_cache(platform, video_id, producer_task_id, result_json) "
+                "VALUES ('douyin', 'same-id', 'deleted-producer', %s)",
+                (result_json,),
+            )
+            conn.execute(
+                "INSERT INTO viral_script_cache(platform, video_id) "
+                "VALUES ('wechat_channels', 'same-id')"
+            )
+            with pytest.raises(psycopg.errors.UniqueViolation):
+                conn.execute(
+                    "INSERT INTO viral_script_cache(platform, video_id) "
+                    "VALUES ('douyin', 'same-id')"
+                )
+        command.upgrade(config, HEAD_REVISION)
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT result_json, created_at IS NOT NULL, updated_at IS NOT NULL "
+                "FROM viral_script_cache WHERE platform='douyin' AND video_id='same-id'"
+            ).fetchone() == (result_json, True, True)
+        command.downgrade(config, "20260914T0000_local_joint_merge")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("SELECT to_regclass('public.viral_script_cache')").fetchone() == (
+                None,
+            )
+    finally:
+        _drop_database("t06_migrate_test")
+
+
 def test_customer_batch_visibility_migration_preserves_generation_and_billing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

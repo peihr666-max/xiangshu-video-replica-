@@ -100,15 +100,15 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
     "check_constraints": 296,
-    "columns": 1090,
+    "columns": 1096,
     "foreign_keys": 178,
     "identity_columns": 0,
     "jsonb_columns": 0,
     "partial_indexes": 29,
-    "primary_keys": 94,
+    "primary_keys": 95,
     "sequences": 4,
-    "tables": 94,
-    "timestamptz_columns": 41,
+    "tables": 95,
+    "timestamptz_columns": 43,
     "triggers": 27,
     "unique_constraints": 36,
 }
@@ -219,6 +219,7 @@ HEAD_TABLE_NAMES = (
     "viral_media_preparations",
     "viral_refresh_tasks",
     "viral_runtime_controls",
+    "viral_script_cache",
     "viral_video_favorites",
     "viral_video_visibility",
     "viral_videos",
@@ -233,7 +234,7 @@ HEAD_TABLE_NAMES = (
 # 计数与表名都可能相同而列级细节不同，只有完整目录能兜住。
 # 由 .dev-env 的 freeze probe 从本模块的同一对 helper 算出（避免 probe 与测试漂移）。
 # CW-076 重挂后经 scripts/ci/migration_manifest.py --print-schema 重算（088→20260912T1400）。
-HEAD_SCHEMA_DIGEST = "583173d731da1b92d668c3ef5486bd4e81718338cac52a79162ba01da57bcbaf"
+HEAD_SCHEMA_DIGEST = "f24a011d2285257aa0912a9ae9e4fce9217224260171eb5efc63d94007022680"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

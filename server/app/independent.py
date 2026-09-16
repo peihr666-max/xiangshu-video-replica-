@@ -17,6 +17,8 @@ worker 提交/轮询/归档、钱包按秒计费（RESERVE/SETTLE/RELEASE）、�
 from __future__ import annotations
 
 import json
+import math
+import re
 import sqlite3
 from typing import Any, Literal
 from uuid import uuid4
@@ -53,20 +55,21 @@ _FRAME_IMAGE_KINDS = {
     "first_frame",
     "character_source_image",
     "character_contact_sheet",
+    "character_approved_image",
 }
 # R2V 多模态参考允许的视频/音频资产类别：用户素材通道（materials）产物。
 # 与“复刻源视频”（kind=reference_video，被拆解的原始爆款）区分——那不是 H3
 # R2V 的生成参考输入。
 _REFERENCE_VIDEO_KINDS = {"video", "material_video"}
-_REFERENCE_AUDIO_KINDS = {"audio", "material_audio"}
+_REFERENCE_AUDIO_KINDS = {"audio", "material_audio", "oral_audio"}
 # R2V 参考素材允许的类别并集：统一混合列表 reference_asset_ids 里的资产按
 # kind 自动分流到图片/视频/音频三个 role。
 _REFERENCE_ANY_KINDS = _FRAME_IMAGE_KINDS | _REFERENCE_VIDEO_KINDS | _REFERENCE_AUDIO_KINDS
 MAX_REFERENCE_IMAGES = 8
 MAX_REFERENCE_VIDEOS = 3
 MAX_REFERENCE_AUDIOS = 3
-# 统一混合列表的总兜底上限：各类上限之和；分流后再按类分别校验。
-_MAX_REFERENCE_TOTAL = MAX_REFERENCE_IMAGES + MAX_REFERENCE_VIDEOS + MAX_REFERENCE_AUDIOS
+# 混合输入总上限独立于各类上限（H3最多12份参考文件）。
+_MAX_REFERENCE_TOTAL = 12
 
 
 class IndependentVideoRequest(BaseModel):
@@ -147,7 +150,7 @@ def _validated_frame_asset(
     provider: str,
     allowed_kinds: set[str] = _FRAME_IMAGE_KINDS,
     kind_phrase: str = "an image",
-) -> dict[str, str]:
+) -> dict[str, Any]:
     asset = require_asset_access(conn, actor=actor, asset_id=asset_id, action="independent.create")
     if str(asset["kind"]) not in allowed_kinds:
         raise generation_error(
@@ -164,10 +167,31 @@ def _validated_frame_asset(
         )
     if provider == "metaso":
         require_cos_first_frame_storage(conn, storage_uri=storage_uri)
+    duration = None
+    if role == "Reference" and str(asset["kind"]) in (
+        _REFERENCE_VIDEO_KINDS | _REFERENCE_AUDIO_KINDS
+    ):
+        try:
+            metadata = json.loads(str(asset["metadata_json"] or "{}"))
+        except (TypeError, ValueError):
+            metadata = {}
+        duration = metadata.get("duration_seconds") if isinstance(metadata, dict) else None
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+            or not 2 <= duration <= 15
+        ):
+            raise generation_error(
+                422,
+                "INDEPENDENT_REFERENCE_DURATION_INVALID",
+                "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。",
+            )
     return {
         "asset_id": str(asset["id"]),
         "uri": storage_uri,
         "kind": str(asset["kind"]),
+        "duration_seconds": duration,
     }
 
 
@@ -343,7 +367,9 @@ def create_independent_batch(
     reference_images: list[dict[str, str]] = []
     reference_videos: list[dict[str, str]] = []
     reference_audios: list[dict[str, str]] = []
-    for asset_id in request.reference_asset_ids:
+    reference_labels: dict[str, str] = {}
+    reference_seconds = {"video": 0.0, "audio": 0.0}
+    for index, asset_id in enumerate(request.reference_asset_ids, start=1):
         resolved = _validated_frame_asset(
             conn,
             actor=actor,
@@ -362,14 +388,38 @@ def create_independent_batch(
                     "name": f"ref-{len(reference_images) + 1}",
                 }
             )
+            reference_labels[str(index)] = f"<Picture {len(reference_images)}>"
         elif kind in _REFERENCE_VIDEO_KINDS:
+            reference_seconds["video"] += resolved["duration_seconds"]
             reference_videos.append({"asset_id": resolved["asset_id"], "uri": resolved["uri"]})
+            reference_labels[str(index)] = f"<Video {len(reference_videos)}>"
         else:
+            reference_seconds["audio"] += resolved["duration_seconds"]
             reference_audios.append({"asset_id": resolved["asset_id"], "uri": resolved["uri"]})
+            reference_labels[str(index)] = f"<Audio {len(reference_audios)}>"
     _validate_reference_kind_limits(
         image_count=len(reference_images),
         video_count=len(reference_videos),
         audio_count=len(reference_audios),
+    )
+    for kind, seconds in reference_seconds.items():
+        if seconds > 15:
+            label = "视频" if kind == "video" else "音频"
+            raise generation_error(
+                422,
+                "INDEPENDENT_REFERENCE_DURATION_LIMIT_EXCEEDED",
+                f"参考{label}累计时长不能超过15秒，请移除部分素材或裁剪后重试。",
+            )
+    # UI 的 @N 按混合素材排列，供应商标签则按媒体类型独立编号。
+    # 原文保留在批次快照，仅编译发给模型的文本；不改写邮箱等普通内容。
+    provider_prompt = (
+        re.sub(
+            r"(?<![A-Za-z0-9_@])@([1-9]\d*)(?!\d)",
+            lambda match: reference_labels.get(match[1], match[0]),
+            request.prompt_text,
+        )
+        if mode_upper == "R2V"
+        else request.prompt_text
     )
 
     try:
@@ -405,7 +455,8 @@ def create_independent_batch(
         task_prompt_snapshot: dict[str, Any] = {
             "schema_version": "independent.v1",
             "generation_mode": mode_upper,
-            "prompt_text": request.prompt_text,
+            "prompt_text": provider_prompt,
+            "reference_labels": reference_labels,
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
             "ratio": request.ratio,

@@ -47,6 +47,7 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         # remain divergent and must never be overwritten by archive import.
         "publish_browser_accounts",
         "publish_browser_logins",
+        "viral_script_cache",
         "h3_provider_accounts",
         "h3_provider_task_accounts",
         "admin_password_credentials",

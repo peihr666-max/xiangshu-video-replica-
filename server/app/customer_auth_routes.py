@@ -23,17 +23,24 @@ creates the credential + wallet and returns the public identity.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import logging
 import re
 import secrets
 import uuid
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import psycopg
 from fastapi import APIRouter, HTTPException, Request, Response
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.bootstrap import customer_public_origin, is_customer_production
 from app.db_pg import get_pg_pool, pg_transaction
 from app.ops_metrics import set_current_result_code
 from app.password_hashing import PasswordPolicyError, hash_password, verify_password
@@ -499,3 +506,217 @@ def password_login(
             recovery_expires_at=(now + timedelta(seconds=recovery_window_seconds())).isoformat(),
         )
         return answer
+
+
+# Browser transport: only HttpOnly cookies contain bearer credentials. The
+# strings returned to JS are CSRF handles, unusable without the matching cookie.
+# Existing route verifiers, transaction fencing and idempotency stay authoritative.
+class CustomerBrowserTransport:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        request = Request(scope)
+        if request.headers.get("X-Customer-Web") != "1":
+            await self.app(scope, receive, send)
+            return
+        try:
+            _require_browser_origin(request)
+            await self._browser_request(request, scope, receive, send)
+        except HTTPException as exc:
+            await JSONResponse({"detail": exc.detail}, status_code=exc.status_code)(
+                scope, receive, send
+            )
+
+    async def _browser_request(
+        self, request: Request, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        path = request.url.path
+        cookies = request.cookies
+        authorization = request.headers.get("Authorization", "")
+        handle = authorization.removeprefix("Bearer ")
+        kind = next((k for k in ("device", "session") if handle.startswith(f"web-{k}:")), None)
+        raw_token = ""
+        if kind:
+            raw_token = cookies.get(_BROWSER_COOKIES[kind], "")
+            if (
+                not raw_token
+                or not handle.isascii()
+                or not hmac.compare_digest(handle, _browser_handle(kind, raw_token))
+            ):
+                raise _http(403, "BROWSER_CSRF_INVALID", "登录状态已变化，请刷新页面后重试。")
+        elif authorization and path not in _BROWSER_SESSION_PATHS:
+            raise _http(403, "BROWSER_CREDENTIAL_REQUIRED", "浏览器请求需要 Cookie 会话。")
+
+        if path == "/api/customer/browser-session":
+            response: Response
+            if request.method == "GET":
+                response = JSONResponse(
+                    {
+                        f"{k}_token": _browser_handle(k, cookies[_BROWSER_COOKIES[k]])
+                        if cookies.get(_BROWSER_COOKIES[k])
+                        else None
+                        for k in ("device", "session")
+                    }
+                )
+            elif request.method == "DELETE" and kind:
+                response = Response(status_code=204)
+                response.delete_cookie(_BROWSER_COOKIES["session"], path="/api")
+                if kind == "device":
+                    response.delete_cookie(_BROWSER_COOKIES["device"], path="/api")
+            else:
+                raise _http(403, "BROWSER_CSRF_REQUIRED", "请刷新登录状态后重试。")
+            response.headers["Cache-Control"] = "no-store"
+            await response(scope, receive, send)
+            return
+
+        if kind:
+            scope = {
+                **scope,
+                "headers": [
+                    (key, value)
+                    for key, value in scope["headers"]
+                    if key.lower() != b"authorization"
+                ]
+                + [(b"authorization", f"Bearer {raw_token}".encode())],
+            }
+        if path in _BROWSER_SESSION_PATHS and request.method == "POST":
+            raw = bytearray()
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                raw.extend(message.get("body", b""))
+                if not message.get("more_body", False):
+                    break
+            try:
+                body = json.loads(raw)
+            except (ValueError, UnicodeDecodeError):
+                body = None
+            if (
+                isinstance(body, dict)
+                and isinstance(body.get("session_token"), str)
+                and (kind or body["session_token"].startswith("web-session:"))
+            ):
+                session_cookie = cookies.get(_BROWSER_COOKIES["session"], "")
+                if (
+                    not session_cookie
+                    or not body["session_token"].isascii()
+                    or not hmac.compare_digest(
+                        body["session_token"], _browser_handle("session", session_cookie)
+                    )
+                ):
+                    raise _http(403, "BROWSER_CSRF_INVALID", "登录状态已变化，请刷新页面后重试。")
+                body["session_token"] = session_cookie
+                raw = bytearray(json.dumps(body).encode())
+            scope = {
+                **scope,
+                "headers": [
+                    (key, value)
+                    for key, value in scope["headers"]
+                    if key.lower() != b"content-length"
+                ]
+                + [(b"content-length", str(len(raw)).encode())],
+            }
+            consumed = False
+            original_receive = receive
+
+            async def rewritten_receive() -> Message:
+                nonlocal consumed
+                if not consumed:
+                    consumed = True
+                    return {"type": "http.request", "body": bytes(raw), "more_body": False}
+                return await original_receive()
+
+            receive = rewritten_receive
+
+        if path not in _BROWSER_LOGIN_PATHS or request.method != "POST":
+            await self.app(scope, receive, send)
+            return
+        start: Message | None = None
+        chunks = bytearray()
+
+        async def cookie_response(message: Message) -> None:
+            nonlocal start
+            if message["type"] == "http.response.start":
+                start = message
+                if not 200 <= int(message["status"]) < 300:
+                    await send(message)
+            elif message["type"] == "http.response.body" and start is not None:
+                if not 200 <= int(start["status"]) < 300:
+                    await send(message)
+                    return
+                chunks.extend(message.get("body", b""))
+                if message.get("more_body", False):
+                    return
+                payload = json.loads(chunks)
+                # Upgrade an already authenticated browser's in-memory device
+                # credential through the normal login verifier. No new session
+                # authority is invented; the device/lease checks ran above.
+                if (
+                    path in _BROWSER_SESSION_PATHS
+                    and not kind
+                    and authorization.startswith("Bearer ")
+                ):
+                    payload["device_token"] = handle
+                response = Response(status_code=start["status"], media_type="application/json")
+                response.raw_headers = [
+                    (key, value)
+                    for key, value in start["headers"]
+                    if key.lower() not in (b"content-length", b"cache-control")
+                ]
+                for token_kind in ("device", "session"):
+                    field = f"{token_kind}_token"
+                    token = payload.get(field)
+                    if isinstance(token, str) and token:
+                        response.set_cookie(
+                            _BROWSER_COOKIES[token_kind],
+                            token,
+                            path="/api",
+                            httponly=True,
+                            secure=is_customer_production(),
+                            samesite="strict",
+                        )
+                        payload[field] = _browser_handle(token_kind, token)
+                response.body = json.dumps(payload, ensure_ascii=False).encode()
+                response.headers["Content-Length"] = str(len(response.body))
+                response.headers["Cache-Control"] = "no-store"
+                await response(scope, receive, send)
+            else:
+                await send(message)
+
+        await self.app(scope, receive, cookie_response)
+
+
+_BROWSER_COOKIES = {"device": "customer_web_device", "session": "customer_web_session"}
+_BROWSER_SESSION_PATHS = {"/api/customer/sessions/login", "/api/customer/sessions/switch"}
+_BROWSER_LOGIN_PATHS = _BROWSER_SESSION_PATHS | {"/api/customer/login", "/api/customer/activate"}
+
+
+def _browser_handle(kind: str, token: str) -> str:
+    digest = hmac.new(token.encode(), b"customer-browser-csrf-v1", hashlib.sha256).hexdigest()
+    return f"web-{kind}:{digest}"
+
+
+def _require_browser_origin(request: Request) -> None:
+    # Custom header is deliberately absent from the cross-origin CORS allowlist.
+    # SameSite and Fetch Metadata are additional protections, not replacements
+    # for the per-cookie CSRF proof required by authenticated requests above.
+    origin = request.headers.get("origin")
+    if request.headers.get("sec-fetch-site") == "cross-site":
+        raise _http(403, "BROWSER_ORIGIN_INVALID", "浏览器请求来源不匹配。")
+    if origin:
+        parsed = urlsplit(origin)
+        allowed = (
+            origin == customer_public_origin()
+            if is_customer_production()
+            else (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+            )
+        )
+        if not allowed:
+            raise _http(403, "BROWSER_ORIGIN_INVALID", "浏览器请求来源不匹配。")

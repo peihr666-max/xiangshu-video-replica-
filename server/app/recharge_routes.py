@@ -1056,7 +1056,8 @@ def list_customer_wallet_transactions(
             """
             + from_sql
             + """
-            ORDER BY wt.created_at DESC, wt.id DESC
+            ORDER BY (wt.ledger_sequence IS NULL), wt.ledger_sequence DESC,
+                     wt.created_at DESC, wt.id DESC
             LIMIT %s OFFSET %s
             """,
             [*params, limit, offset],

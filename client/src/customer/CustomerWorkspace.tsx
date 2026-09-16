@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   attachCustomerSessionToken,
   type CustomerActivationCodeReset,
@@ -52,8 +58,15 @@ export function CustomerWorkspace({
   const [profileLoadError, setProfileLoadError] = useState("");
   const [deviceError, setDeviceError] = useState("");
   const [deviceLoadError, setDeviceLoadError] = useState("");
-  const [workspaceCredentialReady, setWorkspaceCredentialReady] =
-    useState(false);
+  const [workspaceCredential, setWorkspaceCredential] = useState<{
+    store: CustomerCredentialStore;
+    user: CustomerWorkspaceUser;
+    token: string;
+  } | null>(null);
+  const currentCredential =
+    workspaceCredential?.store === store && workspaceCredential.user === user
+      ? workspaceCredential
+      : null;
   const profileRequestIdRef = useRef(0);
   const sessionRuntimeRef = useRef(sessionRuntime);
   sessionRuntimeRef.current = sessionRuntime;
@@ -109,9 +122,15 @@ export function CustomerWorkspace({
     [store, onSessionExpired],
   );
 
+  // Bind before child effects can issue business requests. Fast Refresh
+  // replays effects while retaining state, so async rebinding leaves a gap.
+  useLayoutEffect(() => {
+    if (!currentCredential) return;
+    return attachCustomerSessionToken(currentCredential.token);
+  }, [currentCredential]);
+
   useEffect(() => {
     let active = true;
-    let releaseSession = () => {};
     void store
       .loadSessionToken()
       .then((token) => {
@@ -122,9 +141,8 @@ export function CustomerWorkspace({
           onSessionExpired();
           return;
         }
-        releaseSession = attachCustomerSessionToken(token);
+        setWorkspaceCredential({ store, user, token });
         void loadProfile(token);
-        setWorkspaceCredentialReady(true);
       })
       .catch(() => {
         if (active) {
@@ -134,9 +152,8 @@ export function CustomerWorkspace({
     return () => {
       active = false;
       profileRequestIdRef.current += 1;
-      releaseSession();
     };
-  }, [store, onSessionExpired, loadProfile]);
+  }, [store, user, onSessionExpired, loadProfile]);
 
   const loadDevices = useCallback(async () => {
     const token = await store.loadDeviceCredentialToken();
@@ -301,7 +318,7 @@ export function CustomerWorkspace({
 
   return (
     <div className="customer-workspace">
-      {workspaceCredentialReady ? (
+      {currentCredential ? (
         <StudioWorkspace
           currentUser={customerToCurrentUser(user, profile)}
           customerAccount={{

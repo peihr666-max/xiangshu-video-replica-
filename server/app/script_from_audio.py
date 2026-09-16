@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 import tempfile
 from collections.abc import Callable
@@ -133,12 +134,179 @@ class PreparedScriptFromAudio:
     asset_id: str
     object_key: str
     storage: StorageAdapter
-    asr: AsrProvider
+    asr: AsrProvider | None
     ffmpeg_path: str
     ffprobe_path: str | None
     audio_object_key: str
     provider_task_id: str | None = None
     audio_deleted: bool = False
+    cached_result: TranscriptResult | None = None
+
+
+class ScriptCachePending(Exception):
+    """Another durable task owns this video's one upstream transcription."""
+
+
+def _viral_source(conn: BusinessConnection, asset: sqlite3.Row) -> tuple[str, str] | None:
+    # Only server-verified imports can participate in cross-user reuse. User
+    # supplied asset metadata is not proof of a public video's identity.
+    row = conn.execute(
+        "SELECT platform,video_id FROM viral_import_tasks WHERE source_asset_id=%s "
+        "AND project_id=%s AND status='SUCCEEDED' ORDER BY created_at,id LIMIT 1",
+        (asset["id"], asset["project_id"]),
+    ).fetchone()
+    if row is None or asset["kind"] != "reference_video":
+        return None
+    return str(row["platform"]), str(row["video_id"])
+
+
+def _cached_transcript(raw: object) -> TranscriptResult | None:
+    if raw is None:
+        return None
+    try:
+        value = json.loads(str(raw))
+        text = value["text"]
+        duration = float(value["duration_sec"])
+        if (
+            not isinstance(text, str)
+            or not text.strip()
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            return None
+        return TranscriptResult(text, duration, value.get("language"))
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def _historical_transcripts(
+    conn: BusinessConnection, source: tuple[str, str], *, exclude: str | None = None
+) -> list[sqlite3.Row]:
+    # One snapshot for successes and in-flight work: a legacy worker completing
+    # between two separate queries must not become invisible to both queries.
+    return cast(
+        list[sqlite3.Row],
+        conn.execute(
+            "SELECT t.id,t.status,t.provider_started_at,t.result_json "
+            "FROM script_from_audio_tasks t "
+            "JOIN viral_import_tasks i ON i.source_asset_id=t.source_asset_id "
+            "AND i.project_id=t.project_id JOIN assets a ON a.id=t.source_asset_id "
+            "WHERE i.platform=%s AND i.video_id=%s AND i.status='SUCCEEDED' "
+            "AND a.kind='reference_video' AND (t.status IN "
+            "('PENDING','RUNNING','SUBMISSION_UNCERTAIN','SUCCEEDED') "
+            "OR t.provider_started_at IS NOT NULL) "
+            "AND (%s::text IS NULL OR (t.id<>%s AND NOT (t.request_json::jsonb ? 'viral_source'))) "
+            "ORDER BY CASE WHEN t.provider_started_at IS NOT NULL "
+            "OR t.status='SUBMISSION_UNCERTAIN' THEN 0 ELSE 1 END,t.created_at,t.id",
+            (*source, exclude, exclude),
+        ).fetchall(),
+    )
+
+
+def _lock_script_cache(conn: BusinessConnection, source: tuple[str, str]) -> sqlite3.Row:
+    inserted = conn.execute(
+        "INSERT INTO viral_script_cache(platform,video_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+        source,
+    )
+    cache = cast(
+        sqlite3.Row,
+        conn.execute(
+            "SELECT * FROM viral_script_cache WHERE platform=%s AND video_id=%s FOR UPDATE",
+            source,
+        ).fetchone(),
+    )
+    producer = conn.execute(
+        "SELECT status,provider_started_at FROM script_from_audio_tasks WHERE id=%s",
+        (cache["producer_task_id"],),
+    ).fetchone()
+    if cache["result_json"] is None and (
+        inserted.rowcount == 1
+        or (
+            producer is not None
+            and producer["status"] == "FAILED"
+            and producer["provider_started_at"] is None
+        )
+    ):
+        previous = _historical_transcripts(
+            conn, source, exclude=None if inserted.rowcount == 1 else str(cache["producer_task_id"])
+        )
+        chosen = next(
+            (
+                old
+                for old in previous
+                if old["status"] == "SUCCEEDED"
+                and _cached_transcript(old["result_json"]) is not None
+            ),
+            None,
+        )
+        if chosen is None:
+            chosen = next((old for old in previous if old["status"] != "SUCCEEDED"), None)
+        if chosen is not None:
+            cache = cast(
+                sqlite3.Row,
+                conn.execute(
+                    "UPDATE viral_script_cache SET producer_task_id=%s,result_json=%s,"
+                    "updated_at=now() "
+                    "WHERE platform=%s AND video_id=%s RETURNING *",
+                    (
+                        chosen["id"],
+                        chosen["result_json"] if chosen["status"] == "SUCCEEDED" else None,
+                        *source,
+                    ),
+                ).fetchone(),
+            )
+    if cache["result_json"] is None and cache["producer_task_id"] is not None:
+        previous_result = conn.execute(
+            "SELECT result_json FROM script_from_audio_tasks WHERE id=%s AND status='SUCCEEDED'",
+            (cache["producer_task_id"],),
+        ).fetchone()
+        if previous_result is not None and _cached_transcript(previous_result["result_json"]):
+            cache = cast(
+                sqlite3.Row,
+                conn.execute(
+                    "UPDATE viral_script_cache SET result_json=%s,updated_at=now() "
+                    "WHERE platform=%s AND video_id=%s RETURNING *",
+                    (previous_result["result_json"], *source),
+                ).fetchone(),
+            )
+    return cache
+
+
+def _cache_producer_state(conn: BusinessConnection, cache: sqlite3.Row) -> str:
+    if cache["producer_task_id"] is None:
+        return "AVAILABLE"
+    producer = conn.execute(
+        "SELECT status,provider_started_at FROM script_from_audio_tasks WHERE id=%s",
+        (cache["producer_task_id"],),
+    ).fetchone()
+    # A missing producer may have been deleted while a paid request was in
+    # flight. Its disappearance must never authorize another submission.
+    if producer is None:
+        return "UNCERTAIN"
+    if producer["status"] == "FAILED" and producer["provider_started_at"] is None:
+        if any(
+            old["status"] != "SUCCEEDED" or _cached_transcript(old["result_json"])
+            for old in _historical_transcripts(
+                conn,
+                (str(cache["platform"]), str(cache["video_id"])),
+                exclude=str(cache["producer_task_id"]),
+            )
+        ):
+            # Rebind on the next locked lookup if the producer failed after the
+            # lookup above. Never overlook another pre-upgrade in-flight task.
+            return "WAITING"
+        return "AVAILABLE"
+    if producer["status"] in {"PENDING", "RUNNING"}:
+        return "WAITING"
+    return "UNCERTAIN"
+
+
+def _cache_uncertain() -> Exception:
+    return script_from_audio_error(
+        409,
+        "SCRIPT_FROM_AUDIO_CACHE_UNCERTAIN",
+        "该视频上次转写结果尚未确认，请联系管理员核实后再提取。",
+    )
 
 
 def script_from_audio_error(status_code: int, code: str, message: str) -> Exception:
@@ -170,9 +338,6 @@ def enqueue_script_from_audio_task(
         project_id=project_id,
         action="project.script_from_audio",
     )
-    # Fail fast before a task is accepted; the worker re-resolves the
-    # provider later and never persists credentials in request_json.
-    _configured_asr(conn)
     asset = conn.execute(
         "SELECT * FROM assets WHERE id = %s AND project_id = %s",
         (source_asset_id, project_id),
@@ -184,7 +349,8 @@ def enqueue_script_from_audio_task(
             "来源视频不存在或已删除，请重新上传。",
         )
     _validate_source(asset)
-    request_payload = {"source_asset_id": source_asset_id}
+    viral_source = _viral_source(conn, asset)
+    request_payload: dict[str, object] = {"source_asset_id": source_asset_id}
     request_hash = hashlib.sha256(
         json.dumps(
             request_payload,
@@ -217,13 +383,22 @@ def enqueue_script_from_audio_task(
         (project_id,),
     ).fetchone()
     if active is not None:
-        if str(active["request_hash"]) != request_hash:
+        if str(active["request_hash"]) != request_hash or viral_source is not None:
             raise script_from_audio_error(
                 409,
                 "SCRIPT_FROM_AUDIO_ALREADY_RUNNING",
                 "该项目已有文案提取任务在进行，请等待完成。",
             )
         return cast(sqlite3.Row, active)
+
+    cache = _lock_script_cache(conn, viral_source) if viral_source else None
+    cached = _cached_transcript(cache["result_json"]) if cache is not None else None
+    if cache is not None:
+        if cached is None and _cache_producer_state(conn, cache) == "UNCERTAIN":
+            raise _cache_uncertain()
+        request_payload["viral_source"] = [cache["platform"], cache["video_id"]]
+    if cached is None and (cache is None or _cache_producer_state(conn, cache) == "AVAILABLE"):
+        _configured_asr(conn)
 
     task_id = str(uuid4())
     conn.execute(
@@ -272,11 +447,21 @@ def enqueue_script_from_audio_task(
         raise script_from_audio_error(
             409, "SCRIPT_FROM_AUDIO_ENQUEUE_CONFLICT", "该项目已有不同来源的提取任务，请等待完成。"
         )
+    if viral_source is not None and str(row["idempotency_key"]) != idempotency_key:
+        raise script_from_audio_error(
+            409, "SCRIPT_FROM_AUDIO_ALREADY_RUNNING", "该项目已有文案提取任务在进行，请等待完成。"
+        )
+    if str(row["id"]) != task_id:
+        return cast(sqlite3.Row, row)
     from app.permissions import write_audit
     from app.usage_billing import accept_operation
 
     metadata = json.loads(str(asset["metadata_json"] or "{}"))
-    duration = metadata.get("duration_seconds") or metadata.get("duration_sec") or 0
+    duration = (
+        cast(float, cached.duration_sec)
+        if cached
+        else (metadata.get("duration_seconds") or metadata.get("duration_sec") or 0)
+    )
     accept_operation(
         conn,
         user_id=actor.id,  # type: ignore[attr-defined]
@@ -284,13 +469,36 @@ def enqueue_script_from_audio_task(
         source_id=str(row["id"]),
         units=duration,
     )
+    if cache is not None and viral_source is not None:
+        if cached is not None:
+            from app.usage_billing import finish_source
+
+            conn.execute(
+                "UPDATE script_from_audio_tasks SET status='SUCCEEDED',result_json=%s,"
+                "completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=%s",
+                (cache["result_json"], row["id"]),
+            )
+            finish_source(conn, str(row["id"]), units=duration, succeeded=True)
+            row = conn.execute(
+                "SELECT * FROM script_from_audio_tasks WHERE id=%s", (row["id"],)
+            ).fetchone()
+        elif _cache_producer_state(conn, cache) == "AVAILABLE":
+            conn.execute(
+                "UPDATE viral_script_cache SET producer_task_id=%s,updated_at=now() "
+                "WHERE platform=%s AND video_id=%s",
+                (row["id"], *viral_source),
+            )
     write_audit(
         conn,
         actor=actor,  # type: ignore[arg-type]
         action="project.script_from_audio_enqueued",
         entity_type="script_from_audio_task",
         entity_id=str(row["id"]),
-        metadata={"project_id": project_id, "request_hash": request_hash},
+        metadata={
+            "project_id": project_id,
+            "request_hash": request_hash,
+            "cache_hit": cached is not None,
+        },
     )
     return cast(sqlite3.Row, row)
 
@@ -407,6 +615,36 @@ def prepare_script_from_audio_task(
     row = _require_leased_task(conn, lease)
     payload = json.loads(str(row["request_json"]))
     asset_id = str(payload.get("source_asset_id", ""))
+    source = payload.get("viral_source")
+    if source is not None:
+        cache = _lock_script_cache(conn, (str(source[0]), str(source[1])))
+        cached = _cached_transcript(cache["result_json"])
+        if cached is not None:
+            conn.commit()
+            return PreparedScriptFromAudio(
+                task_id=lease.id,
+                project_id=lease.project_id,
+                asset_id=asset_id,
+                object_key="",
+                storage=storage,
+                asr=None,
+                ffmpeg_path="",
+                ffprobe_path=None,
+                audio_object_key="",
+                cached_result=cached,
+            )
+        if cache["producer_task_id"] != lease.id:
+            state = _cache_producer_state(conn, cache)
+            if state == "WAITING":
+                raise ScriptCachePending()
+            if state != "AVAILABLE":
+                raise _cache_uncertain()
+            conn.execute(
+                "UPDATE viral_script_cache SET producer_task_id=%s,updated_at=now() "
+                "WHERE platform=%s AND video_id=%s",
+                (lease.id, *source),
+            )
+        conn.commit()
     if row["provider_task_id"] is not None:
         return PreparedScriptFromAudio(
             task_id=lease.id,
@@ -442,7 +680,7 @@ def prepare_script_from_audio_task(
             "SCRIPT_FROM_AUDIO_MEDIA_TOOL_MISSING",
             str(exc),
         ) from exc
-    audio_key = str(row["audio_object_key"] or f"tmp/asr/{lease.project_id}/{lease.id}.m4a")
+    audio_key = str(row["audio_object_key"] or f"projects/{lease.project_id}/asr/{lease.id}.m4a")
     conn.execute(
         "UPDATE script_from_audio_tasks SET audio_object_key=%s WHERE id=%s "
         "AND status='RUNNING' AND locked_by=%s AND attempt=%s",
@@ -526,6 +764,10 @@ def perform_script_from_audio_task(
     heartbeat: Callable[[], None] | None = None,
 ) -> TranscriptResult:
     """Known receipts resume without another upload/POST; pending work retains its audio."""
+    if work.cached_result is not None:
+        return work.cached_result
+    if work.asr is None:
+        raise AsrProviderError("转写服务暂不可用。")
     keep_audio = False
     try:
         if heartbeat is not None:
@@ -609,6 +851,11 @@ def complete_script_from_audio_task(
         "duration_sec": result.duration_sec,
         "language": result.language,
     }
+    row = _require_leased_task(conn, lease)
+    source = json.loads(str(row["request_json"])).get("viral_source")
+    result_json = json.dumps(result_payload, ensure_ascii=False, sort_keys=True)
+    if source is not None and _cached_transcript(result_json) is None:
+        raise AsrProviderError("转写结果缺少有效文案或时长，请联系管理员核实。")
     updated = conn.execute(
         """
         UPDATE script_from_audio_tasks
@@ -620,7 +867,7 @@ def complete_script_from_audio_task(
         WHERE id = %s AND status='RUNNING' AND locked_by=%s AND attempt=%s AND locked_until>%s
         """,
         (
-            json.dumps(result_payload, ensure_ascii=False, sort_keys=True),
+            result_json,
             now,
             now,
             int(audio_deleted),
@@ -632,6 +879,12 @@ def complete_script_from_audio_task(
     )
     if updated.rowcount != 1:
         raise script_from_audio_error(409, "SCRIPT_FROM_AUDIO_LEASE_LOST", "任务租约已失效。")
+    if source is not None:
+        conn.execute(
+            "UPDATE viral_script_cache SET result_json=%s,updated_at=now() "
+            "WHERE platform=%s AND video_id=%s AND producer_task_id=%s AND result_json IS NULL",
+            (result_json, *source, lease.id),
+        )
     from app.usage_billing import complete_source_attempt, finish_source
 
     complete_source_attempt(conn, lease.id, usage=result.duration_sec)
@@ -660,7 +913,20 @@ def fail_script_from_audio_task(
     has_receipt = row["provider_task_id"] is not None
     retryable = 1 if not submission_started else 0
     next_attempt_at = None
-    if has_receipt and (
+    if isinstance(cause, ScriptCachePending):
+        status = "PENDING"
+        code = "SCRIPT_FROM_AUDIO_CACHE_WAITING"
+        retryable = 0
+        next_attempt_at = _time_text(datetime.now(UTC) + timedelta(seconds=10))
+    elif (
+        isinstance(cause, HTTPException)
+        and isinstance(cause.detail, dict)
+        and cause.detail.get("code") == "SCRIPT_FROM_AUDIO_CACHE_UNCERTAIN"
+    ):
+        status = "FAILED"
+        code = "SCRIPT_FROM_AUDIO_CACHE_UNCERTAIN"
+        retryable = 0
+    elif has_receipt and (
         isinstance(cause, AsrTaskPending)
         or (isinstance(cause, HTTPException) and cause.status_code == 503)
     ):
@@ -746,6 +1012,8 @@ def latest_script_from_audio_task(
 
 
 def _redacted_message(cause: Exception) -> str:
+    if isinstance(cause, ScriptCachePending):
+        return "该视频文案正在提取，完成后自动返回，请稍候。"
     if isinstance(cause, AsrProviderError):
         return str(cause)
     if isinstance(cause, HTTPException):

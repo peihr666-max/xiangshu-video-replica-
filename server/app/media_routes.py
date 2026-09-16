@@ -334,7 +334,9 @@ def validate_signed_asset_grant(
                 status_code=403,
                 detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},
             ) from exc
-        if not hmac.compare_digest(current_key, expected_object_key):
+        if not hmac.compare_digest(
+            current_key.encode("utf-8"), expected_object_key.encode("utf-8")
+        ):
             raise HTTPException(
                 status_code=403,
                 detail={"code": "SIGNED_ASSET_GRANT_FORBIDDEN"},

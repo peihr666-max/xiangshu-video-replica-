@@ -68,6 +68,18 @@ const money = (value: string | number | null | undefined) =>
   value == null
     ? "待核对"
     : `¥${(Number(value) / 100).toFixed(10).replace(/0+$/, "").replace(/\.$/, ".00")}`;
+const usageFormat = new Intl.NumberFormat("zh-CN", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+  useGrouping: false,
+});
+const usage = (
+  value: string | number | null | undefined,
+  pending = "待确认",
+) =>
+  value == null || !Number.isFinite(Number(value))
+    ? pending
+    : usageFormat.format(Number(value));
 const modules: Record<string, string> = {
   video: "视频生成",
   replica: "视频分析",
@@ -357,9 +369,9 @@ export function BillingEconomics({
           <p>
             供应商调用记录 {report.totals.provider_call_count ?? 0}{" "}
             次；客户采集计费 {report.totals.shared_collection_charge_count ?? 0}{" "}
-            笔。 客户累计用量（含免费）：{report.totals.seconds ?? 0} 秒 /{" "}
-            {report.totals.images ?? 0} 张 / {report.totals.calls ?? 0}{" "}
-            次。平台承担的已确认成本：
+            笔。 客户累计用量（含免费）：{usage(report.totals.seconds ?? 0)} 秒
+            / {usage(report.totals.images ?? 0)} 张 /{" "}
+            {usage(report.totals.calls ?? 0)} 次。平台承担的已确认成本：
             {money(report.totals.platform_cost_fen ?? 0)}。
           </p>
           {(report.totals.legacy_cost_count ?? 0) +
@@ -380,7 +392,7 @@ export function BillingEconomics({
                   ["请求数", `${report.totals.operation_count} 次`],
                 ]
               : [
-                  ["已确认收入", money(report.totals.known_revenue_fen ?? 0)],
+                  ["实付收入", money(report.totals.known_revenue_fen ?? 0)],
                   ["已确认成本", money(report.totals.known_cost_fen ?? 0)],
                   ["利润", money(report.totals.profit_fen)],
                   ["净扣积分", String(report.totals.charged_credits ?? 0)],
@@ -407,7 +419,7 @@ export function BillingEconomics({
                   <th>周期起始</th>
                   <th>账务记录数</th>
                   <th>{costView ? "秒 / 张 / 次" : "净扣积分"}</th>
-                  {!costView && <th>已确认收入</th>}
+                  {!costView && <th>实付收入</th>}
                   <th>已确认成本</th>
                   <th>{costView ? "平台承担成本" : "利润"}</th>
                 </tr>
@@ -419,7 +431,7 @@ export function BillingEconomics({
                     <td>{row.operation_count}</td>
                     <td>
                       {costView
-                        ? `${row.seconds ?? 0} / ${row.images ?? 0} / ${row.calls ?? 0}`
+                        ? `${usage(row.seconds ?? 0)} / ${usage(row.images ?? 0)} / ${usage(row.calls ?? 0)}`
                         : row.charged_credits}
                     </td>
                     {!costView && <td>{money(row.known_revenue_fen ?? 0)}</td>}
@@ -441,6 +453,12 @@ export function BillingEconomics({
       {operations && (
         <>
           <h3>请求账务明细（共 {operations.total} 条）</h3>
+          {!costView && (
+            <p className="admin-hint">
+              消费折合按受理时的积分售价计算；实付收入按所消费积分对应的实际充值金额分摊，
+              赠送或免费加款不产生实付收入。利润按实付收入减成本计算。
+            </p>
+          )}
           <div className="admin-table-scroll">
             <table
               className="admin-data-table billing-economics-table"
@@ -455,7 +473,8 @@ export function BillingEconomics({
                   {!costView && (
                     <>
                       <th>积分</th>
-                      <th>收入</th>
+                      <th>消费折合</th>
+                      <th>实付收入</th>
                     </>
                   )}
                   <th>成本</th>
@@ -470,11 +489,13 @@ export function BillingEconomics({
                     <td>{name(row.service)}</td>
                     <td>{states[row.state]}</td>
                     <td>
-                      {row.actual_units ?? "处理中"} {billingUnit[row.unit]}
+                      {usage(row.actual_units, "处理中")}{" "}
+                      {billingUnit[row.unit]}
                     </td>
                     {!costView && (
                       <>
                         <td>{row.charged_credits}</td>
+                        <td>{money(row.nominal_revenue_fen)}</td>
                         <td>{money(row.revenue_fen)}</td>
                       </>
                     )}
@@ -541,14 +562,14 @@ export function BillingEconomics({
             。
           </p>
           <p>
-            预算 {detail.budget_units} {billingUnit[detail.unit]}，实际{" "}
-            {detail.actual_units ?? "待确认"} {billingUnit[detail.unit]}；预留{" "}
+            预算 {usage(detail.budget_units)} {billingUnit[detail.unit]}，实际{" "}
+            {usage(detail.actual_units)} {billingUnit[detail.unit]}；预留{" "}
             {detail.reserved_credits}，净扣 {detail.charged_credits} 积分。
           </p>
           <p>
-            消费收入 {money(detail.revenue_fen)} · 积分标价折合{" "}
-            {money(detail.nominal_revenue_fen)} · 供应商成本{" "}
-            {money(detail.cost_fen)} · 利润 {money(detail.profit_fen)}
+            消费折合 {money(detail.nominal_revenue_fen)} · 实付收入{" "}
+            {money(detail.revenue_fen)} · 供应商成本 {money(detail.cost_fen)} ·
+            利润 {money(detail.profit_fen)}
           </p>
           {!readOnly &&
             detail.state === "PENDING" &&
@@ -579,7 +600,7 @@ export function BillingEconomics({
                   <td>{name(item.service)}</td>
                   <td>{item.provider}</td>
                   <td>
-                    {item.usage ?? "待确认"} {billingUnit[item.unit]}
+                    {usage(item.usage)} {billingUnit[item.unit]}
                   </td>
                   <td>
                     {money(item.unit_cost_fen)} / {billingUnit[item.unit]}

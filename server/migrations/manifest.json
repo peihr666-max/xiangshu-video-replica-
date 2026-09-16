@@ -106,9 +106,10 @@
         "20260913T1600_shared_viral_media",
         "20260913T1825_h3_account_pool"
       ],
-      "20260915T1200_browser_accounts": "20260914T0000_local_joint_merge"
+      "20260915T1200_browser_accounts": "20260915T1600_viral_copy_cache",
+      "20260915T1600_viral_copy_cache": "20260914T0000_local_joint_merge"
     },
-    "revision_count": 96
+    "revision_count": 97
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -505,7 +506,11 @@
     },
     "20260915T1200_browser_accounts": {
       "file": "versions/20260915T1200_browser_accounts.py",
-      "sha256": "b868d1a0b998d4bc6e92e61262e4c1a6e2c30931b9914da4f542e98b61fc1133"
+      "sha256": "2e3b953e31c602cade86ce8d947ba0ccbc53b94287893967e58214582632e976"
+    },
+    "20260915T1600_viral_copy_cache": {
+      "file": "versions/20260915T1600_viral_copy_cache.py",
+      "sha256": "1c59d6cc39815140e1af931e60b71000a3dd925d8304c9068fff1199c4106b70"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

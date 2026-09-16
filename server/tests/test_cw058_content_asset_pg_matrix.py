@@ -1562,6 +1562,7 @@ def test_direct_generation_archive_is_owned_idempotent_and_does_not_rebill(
     bus: BusinessConnection, pg: psycopg.Connection, standalone: bool
 ) -> None:
     from app.generation import (
+        claim_generation_result_archive,
         get_generation_batch,
         persist_generation_result_archive,
         prepare_generation_result_archive,
@@ -1591,7 +1592,7 @@ def test_direct_generation_archive_is_owned_idempotent_and_does_not_rebill(
         prepare_generation_result_archive(
             bus, actor=actor("auditor_1", "auditor"), task_id="archive-task"
         )
-    prepared = prepare_generation_result_archive(bus, actor=owner, task_id="archive-task")
+    prepared = claim_generation_result_archive(bus, actor=owner, task_id="archive-task")
     storage = FakeStorageAdapter(provider="cos", bucket="archive-test")
     stored = storage.put_object(
         "generation-results/archive-task/video.mp4", b"verified-video", content_type="video/mp4"
@@ -1640,17 +1641,38 @@ def test_direct_generation_archive_is_owned_idempotent_and_does_not_rebill(
 
 
 @pytest.mark.parametrize(
-    "outcome", ["success", "download", "settings", "nan", "changed", "revoked"]
+    "outcome",
+    [
+        "success",
+        "download",
+        "settings",
+        "nan",
+        "changed",
+        "revoked",
+        "normalize",
+        "normalization-failed",
+        "snapshot-changed",
+        "normalized-revoked",
+        "claim-stolen",
+        "claim-stolen-at-put",
+        "renew-commit-failed",
+        "adaptive",
+        "other-resolution",
+        "other-ratio",
+        "missing-ratio",
+    ],
 )
 def test_archive_http_rechecks_before_commit_and_preserves_billing(
     lane_env: str, pg: psycopg.Connection, monkeypatch: pytest.MonkeyPatch, outcome: str
 ) -> None:
     from contextlib import contextmanager
+    from types import SimpleNamespace
 
     from app.customer_fence import get_business_db
     from app.generation import H3ProviderFailed, H3ProviderSettingsUnavailable
     from app.main import app
     from app.media_routes import get_media_storage
+    from app.media_tools import MediaValidationFailed
 
     seed_project(pg, "archive-http-project", "employee_1")
     pg.execute(
@@ -1663,16 +1685,44 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
         "provider_result_url) VALUES ('archive-http-task','archive-http-batch','metaso',"
         "'MiniMax-H3','SUCCEEDED','DIRECT','https://cdn.example/result.mp4')"
     )
+    normalized_outcomes = {
+        "normalize",
+        "normalization-failed",
+        "snapshot-changed",
+        "normalized-revoked",
+        "claim-stolen",
+        "claim-stolen-at-put",
+    }
+    snapshot: object = {}
+    if outcome in normalized_outcomes:
+        snapshot = {"resolution": "2K", "ratio": "9:16"}
+    elif outcome == "adaptive":
+        snapshot = {"resolution": "2K", "ratio": "adaptive"}
+    elif outcome == "other-resolution":
+        snapshot = {"resolution": "768P", "ratio": "9:16"}
+    elif outcome == "other-ratio":
+        snapshot = {"resolution": "2K", "ratio": "16:9"}
+    elif outcome == "missing-ratio":
+        snapshot = {"resolution": "2K"}
+    pg.execute(
+        "UPDATE generation_tasks SET prompt_snapshot_json=%s WHERE id='archive-http-task'",
+        (json.dumps(snapshot),),
+    )
     pg.commit()
     downloads: list[str] = []
+    normalization_calls: list[tuple[bytes, int, int]] = []
+    original_content = b"\x00\x00\x00\x18ftypisom" + b"test-video"
+    normalized_content = b"\x00\x00\x00\x18ftypisom" + b"normalized-video"
 
     class TestDb:
         @contextmanager
         def write(self):
             with pg_transaction() as raw:
-                if outcome == "revoked" and downloads:
+                if outcome in {"revoked", "normalized-revoked"} and downloads:
                     raise HTTPException(401, detail={"code": "SESSION_REPLACED"})
                 yield BusinessConnection.postgres(raw), actor("employee_1", "employee")
+                if outcome == "renew-commit-failed" and downloads:
+                    raise HTTPException(401, detail={"code": "SESSION_REPLACED"})
 
     class Provider:
         def download_result(self, url: str) -> bytes:
@@ -1685,7 +1735,37 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
                     "WHERE id='archive-http-task'"
                 )
                 pg.commit()
-            return b"\x00\x00\x00\x18ftypisom" + b"test-video"
+            if outcome == "snapshot-changed":
+                pg.execute(
+                    "UPDATE generation_tasks SET prompt_snapshot_json=%s "
+                    "WHERE id='archive-http-task'",
+                    (json.dumps({"resolution": "2K", "ratio": "adaptive"}),),
+                )
+                pg.commit()
+            return original_content
+
+    def normalize(content: bytes, *, target_width: int, target_height: int):
+        normalization_calls.append((content, target_width, target_height))
+        if outcome == "normalization-failed":
+            raise MediaValidationFailed("invalid decoded video")
+        if outcome == "claim-stolen":
+            pg.execute(
+                "UPDATE generation_tasks SET locked_by='archive:replacement', "
+                "locked_until=(clock_timestamp()+interval '10 minutes')::text "
+                "WHERE id='archive-http-task'"
+            )
+        return SimpleNamespace(
+            content=normalized_content,
+            duration_seconds=4.0,
+            width=1440,
+            height=2560,
+            source_sample_aspect_ratio="64:63",
+            source_display_aspect_ratio="4:7",
+            sample_aspect_ratio="1:1",
+            display_aspect_ratio="9:16",
+            source_rotation_degrees=0,
+            transformed=True,
+        )
 
     def provider(*args, **kwargs):
         if outcome == "settings":
@@ -1693,25 +1773,86 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
         return Provider()
 
     monkeypatch.setattr("app.generation_routes.h3_provider_for_task", provider)
+    monkeypatch.setattr("app.generation_routes.normalize_generated_video", normalize, raising=False)
     monkeypatch.setattr(
         "app.generation_routes.FFprobeVideoProbe.probe",
         lambda *_args, **_kwargs: VideoMetadata(float("nan") if outcome == "nan" else 4.0),
     )
     app.dependency_overrides[get_business_db] = TestDb
-    app.dependency_overrides[get_media_storage] = lambda: FakeStorageAdapter(
-        provider="cos", bucket="http-archive-test"
-    )
+    storage = FakeStorageAdapter(provider="cos", bucket="http-archive-test")
+    uploaded_content: list[bytes] = []
+    put_object = storage.put_object
+
+    def record_upload(key: str, content: bytes, *, content_type: str):
+        uploaded_content.append(content)
+        if outcome == "claim-stolen-at-put":
+            pg.execute(
+                "UPDATE generation_tasks SET locked_by='archive:replacement', "
+                "locked_until=(clock_timestamp()+interval '10 minutes')::text "
+                "WHERE id='archive-http-task'"
+            )
+        return put_object(key, content, content_type=content_type)
+
+    monkeypatch.setattr(storage, "put_object", record_upload)
+    app.dependency_overrides[get_media_storage] = lambda: storage
     try:
         client = TestClient(app, raise_server_exceptions=False)
         result = client.post("/api/generation-tasks/archive-http-task/archive")
-        expected = {"success": 200, "changed": 409, "revoked": 401}.get(outcome, 503)
+        successful = {
+            "success",
+            "normalize",
+            "adaptive",
+            "other-resolution",
+            "other-ratio",
+            "missing-ratio",
+        }
+        expected = (
+            200
+            if outcome in successful
+            else {
+                "changed": 409,
+                "snapshot-changed": 409,
+                "revoked": 401,
+                "normalized-revoked": 401,
+                "claim-stolen": 409,
+                "claim-stolen-at-put": 409,
+                "renew-commit-failed": 401,
+            }.get(outcome, 503)
+        )
         assert result.status_code == expected, result.text
-        if outcome == "success":
+        if outcome in successful:
             replay = client.post("/api/generation-tasks/archive-http-task/archive")
             assert replay.status_code == 200
             assert replay.json()["result_asset_id"] == result.json()["result_asset_id"]
             assert len(downloads) == 1
+            asset = pg.execute("SELECT sha256,metadata_json FROM assets").fetchone()
+            saved_metadata = json.loads(asset[1])
+            if outcome == "normalize":
+                assert normalization_calls == [(original_content, 1440, 2560)]
+                assert uploaded_content == [normalized_content]
+                assert asset[0] == hashlib.sha256(normalized_content).hexdigest()
+                assert saved_metadata["video_normalization"] == {
+                    "policy": "explicit_2k_portrait_v1",
+                    "requested_resolution": "2K",
+                    "requested_ratio": "9:16",
+                    "source_sha256": hashlib.sha256(original_content).hexdigest(),
+                    "width": 1440,
+                    "height": 2560,
+                    "source_sample_aspect_ratio": "64:63",
+                    "source_display_aspect_ratio": "4:7",
+                    "sample_aspect_ratio": "1:1",
+                    "display_aspect_ratio": "9:16",
+                    "source_rotation_degrees": 0,
+                    "transformed": True,
+                }
+            else:
+                assert normalization_calls == []
+                assert uploaded_content == [original_content]
+                assert asset[0] == hashlib.sha256(original_content).hexdigest()
+                assert "video_normalization" not in saved_metadata
         else:
+            if outcome in {"normalization-failed", "claim-stolen"}:
+                assert uploaded_content == []
             assert pg.execute("SELECT count(*) FROM assets").fetchone()[0] == 0
             assert (
                 pg.execute(
@@ -1720,8 +1861,237 @@ def test_archive_http_rechecks_before_commit_and_preserves_billing(
                 == "DIRECT"
             )
         assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+        lock = pg.execute(
+            "SELECT locked_by,locked_until FROM generation_tasks WHERE id='archive-http-task'"
+        ).fetchone()
+        if outcome in {"claim-stolen", "claim-stolen-at-put"}:
+            assert result.json()["detail"]["code"] == "RESULT_ARCHIVE_LEASE_LOST"
+            assert lock[0] == "archive:replacement" and lock[1] is not None
+        else:
+            assert lock == (None, None)
+        if outcome != "changed":
+            assert pg.execute(
+                "SELECT provider_result_url FROM generation_tasks WHERE id='archive-http-task'"
+            ).fetchone() == ("https://cdn.example/result.mp4",)
     finally:
         app.dependency_overrides.clear()
+
+
+def test_archive_retry_while_first_request_runs_deduplicates_expensive_work(
+    lane_env: str, pg: psycopg.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduce the overlap after a browser stops waiting but the handler runs on.
+
+    Events fix the relevant ordering without sleeping through the UI's 60-second
+    timer. Both requests execute the real HTTP route against separate PG sessions;
+    only supplier bytes, normalization and object storage are controlled doubles.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Event, Lock
+    from types import SimpleNamespace
+
+    from app.customer_fence import get_business_db
+    from app.main import app
+    from app.media_routes import get_media_storage
+
+    seed_project(pg, "archive-overlap-project", "employee_1")
+    pg.execute(
+        "INSERT INTO generation_batches(id,project_id,created_by_user_id,idempotency_key,"
+        "request_hash,request_snapshot_json,status) VALUES "
+        "('archive-overlap-batch','archive-overlap-project','employee_1',"
+        "'archive-overlap-key','h','{}','SUCCEEDED')"
+    )
+    pg.execute(
+        "INSERT INTO generation_tasks(id,batch_id,provider,model,status,archive_status,"
+        "provider_result_url,prompt_snapshot_json) VALUES "
+        "('archive-overlap-task','archive-overlap-batch','metaso','MiniMax-H3',"
+        "'SUCCEEDED','DIRECT','https://cdn.example/result.mp4',%s)",
+        (json.dumps({"resolution": "2K", "ratio": "9:16"}),),
+    )
+    pg.commit()
+    entered = Event()
+    release_first = Event()
+    count_lock = Lock()
+    calls = {"download": 0, "normalize": 0, "put": 0}
+    content = b"\x00\x00\x00\x18ftypisom" + b"test-video"
+
+    class TestDb:
+        @contextmanager
+        def write(self):
+            with pg_transaction() as raw:
+                yield BusinessConnection.postgres(raw), actor("employee_1", "employee")
+
+    class Provider:
+        def download_result(self, url: str) -> bytes:
+            with count_lock:
+                calls["download"] += 1
+                first = calls["download"] == 1
+            if first:
+                entered.set()
+                if not release_first.wait(15):
+                    raise RuntimeError("overlap test release was not delivered")
+            return content
+
+    def normalize(data: bytes, *, target_width: int, target_height: int):
+        with count_lock:
+            calls["normalize"] += 1
+        return SimpleNamespace(
+            content=data,
+            duration_seconds=4.0,
+            width=target_width,
+            height=target_height,
+            source_sample_aspect_ratio="64:63",
+            source_display_aspect_ratio="4:7",
+            sample_aspect_ratio="1:1",
+            display_aspect_ratio="9:16",
+            source_rotation_degrees=0,
+            transformed=True,
+        )
+
+    storage = FakeStorageAdapter(provider="cos", bucket="overlap-test")
+    put_object = storage.put_object
+
+    def put(key: str, data: bytes, *, content_type: str):
+        with count_lock:
+            calls["put"] += 1
+        return put_object(key, data, content_type=content_type)
+
+    monkeypatch.setattr("app.generation_routes.h3_provider_for_task", lambda *a, **kw: Provider())
+    monkeypatch.setattr("app.generation_routes.normalize_generated_video", normalize)
+    monkeypatch.setattr(
+        "app.generation_routes.FFprobeVideoProbe.probe", lambda *a, **kw: VideoMetadata(4.0)
+    )
+    monkeypatch.setattr(storage, "put_object", put)
+    app.dependency_overrides[get_business_db] = TestDb
+    app.dependency_overrides[get_media_storage] = lambda: storage
+
+    def post_archive():
+        return TestClient(app, raise_server_exceptions=False).post(
+            "/api/generation-tasks/archive-overlap-task/archive"
+        )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(post_archive)
+            assert entered.wait(10), "first request did not enter provider download"
+            try:
+                # A fresh request starts while the abandoned first operation still runs.
+                retry = executor.submit(post_archive).result(timeout=10)
+                assert retry.status_code == 409, retry.text
+                assert retry.json()["detail"]["code"] == "RESULT_ARCHIVE_IN_PROGRESS"
+            finally:
+                release_first.set()
+            original = first.result(timeout=10)
+        assert original.status_code == 200, original.text
+        replay = post_archive()
+        assert replay.status_code == 200
+        assert original.json()["result_asset_id"] == replay.json()["result_asset_id"]
+        assert pg.execute("SELECT count(*) FROM assets").fetchone()[0] == 1
+        assert (
+            pg.execute(
+                "SELECT count(*) FROM audit_logs WHERE action='generation_task.archive'"
+            ).fetchone()[0]
+            == 1
+        )
+        assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+        assert calls == {"download": 1, "normalize": 1, "put": 1}
+        assert pg.execute(
+            "SELECT locked_by,locked_until FROM generation_tasks WHERE id='archive-overlap-task'"
+        ).fetchone() == (None, None)
+    finally:
+        release_first.set()
+        app.dependency_overrides.clear()
+
+
+def _seed_manual_archive_claim(pg: psycopg.Connection) -> None:
+    seed_project(pg, "claim-project", "employee_1")
+    pg.execute(
+        "INSERT INTO generation_batches(id,project_id,created_by_user_id,idempotency_key,"
+        "request_hash,request_snapshot_json,status) VALUES "
+        "('claim-batch','claim-project','employee_1','claim-key','h','{}','SUCCEEDED')"
+    )
+    pg.execute(
+        "INSERT INTO generation_tasks(id,batch_id,provider,model,status,archive_status,"
+        "provider_result_url) VALUES ('claim-task','claim-batch','metaso','MiniMax-H3',"
+        "'SUCCEEDED','DIRECT','https://cdn.example/result.mp4')"
+    )
+
+
+def test_manual_archive_claim_recovery_fences_previous_owner_and_deadline(
+    lane_env: str, pg: psycopg.Connection, bus: BusinessConnection
+) -> None:
+    from app.generation import (
+        claim_generation_result_archive,
+        persist_generation_result_archive,
+        release_generation_result_archive_claim,
+        renew_generation_result_archive_claim,
+    )
+
+    _seed_manual_archive_claim(pg)
+    owner = actor("employee_1", "employee")
+    first = claim_generation_result_archive(bus, actor=owner, task_id="claim-task")
+    with pytest.raises(HTTPException) as busy:
+        claim_generation_result_archive(bus, actor=owner, task_id="claim-task")
+    assert busy.value.detail["code"] == "RESULT_ARCHIVE_IN_PROGRESS"
+    pg.execute(
+        "UPDATE generation_tasks SET locked_until=(clock_timestamp()-interval '1 second')::text "
+        "WHERE id='claim-task'"
+    )
+    second = claim_generation_result_archive(bus, actor=owner, task_id="claim-task")
+    assert second["locked_by"] != first["locked_by"]
+    with pytest.raises(HTTPException) as stale:
+        renew_generation_result_archive_claim(bus, actor=owner, prepared=first)
+    assert stale.value.detail["code"] == "RESULT_ARCHIVE_LEASE_LOST"
+    assert not release_generation_result_archive_claim(bus, prepared=first)
+    stored = FakeStorageAdapter(provider="cos", bucket="claim-test").put_object(
+        "generation-results/claim-task/result.mp4", b"video", content_type="video/mp4"
+    )
+    with pytest.raises(HTTPException) as publish:
+        persist_generation_result_archive(
+            bus, actor=owner, prepared=first, stored=stored, duration_seconds=4
+        )
+    assert publish.value.detail["code"] == "RESULT_ARCHIVE_LEASE_LOST"
+    assert pg.execute("SELECT count(*) FROM assets").fetchone()[0] == 0
+    renewed = renew_generation_result_archive_claim(bus, actor=owner, prepared=second)
+    assert renewed["locked_until"] != second["locked_until"]
+    assert not release_generation_result_archive_claim(bus, prepared=second)
+    assert release_generation_result_archive_claim(bus, prepared=renewed)
+    assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
+
+
+def test_manual_archive_claim_expiry_does_not_enter_worker_recovery(
+    lane_env: str, pg: psycopg.Connection, bus: BusinessConnection
+) -> None:
+    from app.generation import (
+        acquire_generation_continuation_lease,
+        claim_generation_result_archive,
+        mark_expired_active_leases_needing_attention,
+        renew_generation_result_archive_claim,
+    )
+
+    _seed_manual_archive_claim(pg)
+    owner = actor("employee_1", "employee")
+    prepared = claim_generation_result_archive(bus, actor=owner, task_id="claim-task")
+    expired = pg.execute(
+        "UPDATE generation_tasks SET locked_until=(clock_timestamp()-interval '1 second')::text "
+        "WHERE id='claim-task' RETURNING locked_until"
+    ).fetchone()[0]
+    prepared["locked_until"] = expired
+    mark_expired_active_leases_needing_attention(bus)
+    assert acquire_generation_continuation_lease(bus, worker_id="unrelated-worker") is None
+    assert tuple(
+        pg.execute(
+            "SELECT status,archive_status,locked_by,locked_until "
+            "FROM generation_tasks WHERE id='claim-task'"
+        ).fetchone()
+    ) == ("SUCCEEDED", "DIRECT", prepared["locked_by"], expired)
+    with pytest.raises(HTTPException) as stale:
+        renew_generation_result_archive_claim(bus, actor=owner, prepared=prepared)
+    assert stale.value.detail["code"] == "RESULT_ARCHIVE_LEASE_LOST"
+    recovered = claim_generation_result_archive(bus, actor=owner, task_id="claim-task")
+    assert recovered["locked_by"] != prepared["locked_by"]
+    assert pg.execute("SELECT count(*) FROM wallet_transactions").fetchone()[0] == 0
 
 
 def test_materials_pagination_hide_rename_and_audit_on_pg(
@@ -2680,3 +3050,41 @@ def test_viral_list_reads_only_and_weekly_worker_prepares_cloud_media_on_pg(
         sort="hot",
         max_age=timedelta(minutes=5),
     )
+
+
+def test_material_video_completion_persists_probed_duration(
+    bus: BusinessConnection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app import materials
+    from app.media_tools import MediaInspection
+
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    admin = actor("admin_1", "admin")
+    content = b"\x00\x00\x00\x18ftypisom" + b"test-video"
+
+    def inspect(content_bytes: bytes, **kwargs: Any) -> MediaInspection:
+        assert content_bytes == content
+        assert kwargs["expected_type"] == "video"
+        return MediaInspection(
+            media_type="video", duration_seconds=12.066667, width=720, height=1372
+        )
+
+    monkeypatch.setattr(materials, "inspect_media_bytes", inspect, raising=False)
+    intent = materials.create_material_upload_intent(
+        bus,
+        actor=admin,
+        storage=storage,
+        request=materials.MaterialUploadIntentRequest(
+            filename="ref.mp4", content_type="video/mp4", size_bytes=len(content)
+        ),
+    )
+    storage.put_object(intent.storage_key, content, content_type="video/mp4")
+    prepared = materials.prepare_material_upload(bus, actor=admin, asset_id=intent.asset_id)
+    probed = materials.probe_material_upload(prepared, storage=storage)
+    assert probed.duration_seconds == 12.066667
+    item = materials.persist_material_upload(bus, actor=admin, probed=probed)
+    assert item.duration_seconds == 12.066667
+    row = bus.execute("SELECT metadata_json FROM assets WHERE id=%s", (intent.asset_id,)).fetchone()
+    metadata = json.loads(row["metadata_json"])
+    assert metadata["video_duration_verified"] is True
+    assert "audio_duration_verified" not in metadata

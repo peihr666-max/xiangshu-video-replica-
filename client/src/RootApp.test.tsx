@@ -175,6 +175,7 @@ describe("RootApp", () => {
     // 而激活屏挂载时它们都尚未被调用（浏览器无凭据 → 零 fetch）。收窄白名单，
     // 使 /api/customer/wallet|profile|devices 这类登录后私有接口在激活前被调用即失败。
     const preAuthAllowed = [
+      "/api/customer/browser-session",
       "/api/customer/activate",
       "/api/customer/devices/enroll",
       "/api/customer/sessions/login",

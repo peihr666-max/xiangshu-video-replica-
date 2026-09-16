@@ -375,6 +375,26 @@ const referenceFixture = (
 });
 
 describe("R2V 参考素材统一混合列表校验", () => {
+  it("未归档成片与明确禁止参考的素材不能成为付费任务资产", () => {
+    const result = validateReferences(
+      ["direct", "forbidden", "stored"],
+      [
+        {
+          ...referenceFixture("direct", "video"),
+          delivery: "direct",
+          saved: false,
+        },
+        {
+          ...referenceFixture("forbidden", "audio"),
+          allowedUses: ["voice_clone"],
+        },
+        { ...referenceFixture("stored", "video"), allowedUses: ["reference"] },
+      ],
+    );
+    expect(result.invalidCount).toBe(2);
+    expect(result.referenceIds).toEqual(["stored"]);
+    expect(result.repairIds).toEqual(["stored"]);
+  });
   it("默认每类上限为图 8 / 视频 3 / 音频 3", () => {
     expect(DEFAULT_MAX_REFERENCE_IMAGES).toBe(8);
     expect(DEFAULT_MAX_REFERENCE_VIDEOS).toBe(3);
@@ -473,4 +493,49 @@ describe("R2V 参考素材统一混合列表校验", () => {
     // 整理时移除超时素材，保留合规与时长未知（放行）的素材
     expect(result.repairIds).toEqual(["vid-ok", "aud-unknown"]);
   });
+});
+
+describe("参考素材累计时长", () => {
+  it("同类累计超过15秒会拦截且整理后可提交", () => {
+    const assets = [
+      { ...referenceFixture("v1", "video"), durationSeconds: 12.066667 },
+      { ...referenceFixture("v2", "video"), durationSeconds: 4.458333 },
+      { ...referenceFixture("a1", "audio"), durationSeconds: 15 },
+    ];
+    const result = validateReferences(["v1", "v2", "a1"], assets);
+    expect(
+      result.issues.some((issue) => issue.includes("参考视频累计时长")),
+    ).toBe(true);
+    expect(result.repairIds).toEqual(["v1", "a1"]);
+    expect(validateReferences(result.repairIds, assets).issues).toEqual([]);
+  });
+  it("视频和音频分别允许累计15秒", () => {
+    const assets = [
+      { ...referenceFixture("v1", "video"), durationSeconds: 7 },
+      { ...referenceFixture("v2", "video"), durationSeconds: 8 },
+      { ...referenceFixture("a1", "audio"), durationSeconds: 15 },
+    ];
+    expect(validateReferences(["v1", "v2", "a1"], assets).issues).toEqual([]);
+  });
+});
+
+it("混合参考素材合计最多12项", () => {
+  const assets = [
+    ...Array.from({ length: 8 }, (_, i) => referenceFixture(`i-${i}`, "image")),
+    ...Array.from({ length: 3 }, (_, i) => ({
+      ...referenceFixture(`v-${i}`, "video"),
+      durationSeconds: 2,
+    })),
+    ...Array.from({ length: 2 }, (_, i) => ({
+      ...referenceFixture(`a-${i}`, "audio"),
+      durationSeconds: 2,
+    })),
+  ];
+  const result = validateReferences(
+    assets.map((a) => a.id),
+    assets,
+  );
+  expect(result.issues).toContain("参考素材合计最多 12 项，请移除部分素材。");
+  expect(result.repairIds).toHaveLength(12);
+  expect(validateReferences(result.repairIds, assets).issues).toEqual([]);
 });

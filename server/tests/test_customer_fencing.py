@@ -25,8 +25,8 @@ Contract under test (task list §12.3 SES-03; dev doc §12.3 / §12.4):
 
 - the expected-binding parameters mirror §12.4's "compare user_id +
   device_id + session_id + session_epoch + lease inside the business
-  transaction": any mismatch answers SESSION_REPLACED so a request that
-  passed the FastAPI dependency earlier can never commit after a switch.
+  transaction": identity changes and shortened leases answer SESSION_REPLACED;
+  normal renewal of the same live session can accompany a slow request.
 """
 
 from __future__ import annotations
@@ -561,7 +561,7 @@ def test_verify_accepts_the_matching_lease_snapshot(client: TestClient) -> None:
     assert re_checked.session_epoch == 1
 
 
-def test_verify_fences_a_lease_snapshot_that_changed(client: TestClient) -> None:
+def test_verify_fences_a_lease_snapshot_that_was_shortened(client: TestClient) -> None:
     """PR #52 P2: §12.4 re-compares the *complete* snapshot including the
     lease — a caller whose expected lease no longer matches the row (a lease
     pulled back by logout/revocation between the preliminary auth step and
@@ -570,11 +570,10 @@ def test_verify_fences_a_lease_snapshot_that_changed(client: TestClient) -> None
     customer = _activated_customer(client, code=FIRST_CODE, fingerprint="fp-a", suffix="a")
     context = _verify(customer["session_token"])
     original_lease = context.lease_until
-    # Move the lease forward (a renewal) so the current-row expiry check
-    # passes and only the expected-lease re-comparison can fence the write.
+    # A shortened but still live lease must be fenced even before expiry.
     with psycopg.connect(_fencing_dsn(), autocommit=True) as conn:
         conn.execute(
-            "UPDATE customer_session_state SET lease_until = (now() + interval '180 seconds')"
+            "UPDATE customer_session_state SET lease_until = (now() + interval '30 seconds')"
         )
     assert (
         _verify_raises(customer["session_token"], expected_lease_until=original_lease)

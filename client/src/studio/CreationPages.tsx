@@ -2257,8 +2257,11 @@ function videoStageIndex(status: StudioTask["status"]): number {
 }
 
 function formatElapsed(from: string): string {
-  // 服务端 CURRENT_TIMESTAMP 是 UTC 文本；补 Z 防止按本地时区解析出巨幅偏差。
-  const started = new Date(`${from.replace(" ", "T")}Z`).getTime();
+  // 只给无时区的服务端 UTC 文本补 Z，保留 ISO 时间已有的偏移量。
+  const normalized = from.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00");
+  const started = new Date(
+    /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}Z`,
+  ).getTime();
   if (Number.isNaN(started)) return "";
   const seconds = Math.max(0, Math.round((Date.now() - started) / 1000));
   const minutes = Math.floor(seconds / 60);
@@ -2270,15 +2273,28 @@ function VideoProgressView({ task }: { task: StudioTask }) {
   const [copyIndex, setCopyIndex] = useState(0);
   const [, setTick] = useState(0);
   const failed = task.status === "failed" || task.status === "uncertain";
+  const completed = task.status === "completed";
+  const cancelled = task.status === "cancelled";
 
   useEffect(() => {
-    if (failed) return;
+    if (failed || completed || cancelled) return;
     const timer = window.setInterval(() => {
       setCopyIndex((value) => (value + 1) % REASSURANCE_COPY.length);
       setTick((value) => value + 1);
     }, 6000);
     return () => window.clearInterval(timer);
-  }, [failed]);
+  }, [failed, completed, cancelled]);
+
+  if (cancelled) {
+    return (
+      <div className="creation-progress" role="status">
+        <div className="creation-progress-headline">任务已取消</div>
+        <p className="creation-progress-copy">
+          本次任务已结束，计费结果可在账户流水中查看。
+        </p>
+      </div>
+    );
+  }
 
   if (failed) {
     return (
@@ -2326,9 +2342,15 @@ function VideoProgressView({ task }: { task: StudioTask }) {
       />
       <div className="creation-progress-meta">
         <span>{task.status === "completed" ? "生成完成" : `${progress}%`}</span>
-        <span>已等待 {formatElapsed(task.submitted)}</span>
+        {!completed && formatElapsed(task.submitted) ? (
+          <span>已等待 {formatElapsed(task.submitted)}</span>
+        ) : null}
       </div>
-      <p className="creation-progress-copy">{REASSURANCE_COPY[copyIndex]}</p>
+      <p className="creation-progress-copy">
+        {completed
+          ? "成片已生成，可以查看、播放或下载。"
+          : REASSURANCE_COPY[copyIndex]}
+      </p>
     </div>
   );
 }
@@ -2513,7 +2535,9 @@ function VideoMaterialUpload({
         type="file"
       />
       {acceptsMedia && (
-        <small className="creation-upload-hint">视频/音频 ≤15 秒</small>
+        <small className="creation-upload-hint">
+          视频、音频各累计 ≤15 秒；参考合计 ≤12 项
+        </small>
       )}
     </>
   );
@@ -2650,6 +2674,16 @@ export function VideoPage() {
   const effectiveCapabilitiesStatus = review
     ? "ready"
     : (videoCapabilitiesStatus ?? (videoCapabilities ? "ready" : "loading"));
+  const videoCapabilityPending =
+    !referenceMode && effectiveCapabilitiesStatus === "loading";
+  const videoCapabilityError =
+    !referenceMode && effectiveCapabilitiesStatus === "error";
+  const videoModeDisabled =
+    !referenceMode &&
+    !review &&
+    (firstFrameId
+      ? videoCapabilities?.i2v_enabled === false
+      : videoCapabilities?.t2v_enabled === false);
   const referenceCapabilityPending =
     referenceMode && effectiveCapabilitiesStatus === "loading";
   const referenceCapabilityError =
@@ -2675,7 +2709,10 @@ export function VideoPage() {
         !referenceHasIssues &&
         !referenceAssetsPending &&
         !referenceAssetsError
-      : !firstFrameId || Boolean(firstFrame));
+      : !videoCapabilityPending &&
+        !videoCapabilityError &&
+        !videoModeDisabled &&
+        (!firstFrameId || Boolean(firstFrame)));
   const videoTask = state.draft.videoBatchId
     ? data.tasks.find((task) => task.id === state.draft.videoBatchId)
     : undefined;
@@ -2829,9 +2866,14 @@ export function VideoPage() {
                 </div>
               )}
               {referenceModeDisabled && (
-                <p className="settings-error" role="alert">
-                  参考生视频当前未开放，请等待能力开启后再提交。
-                </p>
+                <div>
+                  <p className="settings-error" role="alert">
+                    参考生视频当前未开放，请等待能力开启后再提交。
+                  </p>
+                  <Button onClick={retryVideoCapabilities} variant="outline">
+                    刷新开放状态
+                  </Button>
+                </div>
               )}
               {!referenceAssetsPending &&
                 !referenceAssetsError &&
@@ -2886,6 +2928,31 @@ export function VideoPage() {
           ) : (
             <ControlGroup label="首尾帧">
               <Hint>无首帧时文生视频；添加首帧后图生视频。</Hint>
+              {videoCapabilityPending && (
+                <p role="status">正在读取视频生成能力，请稍候。</p>
+              )}
+              {videoCapabilityError && (
+                <div>
+                  <p className="settings-error" role="alert">
+                    视频生成能力读取失败，请重试。
+                  </p>
+                  <Button onClick={retryVideoCapabilities} variant="outline">
+                    重试读取视频能力
+                  </Button>
+                </div>
+              )}
+              {videoModeDisabled && !videoCapabilityError && (
+                <div>
+                  <p className="settings-error" role="alert">
+                    {firstFrameId
+                      ? "图生视频当前未开放，请等待能力开启后再提交。"
+                      : "文生视频当前未开放，可添加首帧使用图生视频。"}
+                  </p>
+                  <Button onClick={retryVideoCapabilities} variant="outline">
+                    刷新开放状态
+                  </Button>
+                </div>
+              )}
               <div className="creation-frame-row">
                 <div className="creation-frame-slot">
                   <button
@@ -2977,7 +3044,27 @@ export function VideoPage() {
               }
             />
           ) : videoTask ? (
-            <VideoProgressView task={videoTask} />
+            <>
+              <VideoProgressView task={videoTask} />
+              {videoTask.status === "completed" ? (
+                <Button
+                  variant="primary"
+                  onClick={() =>
+                    navigate("task-detail", {
+                      selectedTaskId: videoTask.id,
+                      selectedTaskKind: videoTask.backendKind,
+                      selectedTaskBackendId:
+                        videoTask.backendId ??
+                        videoTask.batchId ??
+                        videoTask.id,
+                      returnTo: state.page,
+                    })
+                  }
+                >
+                  查看成片
+                </Button>
+              ) : null}
+            </>
           ) : referenceMode ? (
             references.length ? (
               <Media

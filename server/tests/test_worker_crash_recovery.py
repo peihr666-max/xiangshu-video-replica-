@@ -52,16 +52,19 @@ from app.auth import CurrentUser
 from app.db_pg import DATABASE_URL_ENV, close_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
 from app.generation import (
+    GenerationTaskRetryRequest,
     H3QueryResult,
     MetasoH3Provider,
     ReconcileReservation,
+    acquire_generation_continuation_lease,
     acquire_generation_task_lease,
     mark_expired_active_leases_needing_attention,
     mark_task_submission_uncertain,
     reconcile_submission_uncertain_task,
     reschedule_generation_poll,
+    retry_generation_task,
 )
-from app.generation_worker import run_pg_worker_once
+from app.generation_worker import _run_pg_generation_step, run_pg_worker_once
 from app.internal_billing import (
     find_dangling_billing_reservations,
     reserve_internal_billing,
@@ -413,6 +416,171 @@ def test_expired_archive_retry_lease_audited_and_reset(fair_state: str) -> None:
         ("generation_task.lease_expired_archive_retry", None, "task-u1-0")
     ]
     assert _cursor_count(fair_state, "u1") == 0  # GREATEST guard: no-op is safe
+
+
+@pytest.mark.parametrize("claim_after_read", [False, True])
+def test_archive_retry_cannot_clear_active_recovery_lease(
+    fair_state: str, monkeypatch: pytest.MonkeyPatch, claim_after_read: bool
+) -> None:
+    _seed(fair_state, user_ids=["u1"], tasks_per_user=1)
+    _seed_reserved(fair_state, task_id="task-u1-0", available_credits=999, reserved_credits=1)
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        pg.execute(
+            "UPDATE generation_tasks SET status='SUCCEEDED', archive_status='ARCHIVE_FAILED', "
+            "provider_task_id='saved-paid-result', "
+            "provider_result_url='https://example.com/result.mp4'"
+        )
+    lease = None if claim_after_read else _acquire(fair_state, "archive-recovery")
+    with pytest.raises(HTTPException) as rejected:
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            execute = conn.execute
+
+            def claim_before_retry_update(sql: str, params: Any = ()) -> Any:
+                nonlocal lease
+                if claim_after_read and "retry_requested_by_user_id = %s" in sql:
+                    lease = _acquire(fair_state, "archive-recovery")
+                    assert lease is not None
+                return execute(sql, params)
+
+            monkeypatch.setattr(conn, "execute", claim_before_retry_update)
+            retry_generation_task(
+                conn,
+                task_id="task-u1-0",
+                actor=CurrentUser("u1", "u1", "User One", "employee"),
+                request=GenerationTaskRetryRequest(
+                    idempotency_key="active-archive-retry", retry_reason="Retry saved result"
+                ),
+            )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail["code"] == "TASK_RETRY_NOT_ALLOWED"
+    assert lease is not None
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        task = pg.execute(
+            "SELECT status, locked_by, locked_until, archive_retry_count "
+            "FROM generation_tasks WHERE id='task-u1-0'"
+        ).fetchone()
+        assert task is not None
+        assert task[0:2] == ("SUBMITTING", "archive-recovery")
+        assert str(task[2]) == str(lease["locked_until"])
+        assert task[3] == 0
+        assert pg.execute("SELECT count(*) FROM generation_task_operations").fetchone() == (0,)
+        assert pg.execute(
+            "SELECT available_credits, reserved_credits FROM wallets WHERE user_id='u1'"
+        ).fetchone() == (999, 1)
+    assert _cursor_count(fair_state, "u1") == 1
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1)]
+    assert _audit_actions(fair_state) == []
+
+    def reject_provider(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("archive recovery must never contact a provider")
+
+    monkeypatch.setattr("app.generation_worker.h3_provider_for_task", reject_provider)
+    storage = FakeStorageAdapter(provider="cos", bucket="bucket")
+    _run_pg_generation_step(
+        lease=cast(dict[str, Any], lease), storage=storage, first_frame_storage=storage
+    )
+    assert _cursor_count(fair_state, "u1") == 0
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1), ("SETTLE", 1)]
+
+
+def test_archive_retry_replay_preserves_claim_and_safe_retry_still_completes(
+    fair_state: str,
+) -> None:
+    _seed(fair_state, user_ids=["u1"], tasks_per_user=1)
+    _seed_reserved(fair_state, task_id="task-u1-0", available_credits=999, reserved_credits=1)
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        pg.execute(
+            "UPDATE generation_tasks SET status='SUCCEEDED', archive_status='ARCHIVE_FAILED', "
+            "provider_task_id='saved-paid-result', "
+            "provider_result_url='https://example.com/result.mp4', "
+            "next_poll_at=now() + interval '1 hour'"
+        )
+    actor = CurrentUser("u1", "u1", "User One", "employee")
+    request = GenerationTaskRetryRequest(
+        idempotency_key="safe-archive-retry", retry_reason="Retry saved result"
+    )
+    with pg_transaction() as raw:
+        retry_generation_task(
+            BusinessConnection.postgres(raw), task_id="task-u1-0", actor=actor, request=request
+        )
+    lease = _acquire(fair_state, "archive-recovery")
+    assert lease is not None
+    with pg_transaction() as raw:
+        # A replay of the already accepted request returns the current result;
+        # it must not execute the scheduling write a second time.
+        retry_generation_task(
+            BusinessConnection.postgres(raw), task_id="task-u1-0", actor=actor, request=request
+        )
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        task = pg.execute(
+            "SELECT status, locked_by, locked_until FROM generation_tasks WHERE id='task-u1-0'"
+        ).fetchone()
+        assert task is not None
+        assert task[0:2] == ("SUBMITTING", "archive-recovery")
+        assert str(task[2]) == str(lease["locked_until"])
+        assert pg.execute("SELECT count(*) FROM generation_task_operations").fetchone() == (1,)
+    assert _audit_actions(fair_state) == [
+        ("generation_task.archive_retry_queued", "u1", "task-u1-0")
+    ]
+    assert _cursor_count(fair_state, "u1") == 1
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1)]
+    storage = FakeStorageAdapter(provider="cos", bucket="bucket")
+    _run_pg_generation_step(
+        lease=cast(dict[str, Any], lease), storage=storage, first_frame_storage=storage
+    )
+    assert _cursor_count(fair_state, "u1") == 0
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1), ("SETTLE", 1)]
+
+
+def test_archive_retry_cannot_reopen_concurrently_completed_result(
+    fair_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(fair_state, user_ids=["u1"], tasks_per_user=1)
+    _seed_reserved(fair_state, task_id="task-u1-0", available_credits=999, reserved_credits=1)
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        pg.execute(
+            "UPDATE generation_tasks SET status='SUCCEEDED', archive_status='ARCHIVE_FAILED', "
+            "provider_task_id='saved-paid-result', "
+            "provider_result_url='https://example.com/result.mp4'"
+        )
+    with pytest.raises(HTTPException) as rejected:
+        with pg_transaction() as raw:
+            conn = BusinessConnection.postgres(raw)
+            execute = conn.execute
+
+            def finish_before_retry_update(sql: str, params: Any = ()) -> Any:
+                if "retry_requested_by_user_id = %s" in sql:
+                    lease = _acquire(fair_state, "archive-recovery")
+                    assert lease is not None
+                    storage = FakeStorageAdapter(provider="cos", bucket="bucket")
+                    _run_pg_generation_step(
+                        lease=cast(dict[str, Any], lease),
+                        storage=storage,
+                        first_frame_storage=storage,
+                    )
+                return execute(sql, params)
+
+            monkeypatch.setattr(conn, "execute", finish_before_retry_update)
+            retry_generation_task(
+                conn,
+                task_id="task-u1-0",
+                actor=CurrentUser("u1", "u1", "User One", "employee"),
+                request=GenerationTaskRetryRequest(
+                    idempotency_key="late-archive-retry", retry_reason="Retry saved result"
+                ),
+            )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail["code"] == "TASK_RETRY_NOT_ALLOWED"
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        assert pg.execute(
+            "SELECT status, archive_status, locked_by, locked_until, retry_requested_at "
+            "FROM generation_tasks WHERE id='task-u1-0'"
+        ).fetchone() == ("SUCCEEDED", "DIRECT", None, None, None)
+        assert pg.execute("SELECT count(*) FROM generation_task_operations").fetchone() == (0,)
+    assert _cursor_count(fair_state, "u1") == 0
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1), ("SETTLE", 1)]
+    assert _audit_actions(fair_state) == []
 
 
 # ---------------------------------------------------------------------------
@@ -992,6 +1160,70 @@ def test_expired_running_lease_resumes_instead_of_becoming_uncertain(
     ]
 
 
+@pytest.mark.parametrize("poll_timed_out", [False, True])
+@pytest.mark.parametrize("reuse_worker_id", [False, True])
+def test_late_poll_cannot_clear_replacement_lease_or_release_slot(
+    fair_state: str, poll_timed_out: bool, reuse_worker_id: bool
+) -> None:
+    _seed(fair_state, user_ids=["u1"], tasks_per_user=1, wallet_credits=1000)
+    _seed_reserved(fair_state, task_id="task-u1-0", available_credits=999, reserved_credits=1)
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        pg.execute(
+            "UPDATE generation_tasks SET status='RUNNING', provider_task_id='durable-poll-id', "
+            "submitted_at=now() - (%s * interval '1 hour'), next_poll_at=now() "
+            "WHERE id='task-u1-0'",
+            (3 if poll_timed_out else 1,),
+        )
+        pg.execute("UPDATE user_queue_cursors SET running_tasks_count=1 WHERE user_id='u1'")
+    with pg_transaction() as raw:
+        old_lease = acquire_generation_continuation_lease(
+            BusinessConnection.postgres(raw), worker_id="poll-old"
+        )
+    assert old_lease is not None
+    # Simulate a stalled query whose lease expires, then the normal recovery
+    # path claims it in another committed transaction without resubmission.
+    with psycopg.connect(fair_state, autocommit=True) as pg:
+        pg.execute(
+            "UPDATE generation_tasks SET locked_until=now() - interval '1 minute' "
+            "WHERE id='task-u1-0'"
+        )
+    with pg_transaction() as raw:
+        new_lease = acquire_generation_continuation_lease(
+            BusinessConnection.postgres(raw),
+            worker_id="poll-old" if reuse_worker_id else "poll-new",
+        )
+    assert new_lease is not None
+    assert new_lease["provider_task_id"] == old_lease["provider_task_id"]
+    state_sql = (
+        "SELECT status,locked_by,locked_until,next_poll_at,error_code,provider_task_id "
+        "FROM generation_tasks WHERE id='task-u1-0'"
+    )
+    with psycopg.connect(fair_state) as pg:
+        claimed_state = pg.execute(state_sql).fetchone()
+    audit_before = _audit_actions(fair_state)
+    for _ in range(2):
+        with pg_transaction() as raw:
+            reschedule_generation_poll(BusinessConnection.postgres(raw), lease=old_lease)
+    with psycopg.connect(fair_state) as pg:
+        assert pg.execute(state_sql).fetchone() == claimed_state
+        assert pg.execute(
+            "SELECT available_credits,reserved_credits FROM wallets WHERE user_id='u1'"
+        ).fetchone() == (999, 1)
+        assert pg.execute("SELECT COUNT(*) FROM external_call_logs").fetchone() == (0,)
+    assert _cursor_count(fair_state, "u1") == 1
+    assert _audit_actions(fair_state) == audit_before
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1)]
+    # Only the replacement lease may reschedule or declare the polling timeout.
+    with pg_transaction() as raw:
+        reschedule_generation_poll(BusinessConnection.postgres(raw), lease=new_lease)
+    with psycopg.connect(fair_state) as pg:
+        final = pg.execute(state_sql).fetchone()
+    assert final is not None and final[1:3] == (None, None)
+    assert final[0] == ("SUBMISSION_UNCERTAIN" if poll_timed_out else "RUNNING")
+    assert _cursor_count(fair_state, "u1") == (0 if poll_timed_out else 1)
+    assert _billing_rows(fair_state, "task-u1-0") == [("RESERVE", 1)]
+
+
 def test_provider_poll_timeout_releases_slot_without_paid_resubmit(
     fair_state: str,
 ) -> None:
@@ -1012,10 +1244,15 @@ def test_provider_poll_timeout_releases_slot_without_paid_resubmit(
             "WHERE id = 'task-u1-0'"
         )
         pg.execute("UPDATE user_queue_cursors SET running_tasks_count = 1 WHERE user_id = 'u1'")
+        locked_until = pg.execute(
+            "SELECT locked_until FROM generation_tasks WHERE id='task-u1-0'"
+        ).fetchone()[0]
     lease = {
         "id": "task-u1-0",
         "batch_id": "batch-u1",
         "provider_task_id": "provider-too-old",
+        "locked_by": "w-timeout",
+        "locked_until": locked_until,
     }
     with pg_transaction() as raw:
         reschedule_generation_poll(

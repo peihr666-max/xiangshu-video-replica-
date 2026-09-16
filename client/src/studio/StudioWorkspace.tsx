@@ -77,6 +77,7 @@ import {
   DEFAULT_MAX_REFERENCE_AUDIOS,
   DEFAULT_MAX_REFERENCE_IMAGES,
   DEFAULT_MAX_REFERENCE_VIDEOS,
+  isReferenceAsset,
   MAX_REFERENCE_MEDIA_SECONDS,
   navigateStudioState,
   pageTitles,
@@ -294,6 +295,7 @@ export function StudioWorkspace({
   );
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState("");
+  const noticeTimerRef = useRef<number>(undefined);
   const [picker, setPicker] = useState<PickerKind>();
   const [livePanel, setLivePanel] = useState<LivePanel>();
   const [characterTarget, setCharacterTarget] = useState<{
@@ -310,6 +312,11 @@ export function StudioWorkspace({
   const mountedRef = useRef(true);
   const [newCreation, setNewCreation] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = () => {
+    setMenuOpen(false);
+    menuButtonRef.current?.focus();
+  };
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [walletRevision, setWalletRevision] = useState(0);
@@ -367,6 +374,8 @@ export function StudioWorkspace({
   const [videoQuoteError, setVideoQuoteError] = useState("");
   const [videoQuoteRevision, setVideoQuoteRevision] = useState(0);
   const [videoSubmitting, setVideoSubmitting] = useState(false);
+  const [videoSubmitError, setVideoSubmitError] = useState("");
+  const [videoSubmitRejected, setVideoSubmitRejected] = useState(false);
   const busyRef = useRef(false);
   const pendingRouteRef = useRef<
     ReturnType<typeof studioRouteFromHash> | undefined
@@ -391,7 +400,13 @@ export function StudioWorkspace({
     videoSubmitAttemptRef.current += 1;
     pendingRouteRef.current = undefined;
   }
-  const notify = useCallback((message: string) => setNotice(message), []);
+  const notify = useCallback((message: string) => {
+    window.clearTimeout(noticeTimerRef.current);
+    setNotice(message);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(""), 3000);
+  }, []);
+
+  useEffect(() => () => window.clearTimeout(noticeTimerRef.current), []);
 
   useEffect(() => {
     const request = { userId: currentUser.id, revision: walletRevision };
@@ -972,6 +987,8 @@ export function StudioWorkspace({
     }
     videoSubmittingRef.current = true;
     setVideoSubmitting(true);
+    setVideoSubmitError("");
+    setVideoSubmitRejected(false);
     try {
       const mode = resolveVideoMode(state.page, Boolean(draft.firstFrameId));
       if (mode === "r2v") {
@@ -1021,11 +1038,15 @@ export function StudioWorkspace({
       refresh();
     } catch (cause: unknown) {
       if (isCurrent()) {
-        notify(
-          customerVisibleErrorMessage(
-            cause,
-            "视频生成任务提交失败，请稍后重试。",
-          ),
+        const message = customerVisibleErrorMessage(
+          cause,
+          "视频生成任务提交失败，请稍后重试。",
+        );
+        setVideoSubmitError(message);
+        // Validation runs before task creation and billing; transport errors
+        // remain uncertain and keep the existing idempotent retry guidance.
+        setVideoSubmitRejected(
+          cause instanceof Error && "status" in cause && cause.status === 422,
         );
       }
     } finally {
@@ -1196,6 +1217,7 @@ export function StudioWorkspace({
       }
       operationRef.current += 1;
       setState((previous) => ({ ...previous, ...route }));
+      if (livePanel) refresh();
       setLivePanel(undefined);
     };
     window.addEventListener("hashchange", onHashChange);
@@ -1204,7 +1226,7 @@ export function StudioWorkspace({
       window.removeEventListener("hashchange", onHashChange);
       window.removeEventListener("popstate", onHashChange);
     };
-  }, [notify]);
+  }, [notify, livePanel, refresh]);
 
   const navigate: StudioContextValue["navigate"] = (page, patch = {}) => {
     if (busyRef.current) {
@@ -1219,6 +1241,7 @@ export function StudioWorkspace({
     });
     setMenuOpen(false);
     setShowSearch(false);
+    if (livePanel) refresh();
     setLivePanel(undefined);
     window.scrollTo?.({ top: 0 });
   };
@@ -1486,6 +1509,8 @@ export function StudioWorkspace({
       }
       generationDialogRevisionRef.current += 1;
       generationRef.current = kind;
+      setVideoSubmitError("");
+      setVideoSubmitRejected(false);
       setGeneration(kind);
     } catch (cause) {
       notify(cause instanceof Error ? cause.message : "请检查生成原材料");
@@ -1517,6 +1542,23 @@ export function StudioWorkspace({
       saveOperationRef.current === operation &&
       saveAccountRef.current === accountId &&
       saveScopeRef.current === expectedScope;
+    if (state.page === "video" || state.page === "reference") {
+      if (review) {
+        notify("已保留在本次工作区，可继续切换页面。");
+        return;
+      }
+      void persistCloudDraftForScope(draft, accountId, isCurrentSave)
+        .then(() => {
+          if (!isCurrentSave()) return;
+          draftTouchedRef.current = false;
+          notify("视频草稿已保存到云端，可继续编辑或换设备恢复。");
+        })
+        .catch(() => {
+          if (isCurrentSave())
+            notify("云端保存失败，本次仅保留在工作区，请稍后重试。");
+        });
+      return;
+    }
     const script = {
       ...draft.script,
       ipId: draft.ipId,
@@ -1663,6 +1705,7 @@ export function StudioWorkspace({
           projectId,
           sourceId: assetId,
           sourceAssetId: assetId,
+          scriptEdited: true,
           script: {
             ...currentScript,
             original: text,
@@ -1671,6 +1714,7 @@ export function StudioWorkspace({
           },
         });
         navigate("copy", { returnTo: "workbench" });
+        setWalletRevision((value) => value + 1);
         notify("文案已提取，请在文案工坊核对内容并确认终稿。");
       })
       .catch((cause: unknown) => {
@@ -1680,6 +1724,7 @@ export function StudioWorkspace({
           permissionGenerationRef.current !== permissionGeneration
         )
           return;
+        setWalletRevision((value) => value + 1);
         notify(
           customerVisibleErrorMessage(cause, "文案提取失败，请稍后重试。"),
         );
@@ -1753,7 +1798,25 @@ export function StudioWorkspace({
       <div
         className={`studio-shell ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
       >
-        <aside className="studio-sidebar">
+        {menuOpen && (
+          <button
+            type="button"
+            className="studio-menu-backdrop"
+            aria-label="关闭导航遮罩"
+            onClick={closeMenu}
+          />
+        )}
+        <aside className="studio-sidebar" id="studio-sidebar">
+          {menuOpen && (
+            <button
+              type="button"
+              className="studio-menu-close"
+              aria-label="关闭导航"
+              onClick={closeMenu}
+            >
+              关闭导航
+            </button>
+          )}
           <button
             type="button"
             className="studio-brand"
@@ -1820,6 +1883,9 @@ export function StudioWorkspace({
             <button
               type="button"
               aria-label="展开导航"
+              aria-expanded={menuOpen}
+              aria-controls="studio-sidebar"
+              ref={menuButtonRef}
               className="studio-menu-button"
               onClick={() => setMenuOpen((value) => !value)}
             >
@@ -1974,7 +2040,11 @@ export function StudioWorkspace({
             <dl className="studio-details">
               <div>
                 <dt>作品</dt>
-                <dd>{state.draft.script.title || "未命名创作"}</dd>
+                <dd>
+                  {generation === "视频生成"
+                    ? state.draft.prompt.trim().slice(0, 80) || "未命名视频"
+                    : state.draft.script.title || "未命名创作"}
+                </dd>
               </div>
               <div>
                 <dt>费用</dt>
@@ -1997,9 +2067,20 @@ export function StudioWorkspace({
               </div>
               <div>
                 <dt>提交状态</dt>
-                <dd>尚未提交 · 未扣费</dd>
+                <dd>
+                  {generation === "视频生成" && videoSubmitError
+                    ? videoSubmitRejected
+                      ? "提交被拒绝 · 未创建任务 · 未扣费"
+                      : "提交未成功确认，请核对任务及流水"
+                    : "尚未提交 · 未扣费"}
+                </dd>
               </div>
             </dl>
+            {generation === "视频生成" && videoSubmitError ? (
+              <div className="settings-error" role="alert">
+                {videoSubmitError}
+              </div>
+            ) : null}
             {generation === "数字人口播" && oralQuoteError ? (
               <div className="settings-error" role="alert">
                 <p>{oralQuoteError}</p>
@@ -2340,6 +2421,7 @@ function StudioPicker({
         ? data.materials.filter(
             (material) =>
               (kind === "reference" || material.kind === "image") &&
+              (kind !== "reference" || isReferenceAsset(material)) &&
               !data.assets.some((asset) => asset.id === material.id) &&
               (kind !== "reference" ||
                 !state.draft.referenceIds.includes(material.id)),
@@ -2452,7 +2534,7 @@ function StudioPicker({
   );
   const assets = [...materials, ...data.assets].filter((asset) =>
     kind === "reference"
-      ? !state.draft.referenceIds.includes(asset.id)
+      ? isReferenceAsset(asset) && !state.draft.referenceIds.includes(asset.id)
       : asset.kind === "image" &&
         !asset.composite &&
         (kind !== "avatar-photo" || asset.source === "人物库场景造型") &&
@@ -2518,6 +2600,12 @@ function StudioPicker({
                     type="button"
                     key={asset.id}
                     onClick={() => {
+                      if (usesCloudImages && asset.url) {
+                        updateData((current) => ({
+                          ...current,
+                          assets: mergeStudioAssets(current.assets, [asset]),
+                        }));
+                      }
                       if (kind === "avatar-photo") {
                         select({ imageId: asset.id });
                         navigate("person-avatars", {
@@ -2561,6 +2649,14 @@ function StudioPicker({
                                 ? `当前最多选择 ${referenceValidation.videoLimit} 个参考视频。`
                                 : `当前最多选择 ${referenceValidation.audioLimit} 个参考音频。`,
                           );
+                          return;
+                        }
+                        const nextReferences = validateReferences(
+                          [...referenceValidation.referenceIds, asset.id],
+                          [...referenceValidation.assets, asset],
+                        );
+                        if (nextReferences.issues.length > 0) {
+                          notify(nextReferences.issues[0]);
                           return;
                         }
                         select({

@@ -449,50 +449,190 @@ describe("V1.4 任务详情真实成片预览", () => {
     );
   });
 
-  it("任务轮询不清除已加载的直出预览，临时结果不作为发布素材", async () => {
-    const asset: StudioAsset = {
-      id: "direct-task-result-a",
-      name: "直出成片",
+  it.each([false, true])(
+    "任务轮询不清除直出预览，归档后才可发布（响应丢失=%s）",
+    async (responseLost) => {
+      const asset: StudioAsset = {
+        id: "direct-task-result-a",
+        name: "直出成片",
+        kind: "video",
+        url: "/signed/direct-a",
+        group: "任务结果",
+        source: "任务中心",
+        saved: false,
+        generationTaskId: "provider-result-a",
+      };
+      let value = studio();
+      useStudio.mockImplementation(() => value);
+      loadTaskPreview.mockResolvedValue(asset);
+      const view = render(<TaskDetailPage />);
+      fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
+      await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
+      const update = vi.mocked(value.updateData).mock.calls[0][0];
+      value = { ...value, data: update(value.data) };
+      view.rerender(<TaskDetailPage />);
+      const video = view.container.querySelector("video");
+      expect(video).not.toBeNull();
+      value = { ...value, data: { ...value.data, tasks: [{ ...taskA }] } };
+      view.rerender(<TaskDetailPage />);
+      expect(view.container.querySelector("video")).toBe(video);
+      expect(screen.getByRole("button", { name: "查看素材" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "去发布管理" })).toBeDisabled();
+      saveTaskPreview.mockResolvedValue({
+        ...asset,
+        id: "saved-result",
+        saved: true,
+      });
+      if (responseLost) {
+        saveTaskPreview.mockRejectedValueOnce(new Error("保存结果暂未确认"));
+        loadTaskPreview.mockResolvedValueOnce({
+          ...asset,
+          id: "saved-result",
+          saved: true,
+        });
+      }
+      fireEvent.click(screen.getByRole("button", { name: "保存到素材库" }));
+      expect(
+        await screen.findByRole("button", { name: "正在保存成片…" }),
+      ).toBeDisabled();
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "去发布管理" }),
+        ).toBeEnabled(),
+      );
+      expect(saveTaskPreview).toHaveBeenCalledWith(asset);
+      fireEvent.click(screen.getByRole("button", { name: "去发布管理" }));
+      expect(value.navigate).toHaveBeenCalledWith("publishing", {
+        selectedAssetId: "saved-result",
+      });
+    },
+  );
+
+  it("后台归档后轮询得到的新资产取代已加载的供应商直链", async () => {
+    const direct: StudioAsset = {
+      id: "direct-task-old-result",
+      name: "旧直链",
       kind: "video",
-      url: "/signed/direct-a",
+      url: "/signed/provider-original",
       group: "任务结果",
       source: "任务中心",
       saved: false,
+      delivery: "direct",
       generationTaskId: "provider-result-a",
+    };
+    const archived: StudioAsset = {
+      id: "normalized-result-asset",
+      name: "已归档规范化成片",
+      kind: "video",
+      url: "/signed/archived-normalized",
+      group: "任务结果",
+      source: "任务中心",
+      saved: true,
     };
     let value = studio();
     useStudio.mockImplementation(() => value);
-    loadTaskPreview.mockResolvedValue(asset);
+    loadTaskPreview.mockResolvedValue(direct);
     const view = render(<TaskDetailPage />);
     fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
-    await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
-    const update = vi.mocked(value.updateData).mock.calls[0][0];
-    value = { ...value, data: update(value.data) };
+    await waitFor(() =>
+      expect(view.container.querySelector("video")).toHaveAttribute(
+        "src",
+        direct.url,
+      ),
+    );
+    // Background archive/normalization can finish independently of this page's
+    // Save button. Polling now carries the authoritative physical result ID.
+    value = {
+      ...value,
+      data: {
+        ...value.data,
+        tasks: [{ ...taskA, resultId: archived.id }],
+        assets: [direct, archived],
+      },
+    };
     view.rerender(<TaskDetailPage />);
-    const video = view.container.querySelector("video");
-    expect(video).not.toBeNull();
-    value = { ...value, data: { ...value.data, tasks: [{ ...taskA }] } };
-    view.rerender(<TaskDetailPage />);
-    expect(view.container.querySelector("video")).toBe(video);
-    expect(screen.getByRole("button", { name: "查看素材" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "去发布管理" })).toBeDisabled();
-    saveTaskPreview.mockResolvedValue({
-      ...asset,
-      id: "saved-result",
+    expect(view.container.querySelector("video")).toHaveAttribute(
+      "src",
+      archived.url,
+    );
+    expect(screen.getByRole("button", { name: "查看素材" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "去发布管理" })).toBeEnabled();
+  });
+
+  it("轮询只返回新归档ID时忽略迟到直链并允许签发新资产", async () => {
+    const pending = deferred<StudioAsset | undefined>();
+    let value = studio();
+    useStudio.mockImplementation(() => value);
+    loadTaskPreview.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({
+      id: "new-archive-id",
+      name: "归档成片",
+      kind: "video",
+      url: "/signed/new-archive",
+      group: "任务结果",
+      source: "任务中心",
       saved: true,
     });
-    fireEvent.click(screen.getByRole("button", { name: "保存到素材库" }));
-    expect(
-      await screen.findByRole("button", { name: "正在保存成片…" }),
-    ).toBeDisabled();
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "去发布管理" })).toBeEnabled(),
-    );
-    expect(saveTaskPreview).toHaveBeenCalledWith(asset);
-    fireEvent.click(screen.getByRole("button", { name: "去发布管理" }));
-    expect(value.navigate).toHaveBeenCalledWith("publishing", {
-      selectedAssetId: "saved-result",
+    const view = render(<TaskDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
+    value = {
+      ...value,
+      data: {
+        ...value.data,
+        tasks: [{ ...taskA, resultId: "new-archive-id" }],
+      },
+    };
+    view.rerender(<TaskDetailPage />);
+    await act(async () => {
+      pending.resolve({
+        id: "direct-task-old",
+        name: "迟到直链",
+        kind: "video",
+        url: "/signed/stale-direct",
+        group: "任务结果",
+        source: "任务中心",
+        saved: false,
+      });
     });
+    expect(value.updateData).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
+    await waitFor(() =>
+      expect(view.container.querySelector("video")).toHaveAttribute(
+        "src",
+        "/signed/new-archive",
+      ),
+    );
+  });
+
+  it("成片签名URL播放失败后允许重新签发预览", async () => {
+    const asset: StudioAsset = {
+      id: "expiring-result",
+      name: "已归档成片",
+      kind: "video",
+      url: "/signed/expired-result",
+      group: "任务结果",
+      source: "任务中心",
+      saved: true,
+    };
+    useStudio.mockReturnValue(studio());
+    loadTaskPreview
+      .mockResolvedValueOnce(asset)
+      .mockResolvedValueOnce({ ...asset, url: "/signed/refreshed-result" });
+    const view = render(<TaskDetailPage />);
+    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
+    const video = await waitFor(() => {
+      const element = view.container.querySelector("video");
+      expect(element).toHaveAttribute("src", asset.url);
+      return element as HTMLVideoElement;
+    });
+    fireEvent.error(video);
+    fireEvent.click(screen.getByRole("button", { name: "重试预览" }));
+    await waitFor(() =>
+      expect(view.container.querySelector("video")).toHaveAttribute(
+        "src",
+        "/signed/refreshed-result",
+      ),
+    );
+    expect(loadTaskPreview).toHaveBeenCalledTimes(2);
   });
 
   it("显示无结果状态，并允许重新尝试", async () => {
@@ -1440,6 +1580,7 @@ describe("V1.4 工作台上传与创作入口", () => {
       selectedVideoId: "douyin-native-link-1",
       returnTo: "workbench",
     });
+    expect(value.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("链接输入切换后忽略上一请求的迟到响应", async () => {

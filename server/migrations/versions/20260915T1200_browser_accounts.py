@@ -3,7 +3,7 @@
 from alembic import op
 
 revision = "20260915T1200_browser_accounts"
-down_revision = "20260914T0000_local_joint_merge"
+down_revision = "20260915T1600_viral_copy_cache"
 branch_labels = None
 depends_on = None
 

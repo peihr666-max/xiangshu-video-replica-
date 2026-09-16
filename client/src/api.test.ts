@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const nativeDownload = vi.hoisted(() => ({
+  isTauri: vi.fn(() => false),
+  invoke: vi.fn(),
+  listen: vi.fn(),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: nativeDownload.isTauri,
+  invoke: nativeDownload.invoke,
+}));
+vi.mock("@tauri-apps/api/event", () => ({ listen: nativeDownload.listen }));
+
 import {
   applySavedGenerationPrompt,
+  archiveGenerationTask,
   attachCustomerSessionToken,
   CUSTOMER_SESSION_EXPIRED_EVENT,
   CUSTOMER_SESSION_REPLACED_EVENT,
@@ -119,6 +131,134 @@ describe("扫码请求会话兼容", () => {
       expect(init.cache).toBe("no-store");
     },
   );
+});
+
+describe("generation download media boundary", () => {
+  afterEach(() => {
+    nativeDownload.isTauri.mockReturnValue(false);
+    vi.unstubAllGlobals();
+  });
+
+  function prepareDownload(
+    blob: Blob,
+    url = "https://provider.example/video.mp4",
+  ) {
+    nativeDownload.isTauri.mockReturnValue(true);
+    nativeDownload.invoke
+      .mockReset()
+      .mockImplementation(async (command) =>
+        command === "choose_video_download"
+          ? { download_id: "boundary-1", path: "C:\\Downloads\\video.mp4" }
+          : undefined,
+      );
+    let completed = () => {};
+    nativeDownload.listen.mockImplementation(async (_event, callback) => {
+      completed = () =>
+        callback({
+          payload: {
+            download_id: "boundary-1",
+            success: true,
+            path: "C:\\Downloads\\video.mp4",
+            error: null,
+          },
+        });
+      return vi.fn();
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ url }) })
+        .mockResolvedValueOnce({ ok: true, blob: async () => blob }),
+    );
+    vi.stubGlobal("URL", {
+      createObjectURL: vi.fn(() => "blob:test"),
+      revokeObjectURL: vi.fn(),
+    });
+    return vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => completed());
+  }
+
+  // Only a container-header fixture; these tests do not assert decodability.
+  const container = Uint8Array.from([
+    0, 0, 0, 24, 102, 116, 121, 112, 105, 115, 111, 109, 0, 0, 0, 0, 105, 115,
+    111, 109, 109, 112, 52, 50, 0, 0, 0, 9, 109, 100, 97, 116, 0,
+  ]);
+  const imageContainer = container.slice();
+  for (const offset of [8, 16, 20])
+    imageContainer.set([104, 101, 105, 99], offset);
+
+  it.each([
+    ["HTTP 200 HTML error", "text/html", "<html>Expired token</html>"],
+    ["JSON error", "application/json", '{"error":"expired"}'],
+    ["HTML disguised as MP4", "video/mp4", "<html>Expired token</html>"],
+    [
+      "HTML with generic MIME",
+      "application/octet-stream",
+      "<html>Expired token</html>",
+    ],
+    ["empty file", "video/mp4", ""],
+    ["truncated file-type box", "video/mp4", container.slice(0, 20)],
+    ["unsupported image container", "video/mp4", imageContainer],
+  ])(
+    "rejects %s without saving it as a video",
+    async (_name, mime, content) => {
+      const click = prepareDownload(
+        new Blob([content], { type: mime as string }),
+      );
+
+      await expect(
+        downloadGenerationTaskResult("task-boundary", "video.mp4"),
+      ).rejects.toThrow("不是有效的 MP4");
+      expect(click).not.toHaveBeenCalled();
+      expect(nativeDownload.invoke).toHaveBeenCalledWith(
+        "cancel_video_download",
+        { downloadId: "boundary-1" },
+      );
+      expect(nativeDownload.invoke).not.toHaveBeenCalledWith(
+        "start_video_download",
+        expect.anything(),
+      );
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    "video/mp4",
+    "application/mp4",
+    "application/octet-stream",
+    "",
+    "VIDEO/MP4; charset=binary",
+  ])(
+    "allows an MP4 container with MIME %s and awaits native save confirmation",
+    async (type) => {
+      prepareDownload(new Blob([container], { type }));
+      await expect(
+        downloadGenerationTaskResult("task-boundary", "video.mp4"),
+      ).resolves.toMatchObject({ status: "saved" });
+      expect(nativeDownload.invoke).not.toHaveBeenCalledWith(
+        "cancel_video_download",
+        expect.anything(),
+      );
+      expect(URL.revokeObjectURL).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("rejects inline base64 that decodes to an error page", async () => {
+    prepareDownload(
+      new Blob(),
+      `data:video/mp4;base64,${btoa("<html>Expired token</html>")}`,
+    );
+    await expect(
+      downloadGenerationTaskResult("task-boundary", "video.mp4"),
+    ).rejects.toThrow("内联视频数据无效");
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(nativeDownload.invoke).toHaveBeenCalledWith(
+      "cancel_video_download",
+      { downloadId: "boundary-1" },
+    );
+  });
 });
 
 describe("爆款列表 API", () => {
@@ -838,6 +978,51 @@ describe("API base URL resolution", () => {
 });
 
 describe("customer-visible service errors", () => {
+  it.each([
+    [
+      "RESULT_ARCHIVE_IN_PROGRESS",
+      "成片正在保存，请稍后刷新任务核对；不会重新生成或扣费。",
+    ],
+    [
+      "RESULT_ARCHIVE_LEASE_LOST",
+      "本次保存已中断，请刷新任务核对后再试；不会重新生成或扣费。",
+    ],
+  ])(
+    "archive conflict %s explains the safe next step",
+    async (code, message) => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            detail: { code, message: "backend archive conflict" },
+          }),
+          {
+            status: 409,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(
+        archiveGenerationTask("archive-test-task"),
+      ).rejects.toMatchObject({
+        message,
+        code,
+        status: 409,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("cloud frame validation explains how to repair the input", () => {
+    expect(
+      customerVisibleErrorMessage({
+        code: "METASO_REQUIRES_CLOUD_STORAGE",
+        message: "METASO H3 requires an HTTPS first-frame URL",
+      }),
+    ).toBe(
+      "所选素材尚未存入当前云端素材库。请选择已归档的素材，或联系管理员完成云端存储配置后重新上传。",
+    );
+  });
   it("preserves actionable analysis storage guidance before generic provider branding", () => {
     expect(
       customerVisibleErrorMessage({
@@ -1007,6 +1192,40 @@ describe("customer workspace session lifecycle", () => {
     releaseCurrent();
     window.removeEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, listener);
   });
+
+  it("does not expire a newly attached session for a request sent during the credential handoff", async () => {
+    let finishRequest: ((response: Response) => void) | undefined;
+    const response = new Promise<Response>((resolve) => {
+      finishRequest = resolve;
+    });
+    const fetchMock = vi.fn((_url: string, _init?: RequestInit) => response);
+    vi.stubGlobal("fetch", fetchMock);
+    setCustomerSessionToken(null);
+    setInternalAccessToken(null);
+    const listener = vi.fn();
+    window.addEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, listener);
+    const pendingRequest = listProjects();
+    const failure = expect(pendingRequest).rejects.toThrow();
+    expect(
+      new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has("Authorization"),
+    ).toBe(false);
+    const releaseCurrent = attachCustomerSessionToken(customerSessionText);
+    try {
+      finishRequest?.(
+        new Response(
+          JSON.stringify({
+            detail: { code: "SESSION_EXPIRED", message: "missing session" },
+          }),
+          { status: 401, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      await failure;
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      releaseCurrent();
+      window.removeEventListener(CUSTOMER_SESSION_EXPIRED_EVENT, listener);
+    }
+  });
 });
 
 const generationVersion = {
@@ -1028,209 +1247,109 @@ describe("generation workflow API", () => {
     vi.useRealTimers();
   });
 
-  it("downloads a direct result using task authorization without forwarding credentials", async () => {
-    vi.useFakeTimers();
+  it("archives an existing direct result and starts an HTTP download without reading MP4 bytes", async () => {
     setCustomerSessionToken("test-customer-session");
-    const video = new Blob(["provider video"], { type: "video/mp4" });
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ url: "https://provider.example/video.mp4" }),
+        json: async () => ({ result_asset_id: "asset 1" }),
       })
-      .mockResolvedValueOnce({ ok: true, blob: async () => video });
-    const createObjectURL = vi.fn(() => "blob:direct-result");
-    const revokeObjectURL = vi.fn();
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ url: "https://signed.example/result.mp4" }),
+      });
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(function (this: HTMLAnchorElement) {
+        expect(this.href).toBe("https://signed.example/result.mp4");
         expect(this.download).toBe("direct-task.mp4");
-        expect(this.href).toBe("blob:direct-result");
       });
     vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
-
-    await downloadGenerationTaskResult("task 1", "direct-task.mp4");
-
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:8000/api/generation-tasks/task%201/preview-url",
+    const result = await downloadGenerationTaskResult(
+      "task 1",
+      "direct-task.mp4",
     );
-    expect(
-      new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization"),
-    ).toBe("Bearer test-customer-session");
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://provider.example/video.mp4",
-      {
-        signal: expect.any(AbortSignal),
-        credentials: "omit",
-      },
-    );
-    expect(createObjectURL).toHaveBeenCalledWith(video);
-    expect(click).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:direct-result");
-  });
-
-  it("downloads authorized inline MP4 bytes without a data URL fetch", async () => {
-    setCustomerSessionToken("test-inline-session");
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ url: "data:video/mp4;base64,AP+AQQ==" }),
-    });
-    const createObjectURL = vi.fn((_blob: Blob) => "blob:inline-result");
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(function (this: HTMLAnchorElement) {
-        expect(this.download).toBe("inline.mp4");
-        expect(this.href).toBe("blob:inline-result");
-      });
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL: vi.fn() });
-
-    await downloadGenerationTaskResult("task-inline", "inline.mp4");
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(fetchMock.mock.calls[0][0]).toBe(
-      "http://127.0.0.1:8000/api/generation-tasks/task-inline/preview-url",
-    );
-    expect(
-      new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization"),
-    ).toBe("Bearer test-inline-session");
-    const blob = createObjectURL.mock.calls[0][0] as Blob;
-    expect(blob.type).toBe("video/mp4");
-    const bytes = await new Promise<Uint8Array>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () =>
-        resolve(new Uint8Array(reader.result as ArrayBuffer));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsArrayBuffer(blob);
-    });
-    expect([...bytes]).toEqual([0, 255, 128, 65]);
+    expect(result).toEqual({ status: "started" });
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:8000/api/generation-tasks/task%201/archive",
+      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
+    ]);
+    for (const call of fetchMock.mock.calls) {
+      expect(call[1].method).toBe("POST");
+      expect(new Headers(call[1].headers).get("Authorization")).toBe(
+        "Bearer test-customer-session",
+      );
+    }
     expect(click).toHaveBeenCalledOnce();
   });
 
-  it("rejects malformed inline MP4 base64 without saving or fetching it", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ url: "data:video/mp4;base64,%%%invalid%%%" }),
-    });
-    const createObjectURL = vi.fn();
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL: vi.fn() });
-
-    await expect(
-      downloadGenerationTaskResult("task-inline", "inline.mp4"),
-    ).rejects.toThrow("下载生成结果失败：内联视频数据无效。");
-
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(createObjectURL).not.toHaveBeenCalled();
-    expect(click).not.toHaveBeenCalled();
-  });
-
-  it.each([403, 404, 409])(
-    "does not fetch a provider file when task authorization returns %i",
+  it.each([403, 404, 409, 503])(
+    "does not download or resubmit generation when archive returns %i",
     async (status) => {
       const fetchMock = vi.fn().mockResolvedValue({
         ok: false,
         status,
         json: async () => ({ detail: { code: "RESULT_NOT_AVAILABLE" } }),
       });
+      const click = vi
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(() => undefined);
       vi.stubGlobal("fetch", fetchMock);
       await expect(
         downloadGenerationTaskResult("task-other", "video.mp4"),
       ).rejects.toThrow();
       expect(fetchMock).toHaveBeenCalledOnce();
+      expect(click).not.toHaveBeenCalled();
     },
   );
 
-  it("does not save an unavailable provider response as an MP4", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ url: "https://provider.example/expired.mp4" }),
-      })
-      .mockResolvedValueOnce({ ok: false, status: 403 });
+  it("does not claim download started before archive provides an asset", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ result_asset_id: null }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      downloadGenerationTaskResult("task-pending", "video.mp4"),
+    ).rejects.toThrow("成片尚未保存完成");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("starts a signed result download without a second fetch or an in-memory blob", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ url: "https://signed.example/result.mp4" }),
+    });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        expect(this.href).toBe("https://signed.example/result.mp4");
+        expect(this.download).toBe("task-1.mp4");
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(
+      downloadGenerationResult("asset 1", "task-1.mp4"),
+    ).resolves.toEqual({ status: "started" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
+    );
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a missing download URL instead of navigating to the current page", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ url: "" }) }),
+    );
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
     await expect(
-      downloadGenerationTaskResult("task-expired", "video.mp4"),
-    ).rejects.toThrow("403");
+      downloadGenerationResult("asset 1", "video.mp4"),
+    ).rejects.toThrow("下载链接");
     expect(click).not.toHaveBeenCalled();
-  });
-
-  it("times out a direct file download without retrying a paid generation", async () => {
-    vi.useFakeTimers();
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ url: "https://provider.example/slow.mp4" }),
-      })
-      .mockImplementationOnce(
-        (_url, init: RequestInit) =>
-          new Promise((_resolve, reject) => {
-            init.signal?.addEventListener("abort", () =>
-              reject(new DOMException("Aborted", "AbortError")),
-            );
-          }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-    const download = expect(
-      downloadGenerationTaskResult("task-slow", "video.mp4"),
-    ).rejects.toThrow();
-    await vi.advanceTimersByTimeAsync(60_001);
-    await download;
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it("downloads a signed cross-origin result through a local blob URL", async () => {
-    vi.useFakeTimers();
-    const resultBlob = new Blob(["video"], { type: "video/mp4" });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ url: "https://signed.example/result.mp4" }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        blob: async () => resultBlob,
-      });
-    const createObjectUrl = vi.fn(() => "blob:generation-result");
-    const revokeObjectUrl = vi.fn();
-    const anchorClick = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => undefined);
-    vi.stubGlobal("fetch", fetchMock);
-    vi.stubGlobal("URL", {
-      createObjectURL: createObjectUrl,
-      revokeObjectURL: revokeObjectUrl,
-    });
-
-    await downloadGenerationResult("asset 1", "task-1.mp4");
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "http://127.0.0.1:8000/api/assets/asset%201/download-url",
-      expect.objectContaining({ method: "POST" }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "https://signed.example/result.mp4",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(createObjectUrl).toHaveBeenCalledWith(resultBlob);
-    expect(anchorClick).toHaveBeenCalledOnce();
-
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(revokeObjectUrl).toHaveBeenCalledWith("blob:generation-result");
   });
 
   it("uses the local character cache for previews and manual downloads", async () => {
@@ -1520,6 +1639,31 @@ describe("generation workflow API", () => {
         shot_card_version_id: "shot-1",
       }),
     ).rejects.toThrow(message);
+  });
+
+  it("参考时长拒绝保留可执行的修复提示", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: {
+            code: "INDEPENDENT_REFERENCE_DURATION_INVALID",
+            message: "internal detail",
+          },
+        }),
+      }),
+    );
+    await expect(
+      createScriptVersion("project-1", {
+        source: "custom",
+        text: "口播稿",
+        shot_card_version_id: "shot-1",
+      }),
+    ).rejects.toThrow(
+      "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。",
+    );
   });
 
   it("maps generation timeout and offline failures to Chinese errors", async () => {
@@ -2605,58 +2749,66 @@ describe("uploadReferenceVideo", () => {
     },
   );
 
-  it("does not send the development identity header to a cloud presigned URL", async () => {
-    class CloudUploadRequest {
-      static latest: CloudUploadRequest | null = null;
-      headers = new Map<string, string>();
-      onerror: (() => void) | null = null;
-      onload: (() => void) | null = null;
-      ontimeout: (() => void) | null = null;
-      status = 200;
-      timeout = 0;
-      upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
-        onprogress: null,
-      };
+  it.each(["test-cloud-customer-token", "web-session:test-cloud-csrf"])(
+    "does not send customer authentication headers to a cloud presigned URL (%s)",
+    async (sessionToken) => {
+      class CloudUploadRequest {
+        static latest: CloudUploadRequest | null = null;
+        headers = new Map<string, string>();
+        onerror: (() => void) | null = null;
+        onload: (() => void) | null = null;
+        ontimeout: (() => void) | null = null;
+        status = 200;
+        timeout = 0;
+        upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
+          onprogress: null,
+        };
 
-      constructor() {
-        CloudUploadRequest.latest = this;
+        constructor() {
+          CloudUploadRequest.latest = this;
+        }
+
+        open() {}
+        setRequestHeader(name: string, value: string) {
+          this.headers.set(name, value);
+        }
+        send() {
+          this.onload?.();
+        }
       }
 
-      open() {}
-      setRequestHeader(name: string, value: string) {
-        this.headers.set(name, value);
-      }
-      send() {
-        this.onload?.();
-      }
-    }
+      vi.stubGlobal("XMLHttpRequest", CloudUploadRequest);
+      setCustomerSessionToken(sessionToken);
 
-    vi.stubGlobal("XMLHttpRequest", CloudUploadRequest);
-    setCustomerSessionToken("test-cloud-customer-token");
+      await uploadReferenceVideo(
+        {
+          asset_id: "asset-1",
+          project_id: "project-1",
+          storage_key: "projects/project-1/reference.mp4",
+          method: "PUT",
+          url: "https://cos.example.com/presigned-upload",
+          headers: { "Content-Type": "video/mp4" },
+          expires_at: "2030-01-01T00:00:00Z",
+        },
+        new File(["video"], "reference.mp4", { type: "video/mp4" }),
+        vi.fn(),
+      );
 
-    await uploadReferenceVideo(
-      {
-        asset_id: "asset-1",
-        project_id: "project-1",
-        storage_key: "projects/project-1/reference.mp4",
-        method: "PUT",
-        url: "https://cos.example.com/presigned-upload",
-        headers: { "Content-Type": "video/mp4" },
-        expires_at: "2030-01-01T00:00:00Z",
-      },
-      new File(["video"], "reference.mp4", { type: "video/mp4" }),
-      vi.fn(),
-    );
-
-    expect(
-      CloudUploadRequest.latest?.headers.get("X-Dev-User-Id"),
-    ).toBeUndefined();
-    setCustomerSessionToken(null);
-    expect(CloudUploadRequest.latest?.headers.has("Authorization")).toBe(false);
-    expect(CloudUploadRequest.latest?.headers.get("Content-Type")).toBe(
-      "video/mp4",
-    );
-  });
+      expect(
+        CloudUploadRequest.latest?.headers.get("X-Dev-User-Id"),
+      ).toBeUndefined();
+      setCustomerSessionToken(null);
+      expect(CloudUploadRequest.latest?.headers.has("Authorization")).toBe(
+        false,
+      );
+      expect(CloudUploadRequest.latest?.headers.has("X-Customer-Web")).toBe(
+        false,
+      );
+      expect(CloudUploadRequest.latest?.headers.get("Content-Type")).toBe(
+        "video/mp4",
+      );
+    },
+  );
 
   it("does not send X-Dev-User-Id header for API uploads (CW-015: remove development identity path)", async () => {
     class LocalUploadRequest {
@@ -2704,64 +2856,70 @@ describe("uploadReferenceVideo", () => {
     expect(LocalUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(false);
   });
 
-  it("uses customerSessionToken instead of internalAccessToken for API uploads (CW-015: remove internal token priority)", async () => {
-    class ManagedUploadRequest {
-      static latest: ManagedUploadRequest | null = null;
-      headers = new Map<string, string>();
-      onerror: (() => void) | null = null;
-      onload: (() => void) | null = null;
-      ontimeout: (() => void) | null = null;
-      status = 204;
-      timeout = 0;
-      upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
-        onprogress: null,
-      };
+  it.each(["customer-session-token-1", "web-session:test-managed-csrf"])(
+    "uses the customer credential and browser transport when needed for API uploads (%s)",
+    async (sessionToken) => {
+      class ManagedUploadRequest {
+        static latest: ManagedUploadRequest | null = null;
+        headers = new Map<string, string>();
+        onerror: (() => void) | null = null;
+        onload: (() => void) | null = null;
+        ontimeout: (() => void) | null = null;
+        status = 204;
+        timeout = 0;
+        upload: { onprogress: ((event: ProgressEvent) => void) | null } = {
+          onprogress: null,
+        };
 
-      constructor() {
-        ManagedUploadRequest.latest = this;
+        constructor() {
+          ManagedUploadRequest.latest = this;
+        }
+
+        open() {}
+        setRequestHeader(name: string, value: string) {
+          this.headers.set(name, value);
+        }
+        send() {
+          this.onload?.();
+        }
       }
 
-      open() {}
-      setRequestHeader(name: string, value: string) {
-        this.headers.set(name, value);
-      }
-      send() {
-        this.onload?.();
-      }
-    }
+      vi.stubGlobal("XMLHttpRequest", ManagedUploadRequest);
+      // CW-015: 即使设置了 internalAccessToken，也不应该使用它
+      setInternalAccessToken("internal-token-1");
+      setCustomerSessionToken(sessionToken);
 
-    vi.stubGlobal("XMLHttpRequest", ManagedUploadRequest);
-    // CW-015: 即使设置了 internalAccessToken，也不应该使用它
-    setInternalAccessToken("internal-token-1");
-    setCustomerSessionToken("customer-session-token-1");
+      try {
+        await uploadReferenceVideo(
+          {
+            asset_id: "asset-1",
+            project_id: "project-1",
+            storage_key: "projects/project-1/reference.mp4",
+            method: "PUT",
+            url: "http://127.0.0.1:8000/api/assets/local-objects/projects/project-1/reference.mp4",
+            headers: { "Content-Type": "video/mp4" },
+            expires_at: "2030-01-01T00:00:00Z",
+          },
+          new File(["video"], "reference.mp4", { type: "video/mp4" }),
+          vi.fn(),
+        );
+      } finally {
+        setInternalAccessToken(null);
+        setCustomerSessionToken(null);
+      }
 
-    try {
-      await uploadReferenceVideo(
-        {
-          asset_id: "asset-1",
-          project_id: "project-1",
-          storage_key: "projects/project-1/reference.mp4",
-          method: "PUT",
-          url: "http://127.0.0.1:8000/api/assets/local-objects/projects/project-1/reference.mp4",
-          headers: { "Content-Type": "video/mp4" },
-          expires_at: "2030-01-01T00:00:00Z",
-        },
-        new File(["video"], "reference.mp4", { type: "video/mp4" }),
-        vi.fn(),
+      // CW-015: 正式客户构建只使用 customerSessionToken
+      expect(ManagedUploadRequest.latest?.headers.get("Authorization")).toBe(
+        `Bearer ${sessionToken}`,
       );
-    } finally {
-      setInternalAccessToken(null);
-      setCustomerSessionToken(null);
-    }
-
-    // CW-015: 正式客户构建只使用 customerSessionToken
-    expect(ManagedUploadRequest.latest?.headers.get("Authorization")).toBe(
-      "Bearer customer-session-token-1",
-    );
-    expect(ManagedUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(
-      false,
-    );
-  });
+      expect(ManagedUploadRequest.latest?.headers.get("X-Customer-Web")).toBe(
+        sessionToken.startsWith("web-session:") ? "1" : undefined,
+      );
+      expect(ManagedUploadRequest.latest?.headers.has("X-Dev-User-Id")).toBe(
+        false,
+      );
+    },
+  );
 
   it("emits the unified session-expired event when a local upload returns 401", async () => {
     class UnauthorizedUploadRequest {
