@@ -11,6 +11,7 @@ export const SESSION_EXPIRED_EVENT = "video-replica:session-expired";
 let internalAccessToken: string | null = null;
 let customerSessionToken: string | null = null;
 let customerSessionOwner: symbol | null = null;
+let workspaceCredentialEpoch = 0;
 // The customer-production admin session exchanges its CSRF value once and
 // keeps it in memory only.  Control-plane writes share this value so the
 // existing account/billing screens stay behind the same per-operator session
@@ -1254,6 +1255,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 }
 
 export function setInternalAccessToken(token: string | null): void {
+  workspaceCredentialEpoch += 1;
   const normalized = token?.trim() ?? "";
   internalAccessToken = normalized || null;
 }
@@ -1262,6 +1264,7 @@ export function setInternalAccessToken(token: string | null): void {
  * vault remains the persistent source; this bridge exists solely so the
  * shared project/analysis/generation API adapter can authenticate requests. */
 export function setCustomerSessionToken(token: string | null): void {
+  workspaceCredentialEpoch += 1;
   const normalized = token?.trim() ?? "";
   customerSessionToken = normalized || null;
   customerSessionOwner = null;
@@ -1276,10 +1279,12 @@ export function attachCustomerSessionToken(token: string): () => void {
     throw new Error("Customer session token is required");
   }
   const owner = Symbol("customer-workspace-session");
+  workspaceCredentialEpoch += 1;
   customerSessionToken = normalized;
   customerSessionOwner = owner;
   return () => {
     if (customerSessionOwner === owner) {
+      workspaceCredentialEpoch += 1;
       customerSessionToken = null;
       customerSessionOwner = null;
     }
@@ -3999,6 +4004,586 @@ export async function getCachedCharacterAssetUrl(
     CLOUD_OP_TIMEOUT_MS,
   );
   return { ...result, url: resolveManagedMediaUrl(result.url) };
+}
+
+const MATERIAL_CACHE_NAME = "video-replica-material-media-v1";
+const MATERIAL_CACHE_LOCK = `${MATERIAL_CACHE_NAME}:writes`;
+const MATERIAL_CACHE_ROOT = "https://material-cache.invalid/v1/";
+const MATERIAL_CACHE_LIMIT = 256 * 1024 * 1024;
+const MATERIAL_FILE_LIMIT = 50 * 1024 * 1024;
+const materialInvalidations = new Map<string, number>();
+const materialFills = new Map<
+  string,
+  {
+    scope: string;
+    assetId?: string;
+    controller: AbortController;
+    promise: Promise<Blob | null>;
+    users: number;
+  }
+>();
+let materialDownloadCount = 0;
+const materialDownloadWaiters = new Set<() => void>();
+
+export type MaterialCachedPreview = {
+  url: string;
+  cached: boolean;
+  release: () => void;
+};
+type MaterialAssetMetadata = components["schemas"]["AssetResponse"];
+type MaterialCacheContext = {
+  scope: string;
+  assetId?: string;
+  assetInvalidation: number;
+  epoch: number;
+  invalidation: number;
+  signal?: AbortSignal;
+};
+
+function materialCacheContext(
+  userId: string,
+  signal?: AbortSignal,
+  assetId?: string,
+): MaterialCacheContext {
+  if (!userId.trim()) throw new Error("素材缓存需要当前用户");
+  const scope = `${encodeURIComponent(new URL(apiBaseUrl()).origin)}/${encodeURIComponent(userId)}/`;
+  return {
+    scope,
+    assetId,
+    assetInvalidation:
+      materialInvalidations.get(
+        `${scope}${encodeURIComponent(assetId ?? "")}`,
+      ) ?? 0,
+    epoch: workspaceCredentialEpoch,
+    invalidation: materialInvalidations.get(scope) ?? 0,
+    signal,
+  };
+}
+
+function requireMaterialContext(context: MaterialCacheContext): void {
+  if (context.signal?.aborted)
+    throw new DOMException("素材读取已取消", "AbortError");
+  if (context.epoch !== workspaceCredentialEpoch)
+    throw new Error("素材读取会话已变化，请重试");
+  if (
+    context.invalidation !== (materialInvalidations.get(context.scope) ?? 0)
+  ) {
+    throw new DOMException("素材缓存已清理", "AbortError");
+  }
+  if (
+    context.assetId !== undefined &&
+    context.assetInvalidation !==
+      (materialInvalidations.get(
+        `${context.scope}${encodeURIComponent(context.assetId)}`,
+      ) ?? 0)
+  ) {
+    throw new DOMException("素材缓存已移除", "AbortError");
+  }
+}
+
+function materialCacheAvailable(): boolean {
+  return (
+    typeof caches !== "undefined" &&
+    typeof navigator.locks?.request === "function" &&
+    typeof crypto.subtle?.digest === "function" &&
+    typeof URL.createObjectURL === "function"
+  );
+}
+
+async function materialCacheLocked<T>(
+  context: MaterialCacheContext,
+  action: (cache: Cache) => Promise<T>,
+): Promise<T> {
+  requireMaterialContext(context);
+  return navigator.locks.request(
+    MATERIAL_CACHE_LOCK,
+    { signal: context.signal },
+    async () => {
+      requireMaterialContext(context);
+      const cache = await caches.open(MATERIAL_CACHE_NAME);
+      requireMaterialContext(context);
+      const result = await action(cache);
+      requireMaterialContext(context);
+      return result;
+    },
+  );
+}
+
+function materialStateKey(scope: string, assetId?: string): string {
+  return `${MATERIAL_CACHE_ROOT}state/${scope}${assetId === undefined ? "" : encodeURIComponent(assetId)}`;
+}
+
+async function materialGeneration(
+  cache: Cache,
+  scope: string,
+  assetId?: string,
+): Promise<string> {
+  const user =
+    (await cache.match(materialStateKey(scope)))?.headers.get(
+      "X-Material-Generation",
+    ) ?? "0";
+  const asset =
+    assetId === undefined
+      ? "0"
+      : ((await cache.match(materialStateKey(scope, assetId)))?.headers.get(
+          "X-Material-Generation",
+        ) ?? "0");
+  return `${user}:${asset}`;
+}
+
+function materialMime(value: string | null): string {
+  return value?.split(";", 1)[0].trim().toLowerCase() ?? "";
+}
+
+function materialMetadataValid(metadata: MaterialAssetMetadata): boolean {
+  return (
+    /^[a-f0-9]{64}$/i.test(metadata.sha256) &&
+    Number.isSafeInteger(metadata.size_bytes) &&
+    metadata.size_bytes > 0 &&
+    metadata.size_bytes <= MATERIAL_FILE_LIMIT &&
+    /^(image|audio|video)\/[a-z0-9.+-]+$/.test(
+      materialMime(metadata.content_type),
+    )
+  );
+}
+
+async function materialWait<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) throw new DOMException("素材读取已取消", "AbortError");
+  return new Promise<T>((resolve, reject) => {
+    const abort = () =>
+      reject(new DOMException("素材读取已取消", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    promise
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+async function materialVerifiedBytes(
+  response: Response,
+  metadata: MaterialAssetMetadata,
+  context: MaterialCacheContext,
+): Promise<Uint8Array<ArrayBuffer>> {
+  if (
+    !response.ok ||
+    response.type === "opaque" ||
+    !response.body ||
+    materialMime(response.headers.get("Content-Type")) !==
+      materialMime(metadata.content_type)
+  ) {
+    throw new Error("素材缓存内容类型无效");
+  }
+  const declared = response.headers.get("Content-Length");
+  if (declared !== null && Number(declared) !== metadata.size_bytes)
+    throw new Error("素材缓存大小不符");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const result = await materialWait(reader.read(), context.signal);
+      requireMaterialContext(context);
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > MATERIAL_FILE_LIMIT || size > metadata.size_bytes)
+        throw new Error("素材缓存超过大小上限");
+      chunks.push(result.value);
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  if (size !== metadata.size_bytes) throw new Error("素材缓存不完整");
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  requireMaterialContext(context);
+  const hash = Array.from(digest, (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
+  if (hash !== metadata.sha256.toLowerCase())
+    throw new Error("素材缓存校验失败");
+  return bytes;
+}
+
+function materialResponse(
+  bytes: Uint8Array<ArrayBuffer>,
+  metadata: MaterialAssetMetadata,
+): Response {
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": materialMime(metadata.content_type),
+      "Content-Length": String(bytes.byteLength),
+      "X-Material-Sha256": metadata.sha256.toLowerCase(),
+      "X-Material-Accessed": String(Date.now()),
+    },
+  });
+}
+
+async function materialRead(
+  cache: Cache,
+  key: string,
+  metadata: MaterialAssetMetadata,
+  context: MaterialCacheContext,
+): Promise<Blob | null> {
+  const response = await cache.match(key);
+  requireMaterialContext(context);
+  if (!response) return null;
+  let bytes: Uint8Array<ArrayBuffer>;
+  try {
+    bytes = await materialVerifiedBytes(response, metadata, context);
+  } catch {
+    requireMaterialContext(context);
+    await cache.delete(key);
+    return null;
+  }
+  requireMaterialContext(context);
+  await cache.put(key, materialResponse(bytes, metadata));
+  requireMaterialContext(context);
+  return new Blob([bytes], { type: materialMime(metadata.content_type) });
+}
+
+async function materialEntries(
+  cache: Cache,
+): Promise<{ key: Request; bytes: number; accessed: number }[]> {
+  const entries = [];
+  for (const key of await cache.keys()) {
+    if (!key.url.startsWith(`${MATERIAL_CACHE_ROOT}media/`)) continue;
+    const response = await cache.match(key);
+    const bytes = Number(response?.headers.get("Content-Length"));
+    const accessed = Number(response?.headers.get("X-Material-Accessed"));
+    if (
+      !Number.isSafeInteger(bytes) ||
+      bytes <= 0 ||
+      bytes > MATERIAL_FILE_LIMIT ||
+      !Number.isFinite(accessed)
+    ) {
+      await cache.delete(key);
+    } else entries.push({ key, bytes, accessed });
+  }
+  return entries.sort(
+    (a, b) => a.accessed - b.accessed || a.key.url.localeCompare(b.key.url),
+  );
+}
+
+async function materialDownloadSlot<T>(
+  context: MaterialCacheContext,
+  work: () => Promise<T>,
+): Promise<T> {
+  while (materialDownloadCount >= 2) {
+    let wake: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      wake = resolve;
+      materialDownloadWaiters.add(resolve);
+    });
+    try {
+      await materialWait(ready, context.signal);
+    } finally {
+      if (wake) materialDownloadWaiters.delete(wake);
+    }
+    requireMaterialContext(context);
+  }
+  requireMaterialContext(context);
+  materialDownloadCount += 1;
+  try {
+    return await work();
+  } finally {
+    materialDownloadCount -= 1;
+    for (const wake of materialDownloadWaiters) wake();
+  }
+}
+
+async function materialPopulate(
+  context: MaterialCacheContext,
+  key: string,
+  generation: string,
+  metadata: MaterialAssetMetadata,
+  url: string,
+): Promise<Blob | null> {
+  // A per-object lock also deduplicates complete downloads across browser tabs.
+  return navigator.locks.request(
+    `${MATERIAL_CACHE_NAME}:fill:${key}`,
+    { signal: context.signal },
+    async () => {
+      const existing = await materialCacheLocked(context, async (cache) => {
+        if (
+          (await materialGeneration(cache, context.scope, context.assetId)) !==
+          generation
+        )
+          throw new DOMException("素材缓存已清理", "AbortError");
+        return materialRead(cache, key, metadata, context);
+      });
+      if (existing) return existing;
+      return materialDownloadSlot(context, async () => {
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        context.signal?.addEventListener("abort", abort, { once: true });
+        const timeout = window.setTimeout(abort, 60_000);
+        try {
+          requireMaterialContext(context);
+          const response = await materialWait(
+            fetch(url, {
+              signal: controller.signal,
+              credentials: "omit",
+              cache: "no-store",
+              referrerPolicy: "no-referrer",
+            }),
+            controller.signal,
+          );
+          requireMaterialContext(context);
+          if (response.status === 401 || response.status === 403) {
+            throw Object.assign(new Error("素材访问权限已失效"), {
+              materialAuthorizationDenied: true,
+            });
+          }
+          const bytes = await materialVerifiedBytes(response, metadata, {
+            ...context,
+            signal: controller.signal,
+          });
+          return await materialCacheLocked(context, async (cache) => {
+            if (
+              (await materialGeneration(
+                cache,
+                context.scope,
+                context.assetId,
+              )) !== generation
+            )
+              throw new DOMException("素材缓存已清理", "AbortError");
+            requireMaterialContext(context);
+            const entries = await materialEntries(cache);
+            let total = entries.reduce(
+              (sum, entry) => sum + (entry.key.url === key ? 0 : entry.bytes),
+              0,
+            );
+            for (const entry of entries) {
+              if (total + bytes.byteLength <= MATERIAL_CACHE_LIMIT) break;
+              if (entry.key.url !== key) {
+                await cache.delete(entry.key);
+                total -= entry.bytes;
+              }
+            }
+            requireMaterialContext(context);
+            await cache.put(key, materialResponse(bytes, metadata));
+            // Clear/credential changes in this tab can occur while Cache.put awaits.
+            try {
+              requireMaterialContext(context);
+            } catch (error) {
+              await cache.delete(key);
+              throw error;
+            }
+            return new Blob([bytes], {
+              type: materialMime(metadata.content_type),
+            });
+          });
+        } catch (error) {
+          requireMaterialContext(context);
+          if (controller.signal.aborted) throw new Error("素材缓存下载超时");
+          throw error;
+        } finally {
+          window.clearTimeout(timeout);
+          context.signal?.removeEventListener("abort", abort);
+        }
+      });
+    },
+  );
+}
+
+function materialBlobPreview(blob: Blob): MaterialCachedPreview {
+  const url = URL.createObjectURL(blob);
+  let released = false;
+  return {
+    url,
+    cached: true,
+    release: () => {
+      if (!released) {
+        released = true;
+        URL.revokeObjectURL(url);
+      }
+    },
+  };
+}
+
+export async function getMaterialCachedPreview(
+  userId: string,
+  assetId: string,
+  options: { populate?: boolean; signal?: AbortSignal } = {},
+): Promise<MaterialCachedPreview> {
+  const context = materialCacheContext(userId, options.signal, assetId);
+  requireMaterialContext(context);
+  // Capture invalidation before remote authorization waits. Another tab may
+  // clear this user while those requests are in flight; it must win over them.
+  // Only the non-sensitive generation marker is read before authorization.
+  let generationAtStart: string | null = null;
+  if (materialCacheAvailable()) {
+    try {
+      generationAtStart = await materialCacheLocked(context, (cache) =>
+        materialGeneration(cache, context.scope, assetId),
+      );
+    } catch {
+      requireMaterialContext(context);
+    }
+  }
+  // Fresh authorization is required even when every media byte is already local.
+  const { url } = await materialWait(
+    getAssetDownloadUrl(assetId),
+    options.signal,
+  );
+  requireMaterialContext(context);
+  const metadata = await requestApiJson<MaterialAssetMetadata>(
+    `/api/assets/${encodeURIComponent(assetId)}`,
+    "读取素材信息失败",
+    { signal: options.signal },
+  );
+  requireMaterialContext(context);
+  if (!url) throw new Error("素材预览地址不可用");
+  const online = { url, cached: false, release: () => undefined };
+  if (generationAtStart === null || !materialMetadataValid(metadata))
+    return online;
+  const key = `${MATERIAL_CACHE_ROOT}media/${context.scope}${encodeURIComponent(assetId)}/${metadata.sha256.toLowerCase()}`;
+  try {
+    const initial = await materialCacheLocked(context, async (cache) => {
+      const generation = await materialGeneration(
+        cache,
+        context.scope,
+        assetId,
+      );
+      if (generation !== generationAtStart)
+        throw new DOMException("素材缓存已清理", "AbortError");
+      return {
+        generation,
+        blob: await materialRead(cache, key, metadata, context),
+      };
+    });
+    requireMaterialContext(context);
+    if (initial.blob) return materialBlobPreview(initial.blob);
+    if (!options.populate) return online;
+    const fillKey = `${key}:${initial.generation}:${context.epoch}:${context.invalidation}:${context.assetInvalidation}`;
+    let fill = materialFills.get(fillKey);
+    if (!fill) {
+      const controller = new AbortController();
+      fill = {
+        scope: context.scope,
+        assetId,
+        controller,
+        users: 0,
+        promise: materialPopulate(
+          { ...context, signal: controller.signal },
+          key,
+          initial.generation,
+          metadata,
+          url,
+        ),
+      };
+      materialFills.set(fillKey, fill);
+      const captured = fill;
+      void fill.promise
+        .finally(() => {
+          if (materialFills.get(fillKey) === captured)
+            materialFills.delete(fillKey);
+        })
+        .catch(() => undefined);
+    }
+    fill.users += 1;
+    try {
+      const blob = await materialWait(fill.promise, options.signal);
+      requireMaterialContext(context);
+      return blob ? materialBlobPreview(blob) : online;
+    } finally {
+      fill.users -= 1;
+      if (!fill.users) fill.controller.abort();
+    }
+  } catch (error) {
+    requireMaterialContext(context);
+    if (error instanceof DOMException && error.name === "AbortError")
+      throw error;
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "materialAuthorizationDenied" in error
+    )
+      throw error;
+    return online;
+  }
+}
+
+export async function getMaterialCacheUsage(
+  userId: string,
+): Promise<{ bytes: number; limitBytes: number; available: boolean }> {
+  const context = materialCacheContext(userId);
+  const unavailable = {
+    bytes: 0,
+    limitBytes: MATERIAL_CACHE_LIMIT,
+    available: false,
+  };
+  if (!materialCacheAvailable()) return unavailable;
+  try {
+    const bytes = await materialCacheLocked(context, async (cache) =>
+      (await materialEntries(cache))
+        .filter((entry) =>
+          entry.key.url.startsWith(
+            `${MATERIAL_CACHE_ROOT}media/${context.scope}`,
+          ),
+        )
+        .reduce((sum, entry) => sum + entry.bytes, 0),
+    );
+    requireMaterialContext(context);
+    return { bytes, limitBytes: MATERIAL_CACHE_LIMIT, available: true };
+  } catch {
+    requireMaterialContext(context);
+    return unavailable;
+  }
+}
+
+async function materialClear(userId: string, assetId?: string): Promise<void> {
+  const previous = materialCacheContext(userId);
+  const invalidationKey = `${previous.scope}${assetId === undefined ? "" : encodeURIComponent(assetId)}`;
+  materialInvalidations.set(
+    invalidationKey,
+    (materialInvalidations.get(invalidationKey) ?? 0) + 1,
+  );
+  for (const fill of materialFills.values()) {
+    if (
+      fill.scope === previous.scope &&
+      (assetId === undefined || fill.assetId === assetId)
+    )
+      fill.controller.abort();
+  }
+  const context = materialCacheContext(userId);
+  if (!materialCacheAvailable()) return;
+  await materialCacheLocked(context, async (cache) => {
+    await cache.put(
+      materialStateKey(context.scope, assetId),
+      new Response(null, {
+        headers: { "X-Material-Generation": crypto.randomUUID() },
+      }),
+    );
+    requireMaterialContext(context);
+    const prefix = `${MATERIAL_CACHE_ROOT}media/${context.scope}${assetId === undefined ? "" : `${encodeURIComponent(assetId)}/`}`;
+    for (const key of await cache.keys()) {
+      requireMaterialContext(context);
+      if (key.url.startsWith(prefix)) await cache.delete(key);
+    }
+  });
+}
+
+export function clearMaterialCache(userId: string): Promise<void> {
+  return materialClear(userId);
+}
+export function evictMaterialCachedPreview(
+  userId: string,
+  assetId: string,
+): Promise<void> {
+  return materialClear(userId, assetId);
 }
 
 export function readSourceFrameCandidates(

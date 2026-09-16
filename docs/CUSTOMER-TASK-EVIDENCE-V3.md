@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## 2026-09-15 MATERIAL-CACHE / R90 浏览器持久缓存
+
+缓存 API 24 项新增回归覆盖授权、账号/版本隔离、容量、校验、超时、并发及清理竞争，完整 API 134 项通过；页面新增 5 项回归，完整 ContentPages 90 项通过。有效 RED 后实现，最终完整前端 100 文件 1544 项通过；TypeScript/Biome/秘密扫描及独立交叉评审通过。真实既有视频从 Blob 完整播放 4.458333 秒，清理后容量由 15.3 MB 归零，45 条云端素材保留，已打开视频播放至结束无媒体错误。原始日志和浏览器观察仅留本机。该项为本机验证，不代表离线素材库或全部历史素材验收；详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)。
+
 ## PUBLISH-QR-REUSE-20260915 — 双端官方扫码添加账号
 
 采用 MIT `dreammis/social-auto-upload@0012d2c355f88f683cc38dde2a2db209e14091bc` 的二维码定位适配；新增网页服务器隔离浏览器与 Fernet 状态保存，Windows 沿用本机 WebView2。三平台两套脚本实测取码通过；Linux 静态门（1465 前端 / 150 Python 文件类型检查）与专项 PG 11 项通过。后端首次全量 2168 passed / 18 failed / 1 既有 skip；修复后受影响模块分组复验 121、27、42 passed，覆盖全部失败，最终唯一覆盖 2186 passed / 1 既有 skip。查重确认 PR #109 为独立联调任务；扫码兼容其网页会话请求头后，前端专项 196 项通过。证据层级 AUTOMATED_VERIFIED；真实手机确认、Windows 安装包、PR 三门禁和部署未完成。Owner 当前 Codex 任务，Reviewer 待 PR；详见[独立证据](evidence/PUBLISH-QR-REUSE-20260915.md)。
