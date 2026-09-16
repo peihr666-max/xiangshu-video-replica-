@@ -3042,7 +3042,7 @@ export function VideoPage() {
 
   return (
     <section
-      className={`creation-page creation-video-workspace ${referenceMode ? "" : "creation-video-workspace--frames"}`}
+      className="creation-page creation-video-workspace creation-video-workspace--split"
       aria-label="AI 视频"
     >
       <CreationNavigation />
@@ -3061,7 +3061,13 @@ export function VideoPage() {
       >
         <Panel className="creation-video-form">
           {referenceMode ? (
-            <ControlGroup label="参考素材">
+            <ControlGroup
+              label={
+                <>
+                  <b className="creation-step-number">01</b> 参考素材
+                </>
+              }
+            >
               <div className="creation-upload-row">
                 <button
                   className="creation-upload"
@@ -3146,97 +3152,99 @@ export function VideoPage() {
                   整理参考素材
                 </Button>
               )}
-              <div className="creation-reference-list">
-                {references.map((asset, index) => (
-                  <div className="creation-reference-row" key={asset.id}>
-                    <button
-                      type="button"
-                      className="creation-reference-preview-button"
-                      aria-label={`预览 ${asset.name}`}
-                      aria-pressed={previewReferenceId === asset.id}
-                      onClick={() => setPreviewReferenceId(asset.id)}
-                    >
-                      <Media
-                        asset={
-                          asset.kind === "image"
-                            ? asset
-                            : asset.kind === "video" && asset.poster
-                              ? { ...asset, kind: "image", url: asset.poster }
-                              : undefined
+              <div className="creation-reference-materials">
+                <div className="creation-reference-list">
+                  {references.map((asset, index) => (
+                    <div className="creation-reference-row" key={asset.id}>
+                      <button
+                        type="button"
+                        className="creation-reference-preview-button"
+                        aria-label={`预览 ${asset.name}`}
+                        aria-pressed={previewReferenceId === asset.id}
+                        onClick={() => setPreviewReferenceId(asset.id)}
+                      >
+                        <Media
+                          asset={
+                            asset.kind === "image"
+                              ? asset
+                              : asset.kind === "video" && asset.poster
+                                ? { ...asset, kind: "image", url: asset.poster }
+                                : undefined
+                          }
+                          alt={asset.kind === "audio" ? "音频预览" : asset.name}
+                        />
+                      </button>
+                      <span className="creation-reference-copy">
+                        <strong>
+                          @{index + 1} → &lt;
+                          {asset.kind === "image"
+                            ? "Picture"
+                            : asset.kind === "video"
+                              ? "Video"
+                              : "Audio"}{" "}
+                          {
+                            references
+                              .slice(0, index + 1)
+                              .filter((item) => item.kind === asset.kind).length
+                          }
+                          &gt; {asset.name}
+                        </strong>
+                        <small>
+                          {assetKindNames[asset.kind]} · {asset.source}
+                        </small>
+                      </span>
+                      <input
+                        aria-label={`${asset.name}的参考用途`}
+                        placeholder="参考用途，如人物、服装、场景"
+                        disabled={readOnly}
+                        value={state.draft.referencePurposes?.[asset.id] ?? ""}
+                        maxLength={200}
+                        onChange={(event) =>
+                          patchDraft({
+                            referencePurposes: {
+                              ...state.draft.referencePurposes,
+                              [asset.id]: event.target.value,
+                            },
+                          })
                         }
-                        alt={asset.kind === "audio" ? "音频预览" : asset.name}
                       />
-                    </button>
-                    <span className="creation-reference-copy">
-                      <strong>
-                        @{index + 1} → &lt;
-                        {asset.kind === "image"
-                          ? "Picture"
-                          : asset.kind === "video"
-                            ? "Video"
-                            : "Audio"}{" "}
-                        {
-                          references
-                            .slice(0, index + 1)
-                            .filter((item) => item.kind === asset.kind).length
+                      <Button
+                        aria-label={`移除 ${asset.name}`}
+                        className="creation-reference-remove"
+                        disabled={readOnly}
+                        onClick={() =>
+                          patchDraft({
+                            referenceIds: state.draft.referenceIds.filter(
+                              (id) => id !== asset.id,
+                            ),
+                          })
                         }
-                        &gt; {asset.name}
-                      </strong>
-                      <small>
-                        {assetKindNames[asset.kind]} · {asset.source}
-                      </small>
-                    </span>
-                    <input
-                      aria-label={`${asset.name}的参考用途`}
-                      placeholder="参考用途，如人物、服装、场景"
-                      disabled={readOnly}
-                      value={state.draft.referencePurposes?.[asset.id] ?? ""}
-                      maxLength={200}
-                      onChange={(event) =>
-                        patchDraft({
-                          referencePurposes: {
-                            ...state.draft.referencePurposes,
-                            [asset.id]: event.target.value,
-                          },
-                        })
-                      }
-                    />
-                    <Button
-                      aria-label={`移除 ${asset.name}`}
-                      className="creation-reference-remove"
-                      disabled={readOnly}
-                      onClick={() =>
-                        patchDraft({
-                          referenceIds: state.draft.referenceIds.filter(
-                            (id) => id !== asset.id,
-                          ),
-                        })
-                      }
-                      variant="quiet"
-                    >
-                      <Icon name="close" size={18} />
-                    </Button>
-                  </div>
-                ))}
+                        variant="quiet"
+                      >
+                        <Icon name="close" size={18} />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                <VideoMaterialUpload
+                  key={`reference-upload-${state.draft.id}`}
+                  disabled={
+                    readOnly ||
+                    referenceCapabilityPending ||
+                    referenceCapabilityError ||
+                    referenceModeDisabled ||
+                    referenceHasIssues ||
+                    referenceAssetsPending ||
+                    referenceAssetsError ||
+                    referenceAtLimit
+                  }
+                  acceptKinds={["image", "video", "audio"]}
+                  dropzone
+                  group="参考素材"
+                  label="参考素材"
+                  onUploaded={addReference}
+                />
               </div>
-              <VideoMaterialUpload
-                key={`reference-upload-${state.draft.id}`}
-                disabled={
-                  readOnly ||
-                  referenceCapabilityPending ||
-                  referenceCapabilityError ||
-                  referenceModeDisabled ||
-                  referenceHasIssues ||
-                  referenceAssetsPending ||
-                  referenceAssetsError ||
-                  referenceAtLimit
-                }
-                acceptKinds={["image", "video", "audio"]}
-                dropzone
-                group="参考素材"
-                label="参考素材"
-                onUploaded={addReference}
-              />
             </ControlGroup>
           ) : (
             <ControlGroup
@@ -3346,13 +3354,9 @@ export function VideoPage() {
             rows={5}
             showToolbarLabel
             toolbarLabel={
-              referenceMode ? (
-                "画面描述"
-              ) : (
-                <>
-                  <b className="creation-step-number">02</b> 画面描述
-                </>
-              )
+              <>
+                <b className="creation-step-number">02</b> 画面描述
+              </>
             }
             toolbarStart={
               <SavedPromptImporter
@@ -3421,21 +3425,13 @@ export function VideoPage() {
             <span className="creation-step-number">03</span> 生成参数
           </div>
           <ParameterControls />
-          {referenceMode && (
-            <>
-              {generationActions}
-              <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
-            </>
-          )}
         </Panel>
         <Panel className="creation-video-preview">
           <div className="creation-panel-title">
             {referenceMode ? "参考预览" : "首帧预览"}
-            {!referenceMode && (
-              <small className="creation-preview-ratio">
-                {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
-              </small>
-            )}
+            <small className="creation-preview-ratio">
+              {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
+            </small>
           </div>
           {!referenceMode && firstFrameLoading ? (
             <Empty
@@ -3512,29 +3508,29 @@ export function VideoPage() {
           {videoTask && (
             <Hint>成片与历史进度可在任务中心查看，任务记录不会丢失。</Hint>
           )}
-          {!referenceMode && (
-            <div className="creation-preview-footer">
-              <Hint>生成后可在此查看视频</Hint>
-              <Button variant="quiet" onClick={() => navigate("tasks")}>
-                前往任务中心 <Icon name="arrow" />
-              </Button>
-            </div>
-          )}
+          <div className="creation-preview-footer">
+            <Hint>生成后可在此查看视频</Hint>
+            <Button variant="quiet" onClick={() => navigate("tasks")}>
+              前往任务中心 <Icon name="arrow" />
+            </Button>
+          </div>
         </Panel>
       </div>
-      {!referenceMode && (
-        <div className="creation-video-bottom-bar">
-          <div>
-            <strong>
-              {firstFrameId ? "图生视频" : "文生视频"} ·{" "}
-              {state.draft.resolution} · {state.draft.duration} 秒 ·{" "}
-              {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
-            </strong>
-            <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
-          </div>
-          {generationActions}
+      <div className="creation-video-bottom-bar">
+        <div>
+          <strong>
+            {referenceMode
+              ? "参考生视频"
+              : firstFrameId
+                ? "图生视频"
+                : "文生视频"}{" "}
+            · {state.draft.resolution} · {state.draft.duration} 秒 ·{" "}
+            {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
+          </strong>
+          <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
         </div>
-      )}
+        {generationActions}
+      </div>
     </section>
   );
 }

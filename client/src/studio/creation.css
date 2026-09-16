@@ -1427,13 +1427,84 @@
   aspect-ratio: 16 / 9;
 }
 
-/* Text/image mode follows the approved left editor / right preview layout. */
-.creation-video-workspace--frames {
+/* Both generation modes share the approved left editor / right preview layout. */
+.creation-video-grid.reference .creation-video-form > .studio-field {
+  position: relative;
+}
+.creation-video-grid.reference .creation-upload-row {
+  position: absolute;
+  top: -8px;
+  right: 0;
+  max-width: 75%;
+  margin: 0;
+}
+.creation-video-grid.reference .creation-upload-row .creation-upload {
+  min-height: 36px;
+  padding: 6px 10px;
+}
+.creation-video-grid.reference .creation-upload-row .creation-upload small {
+  width: auto;
+}
+.creation-reference-materials {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+.creation-video-workspace
+  .creation-reference-materials
+  .creation-reference-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  max-height: 208px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  margin: 0;
+}
+.creation-video-workspace
+  .creation-reference-materials
+  .creation-reference-row {
+  margin: 0;
+  gap: 5px;
+  align-content: start;
+}
+.creation-reference-materials .creation-reference-copy strong {
+  max-height: 40px;
+  overflow: hidden;
+}
+.creation-reference-materials .creation-reference-row input {
+  grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
+}
+.creation-video-workspace
+  .creation-reference-materials
+  .creation-reference-preview-button {
+  height: 96px;
+  aspect-ratio: auto;
+}
+.creation-reference-materials .creation-upload-dropzone {
+  margin: 0;
+  height: 208px;
+}
+.creation-reference-materials .creation-upload-hint {
+  grid-column: 1 / -1;
+}
+.creation-reference-materials .creation-reference-list:empty {
+  display: none;
+}
+.creation-reference-materials
+  .creation-reference-list:empty
+  + .creation-upload-dropzone {
+  grid-column: 1 / -1;
+}
+.creation-video-workspace--split {
   display: flex;
   flex-direction: column;
   min-height: calc(100dvh - 64px);
 }
-.creation-video-workspace--frames .creation-video-grid {
+.creation-video-workspace--split .creation-video-grid,
+.creation-video-workspace--split .creation-video-grid.reference {
   flex: 1;
   grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr);
   grid-template-areas: "materials preview" "composer preview" "settings preview";
@@ -1443,13 +1514,13 @@
   column-gap: 12px;
   margin-top: 8px;
 }
-.creation-video-workspace--frames .creation-video-form {
+.creation-video-workspace--split .creation-video-form {
   border-right: 0;
   padding-top: 12px;
   padding-bottom: 16px;
 }
-.creation-video-workspace--frames .creation-video-form > .studio-field,
-.creation-video-workspace--frames .creation-parameters .studio-field {
+.creation-video-workspace--split .creation-video-form > .studio-field,
+.creation-video-workspace--split .creation-parameters .studio-field {
   margin-bottom: 0;
 }
 .creation-frame-heading {
@@ -1463,42 +1534,42 @@
   font-weight: 400;
   font-size: var(--font-caption);
 }
-.creation-video-workspace--frames .creation-frame-row {
+.creation-video-workspace--split .creation-frame-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
-.creation-video-workspace--frames .creation-frame-row > .studio-icon {
+.creation-video-workspace--split .creation-frame-row > .studio-icon {
   display: none;
 }
-.creation-video-workspace--frames .creation-frame-slot {
+.creation-video-workspace--split .creation-frame-slot {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   grid-template-rows: 200px 36px;
 }
-.creation-video-workspace--frames .creation-frame-slot > button:first-child {
+.creation-video-workspace--split .creation-frame-slot > button:first-child {
   grid-column: 1 / -1;
   padding: 0 0 10px;
   overflow: hidden;
 }
-.creation-video-workspace--frames .creation-frame-slot > .studio-button {
+.creation-video-workspace--split .creation-frame-slot > .studio-button {
   min-height: 36px;
   padding: 6px;
   border-style: solid;
 }
-.creation-video-workspace--frames .creation-frame-slot > .creation-upload-mini {
+.creation-video-workspace--split .creation-frame-slot > .creation-upload-mini {
   min-height: 36px;
   padding: 6px;
 }
-.creation-video-workspace--frames .creation-frame-row button > .video-preview {
+.creation-video-workspace--split .creation-frame-row button > .video-preview {
   height: 160px;
 }
-.creation-video-workspace--frames .creation-video-composer textarea {
+.creation-video-workspace--split .creation-video-composer textarea {
   height: 90px;
   min-height: 90px;
 }
-.creation-video-workspace--frames .creation-video-composer {
+.creation-video-workspace--split .creation-video-composer {
   padding-bottom: 8px;
 }
 .creation-preview-ratio {
@@ -1509,14 +1580,14 @@
   color: var(--studio-muted);
   font-weight: 400;
 }
-.creation-video-workspace--frames .creation-video-preview {
+.creation-video-workspace--split .creation-video-preview {
   background: #101213;
   border: 1px solid var(--studio-border);
   margin: -64px 20px 20px 0;
   padding: 24px;
   min-width: 0;
 }
-.creation-video-workspace--frames
+.creation-video-workspace--split
   .creation-video-preview
   .video-preview.creation-preview-media {
   height: clamp(300px, 50dvh, 620px);
@@ -1552,15 +1623,16 @@
   padding: 0;
 }
 @media (max-width: 1000px) {
-  .creation-video-workspace--frames .creation-video-grid {
+  .creation-video-workspace--split .creation-video-grid,
+  .creation-video-workspace--split .creation-video-grid.reference {
     display: flex;
     flex-direction: column;
   }
-  .creation-video-workspace--frames .creation-video-preview {
+  .creation-video-workspace--split .creation-video-preview {
     margin: 0 20px 20px;
     order: 3;
   }
-  .creation-video-workspace--frames .creation-video-controls {
+  .creation-video-workspace--split .creation-video-controls {
     order: 2;
   }
   .creation-video-bottom-bar {
@@ -1570,5 +1642,11 @@
   }
   .creation-video-bottom-bar .creation-form-actions {
     flex: 1;
+  }
+}
+@media (max-width: 720px) {
+  .creation-video-grid.reference .creation-upload-row {
+    position: static;
+    max-width: none;
   }
 }
