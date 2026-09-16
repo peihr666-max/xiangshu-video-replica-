@@ -36,7 +36,7 @@
 - 冻结矛阵：`HEAD_REVISION → 20260917T1000_publish_records`；`HEAD_SCHEMA_COUNTS` tables/primary_keys +1、columns +29、foreign_keys +4、check_constraints +7、jsonb_columns +3、partial_indexes +2、timestamptz_columns +6；`HEAD_SCHEMA_DIGEST = 0628591e…8c0c`；`server/migrations/manifest.json` 以 `migration_manifest.py --record` 重算，`--check` OK；分片清单以 `build-test-shards.py --shards 4` 重生成，`--check-coverage` OK（107 文件）。
 - 桌面：`cargo fmt --check`、`cargo check --locked`、`cargo test --locked` 27 passed（含 cookie 域过滤与 Playwright 字段归一化新用例）。
 - 前端：`npm run check --workspace client` = Biome + `tsc -b` + Vitest **105 文件 / 1617 passed**（新增 `PublishRecordsPanel.test.tsx` 6 项、发布页立即/定时/小红书 3 项、账号面板同步/解绑 2 项）。
-- 全量 PostgreSQL 四分片：见本文末「全量结果」段（分片日志 `outputs/publish-delivery-20260917/ci-shard-*.log`）。
+- 全量 PostgreSQL 四分片：见本文末「全量结果」段（分片日志在工作区根 `outputs/publish-delivery-20260917/`）。
 - 所有投递/探针用例均以 monkeypatch 假投递器与合成凭据运行，**不触网、不使用真实账号、未发布任何真实视频**。
 
 ## 安全、资源与交付
@@ -83,4 +83,4 @@ Windows 本机、四个独立 PostgreSQL 容器（`CI_SHARD_BASE_PORT=5560`，`c
 | 3 | 535 passed / 11 failed |
 | 合计 | **2452 passed / 34 failed / 1 skipped**（107 个测试文件全覆盖） |
 
-34 项失败全部为本机 Windows 环境既有失败、与本任务无关：`test_cw033_pitr_drill_validation`（21，驱动 bash 演练脚本）、`test_cw043_viral_import_pg::test_cached_local_media_moves_to_cos_*`（6 个参数化，`ViralMediaBusy`；在未改动的主检出 `xiangshu-video-replica-` 上以同一 fixture 复现同样 6 失败）、`test_cw009_security_matrix_export`（4）、`test_security_contracts::test_no_sentry_sdk_enters_the_server_runtime`（1）、`test_pg_test_kit::test_shared_suite_lock_is_exclusive`（1，Windows `fcntl` 垫片产物）。首轮全量曾暴露两项本任务引入的红：`test_cw057_cli_pg_entry::test_every_deployed_unit_is_classified`（新增 systemd 单元未分类）与 `test_sqlite_to_postgres` 6 项（`publish_records` 未登记 PG-only 表），均已修复并复验（70 passed）。原始日志：`outputs/publish-delivery-20260917/final/ci-shard-{0..3}.log`、`run-pytest-shards.log`；首轮日志同目录上一层。Linux 门禁以 PR CI 为准，本地 Windows 结果不替代。
+34 项失败全部为本机 Windows 环境既有失败、与本任务无关：`test_cw033_pitr_drill_validation`（21，驱动 bash 演练脚本）、`test_cw043_viral_import_pg::test_cached_local_media_moves_to_cos_*`（6 个参数化，`ViralMediaBusy`；在未改动的主检出 `xiangshu-video-replica-` 上以同一 fixture 复现同样 6 失败）、`test_cw009_security_matrix_export`（4）、`test_security_contracts::test_no_sentry_sdk_enters_the_server_runtime`（1）、`test_pg_test_kit::test_shared_suite_lock_is_exclusive`（1，Windows `fcntl` 垫片产物）。首轮全量曾暴露两项本任务引入的红：`test_cw057_cli_pg_entry::test_every_deployed_unit_is_classified`（新增 systemd 单元未分类）与 `test_sqlite_to_postgres` 6 项（`publish_records` 未登记 PG-only 表），均已修复并复验（70 passed）。原始日志保存在工作区根（仓库外）`outputs/publish-delivery-20260917/final/ci-shard-{0..3}.log`、`run-pytest-shards.log`、`check-static.log`；首轮日志同目录上一层。Linux 门禁以 PR CI 为准，本地 Windows 结果不替代。
