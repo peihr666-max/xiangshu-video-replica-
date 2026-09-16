@@ -53,7 +53,9 @@ def test_customer_git_rollout_only_rolls_optional_services_when_configured() -> 
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 
     assert "OPTIONAL_SERVICES=(worker-viral)" in script
-    assert 'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)' in script
+    assert (
+        'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)'
+    ) in script
     assert 'SERVICES+=("$service")' in script
     assert 'WORKER_SERVICES+=("$service")' in script
     assert 'for service in "${WORKER_SERVICES[@]}"; do' in script
@@ -67,8 +69,7 @@ def test_customer_git_rollout_allows_retry_after_forward_compatible_rollback() -
         '&& "$CURRENT_HEAD_BEFORE" != "$EXPECTED_DB_HEAD"'
     ) in script
     assert (
-        "database revision is neither the active image head nor the target release head"
-        in script
+        "database revision is neither the active image head nor the target release head" in script
     )
 
 
