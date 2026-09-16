@@ -49,6 +49,16 @@ def test_customer_git_rollout_injects_the_cloud_admin_origin() -> None:
     assert '-e "VITE_CLOUD_ADMIN_ORIGIN=$PUBLIC_ORIGIN"' in script
 
 
+def test_customer_git_rollout_only_rolls_optional_services_when_configured() -> None:
+    script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
+
+    assert "OPTIONAL_SERVICES=(worker-viral)" in script
+    assert 'mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)' in script
+    assert 'SERVICES+=("$service")' in script
+    assert 'WORKER_SERVICES+=("$service")' in script
+    assert 'for service in "${WORKER_SERVICES[@]}"; do' in script
+
+
 def test_customer_git_rollout_ignores_only_root_package_version_metadata() -> None:
     script = (REPO_ROOT / "deploy" / "customer-git-rollout.sh").read_text(encoding="utf-8")
 

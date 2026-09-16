@@ -50,7 +50,10 @@ STAGE_ADMIN_SITE="$ROOT/admin-site-git-$SHORT_SHA-$STAMP"
 LOG="$ROOT/deploy-git-$SHORT_SHA-$STAMP.log"
 STATUS="$ROOT/deploy-git-$SHORT_SHA-$STAMP.status"
 NEW_IMAGE="video-replica-rehearsal-app:$SHORT_SHA-git"
-SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4 worker-viral)
+REQUIRED_SERVICES=(api-1 api-2 worker-1 worker-2 worker-3 worker-4)
+OPTIONAL_SERVICES=(worker-viral)
+WORKER_SERVICES=(worker-1 worker-2 worker-3 worker-4)
+SERVICES=("${REQUIRED_SERVICES[@]}")
 ROLLOUT_STARTED=0
 
 exec > >(tee -a "$LOG") 2>&1
@@ -84,7 +87,7 @@ rollback() {
   mark ROLLING_BACK
   # Earlier images do not understand --viral-collection. Keep the new collector
   # stopped during rollback; a subsequent successful rollout restarts it.
-  if [[ "$ROLLOUT_STARTED" == "1" ]]; then
+  if [[ "$ROLLOUT_STARTED" == "1" ]] && printf '%s\n' "${SERVICES[@]}" | grep -Fxq worker-viral; then
     docker compose -f "$COMPOSE" stop worker-viral || true
   fi
   if [[ -f "$BACKUP/compose-before.yaml" ]]; then
@@ -156,6 +159,19 @@ done
 [[ ! -e "$BUILD_CTX" && ! -e "$STAGE_SITE" && ! -e "$STAGE_ADMIN_SITE" && ! -e "$BACKUP" ]]
 [[ "$(df -Pk "$ROOT" | awk 'NR == 2 {print $4}')" -gt 4194304 ]]
 docker compose -f "$COMPOSE" config --quiet
+mapfile -t CONFIGURED_SERVICES < <(docker compose -f "$COMPOSE" config --services)
+for service in "${REQUIRED_SERVICES[@]}"; do
+  printf '%s\n' "${CONFIGURED_SERVICES[@]}" | grep -Fxq "$service" || {
+    echo "PRECHECK_FAILED: compose is missing required service: $service" >&2
+    exit 1
+  }
+done
+for service in "${OPTIONAL_SERVICES[@]}"; do
+  if printf '%s\n' "${CONFIGURED_SERVICES[@]}" | grep -Fxq "$service"; then
+    SERVICES+=("$service")
+    WORKER_SERVICES+=("$service")
+  fi
+done
 curl -fsS --max-time 20 "$PUBLIC_ORIGIN/health?preflight=$STAMP" >/dev/null
 id "$SERVICE_USER" >/dev/null
 docker image inspect "$NODE_BUILD_IMAGE" >/dev/null 2>&1 || docker pull "$NODE_BUILD_IMAGE"
@@ -326,7 +342,7 @@ for service in api-1 api-2; do
 done
 
 mark ROLL_WORKERS
-for service in worker-1 worker-2 worker-3 worker-4 worker-viral; do
+for service in "${WORKER_SERVICES[@]}"; do
   mark "ROLLING_$service"
   docker compose -f "$COMPOSE" up -d --no-deps "$service"
   wait_ready "$service"
