@@ -11,6 +11,7 @@ pub fn run() {
             publish_accounts::list_local_publish_accounts,
             publish_accounts::start_local_publish_login,
             publish_accounts::check_local_publish_login,
+            publish_accounts::focus_local_publish_login,
             publish_accounts::cancel_local_publish_login,
             publish_accounts::open_local_publish_account,
             publish_accounts::remove_local_publish_account,

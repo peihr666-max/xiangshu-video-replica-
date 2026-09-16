@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { publishBrowserRequest } from "../api";
 import type { PublishPlatform } from "./PlatformLogo";
 
 export type LocalPublishAccount = {
@@ -7,6 +8,19 @@ export type LocalPublishAccount = {
   platform_user_id: string;
   username: string;
   verified_at: number;
+};
+export type LocalPublishLoginStatus = {
+  phase:
+    | "loading"
+    | "qr_ready"
+    | "confirming"
+    | "action_required"
+    | "expired"
+    | "closed"
+    | "connected";
+  image: string | null;
+  account: LocalPublishAccount | null;
+  message?: string;
 };
 export const canUseLocalPublishAccounts = () => isTauri();
 async function command<T>(
@@ -24,25 +38,175 @@ async function command<T>(
   }
 }
 export const listLocalPublishAccounts = (owner: string) =>
-  command<LocalPublishAccount[]>("list_local_publish_accounts", { owner });
+  isTauri()
+    ? command<LocalPublishAccount[]>("list_local_publish_accounts", { owner })
+    : cloudAccounts();
 export const startLocalPublishLogin = (
   owner: string,
   platform: PublishPlatform,
   accountId?: string,
 ) =>
-  command<string>("start_local_publish_login", {
-    owner,
-    platform,
-    accountId: accountId ?? null,
-  });
+  isTauri()
+    ? command<string>("start_local_publish_login", {
+        owner,
+        platform,
+        accountId: accountId ?? null,
+      })
+    : startCloudLogin(owner, platform, accountId);
 export const checkLocalPublishLogin = (owner: string, loginId: string) =>
-  command<LocalPublishAccount | null>("check_local_publish_login", {
-    owner,
-    loginId,
-  });
+  isTauri()
+    ? command<LocalPublishLoginStatus>("check_local_publish_login", {
+        owner,
+        loginId,
+      })
+    : Promise.resolve(cloudLogin(owner, loginId).status);
+export const focusLocalPublishLogin = (owner: string, loginId: string) =>
+  command<void>("focus_local_publish_login", { owner, loginId });
 export const cancelLocalPublishLogin = (owner: string, loginId: string) =>
-  command<void>("cancel_local_publish_login", { owner, loginId });
+  isTauri()
+    ? command<void>("cancel_local_publish_login", { owner, loginId })
+    : cancelCloudLogin(owner, loginId);
 export const removeLocalPublishAccount = (owner: string, accountId: string) =>
-  command<void>("remove_local_publish_account", { owner, accountId });
+  isTauri()
+    ? command<void>("remove_local_publish_account", { owner, accountId })
+    : cloudDeleteAccount(accountId);
 export const openLocalPublishAccount = (owner: string, accountId: string) =>
   command<void>("open_local_publish_account", { owner, accountId });
+
+type CloudLogin = {
+  owner: string;
+  status: LocalPublishLoginStatus;
+  controller: AbortController;
+  serverId?: string;
+};
+const cloudLogins = new Map<string, CloudLogin>();
+const cloudBase = "/api/studio/publish/browser";
+async function cloudAccounts(): Promise<LocalPublishAccount[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    return await (
+      await publishBrowserRequest(`${cloudBase}/accounts`, {
+        signal: controller.signal,
+      })
+    ).json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+async function cloudDeleteAccount(accountId: string): Promise<void> {
+  await publishBrowserRequest(
+    `${cloudBase}/accounts/${encodeURIComponent(accountId)}`,
+    { method: "DELETE", signal: AbortSignal.timeout(10000) },
+  );
+}
+function cloudLogin(owner: string, id: string): CloudLogin {
+  const login = cloudLogins.get(id);
+  if (!login || login.owner !== owner)
+    throw new Error("扫码会话不存在，请重新扫码。");
+  return login;
+}
+async function startCloudLogin(
+  owner: string,
+  platform: PublishPlatform,
+  accountId?: string,
+): Promise<string> {
+  const id = crypto.randomUUID();
+  const login: CloudLogin = {
+    owner,
+    controller: new AbortController(),
+    status: { phase: "loading", image: null, account: null },
+  };
+  cloudLogins.set(id, login);
+  void consumeCloudLogin(id, login, platform, accountId);
+  return id;
+}
+async function consumeCloudLogin(
+  id: string,
+  login: CloudLogin,
+  platform: PublishPlatform,
+  accountId?: string,
+): Promise<void> {
+  const timeout = setTimeout(() => login.controller.abort(), 310000);
+  try {
+    const response = await publishBrowserRequest(`${cloudBase}/logins`, {
+      method: "POST",
+      body: JSON.stringify({ platform, account_id: accountId ?? null }),
+      signal: login.controller.signal,
+    });
+    if (!response.body)
+      throw new Error("浏览器不支持扫码连接，请更换浏览器重试。");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      while (cloudLogins.get(id) === login) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        if (buffer.length > 1250000)
+          throw new Error("二维码响应过大，请重试。");
+        let end = buffer.indexOf("\n");
+        while (end >= 0) {
+          const event = JSON.parse(
+            buffer.slice(0, end),
+          ) as LocalPublishLoginStatus & { login_id?: string };
+          buffer = buffer.slice(end + 1);
+          if (
+            ![
+              "loading",
+              "qr_ready",
+              "confirming",
+              "action_required",
+              "expired",
+              "closed",
+              "connected",
+            ].includes(event.phase)
+          )
+            throw new Error("扫码响应无效，请重试。");
+          if (event.login_id) login.serverId = event.login_id;
+          if (cloudLogins.get(id) === login) login.status = event;
+          end = buffer.indexOf("\n");
+        }
+      }
+    } finally {
+      await reader.cancel();
+    }
+    if (!["connected", "expired", "closed"].includes(login.status.phase))
+      throw new Error("扫码连接已中断，请重新获取二维码。");
+  } catch (cause) {
+    if (cloudLogins.get(id) === login)
+      login.status = {
+        phase: "closed",
+        image: null,
+        account: null,
+        message:
+          cause instanceof Error && cause.name !== "AbortError"
+            ? cause.message
+            : "扫码连接超时，请重新获取二维码。",
+      };
+  } finally {
+    clearTimeout(timeout);
+    // Terminal account/QR data must not remain in a long-lived module cache.
+    setTimeout(() => {
+      if (cloudLogins.get(id) === login) cloudLogins.delete(id);
+    }, 30000);
+  }
+}
+async function cancelCloudLogin(owner: string, id: string): Promise<void> {
+  const login = cloudLogins.get(id);
+  if (!login) return;
+  if (login.owner !== owner) throw new Error("扫码会话不存在。");
+  try {
+    if (login.serverId)
+      await publishBrowserRequest(
+        `${cloudBase}/logins/${encodeURIComponent(login.serverId)}`,
+        { method: "DELETE", signal: AbortSignal.timeout(10000) },
+      );
+  } finally {
+    login.controller.abort();
+    // Keep a terminal status on failed DELETE so the panel can retry cancellation.
+    login.status = { phase: "closed", image: null, account: null };
+  }
+  cloudLogins.delete(id);
+}

@@ -43,6 +43,10 @@ EXCLUDED_TABLES = frozenset({"alembic_version"})
 # a non-empty one is divergent state and must fail closed.
 PG_ONLY_TABLES: frozenset[str] = frozenset(
     {
+        # Web QR credentials have no historical SQLite source; non-empty targets
+        # remain divergent and must never be overwritten by archive import.
+        "publish_browser_accounts",
+        "publish_browser_logins",
         "viral_script_cache",
         "h3_provider_accounts",
         "h3_provider_task_accounts",

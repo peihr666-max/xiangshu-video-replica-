@@ -5,7 +5,7 @@
       "001_core"
     ],
     "heads": [
-      "20260915T1600_viral_copy_cache"
+      "20260915T1200_browser_accounts"
     ],
     "parents": {
       "001_core": null,
@@ -106,9 +106,10 @@
         "20260913T1600_shared_viral_media",
         "20260913T1825_h3_account_pool"
       ],
+      "20260915T1200_browser_accounts": "20260915T1600_viral_copy_cache",
       "20260915T1600_viral_copy_cache": "20260914T0000_local_joint_merge"
     },
-    "revision_count": 96
+    "revision_count": 97
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -502,6 +503,10 @@
     "20260914T0000_local_joint_merge": {
       "file": "versions/20260914T0000_local_joint_merge.py",
       "sha256": "b12aba64ee6f0eaf23d177699dd30171c639e6660c876f80a4fe32b008d3cca8"
+    },
+    "20260915T1200_browser_accounts": {
+      "file": "versions/20260915T1200_browser_accounts.py",
+      "sha256": "2e3b953e31c602cade86ce8d947ba0ccbc53b94287893967e58214582632e976"
     },
     "20260915T1600_viral_copy_cache": {
       "file": "versions/20260915T1600_viral_copy_cache.py",
