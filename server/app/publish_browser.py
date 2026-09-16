@@ -13,6 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.db_portable import BusinessConnection
 
 Platform = Literal["douyin", "wechat_channels", "xiaohongshu"]
+AccountSource = Literal["cloud", "desktop"]
+
+MAX_STORAGE_STATE_BYTES = 2_000_000
+_ACCOUNT_COLUMNS = "id,platform,platform_user_id,username,verified_at,status,error_message,source"
 
 
 class BrowserLoginRequest(BaseModel):
@@ -21,12 +25,30 @@ class BrowserLoginRequest(BaseModel):
     account_id: str | None = Field(default=None, max_length=64)
 
 
+class BrowserIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    platform_user_id: str = Field(min_length=1, max_length=256)
+    username: str = Field(min_length=1, max_length=256)
+
+
+class BrowserAccountImportRequest(BaseModel):
+    """Desktop WebView2 login exported once at connect time (cookies + localStorage)."""
+
+    model_config = ConfigDict(extra="forbid")
+    platform: Platform
+    identity: BrowserIdentity
+    storage_state: dict[str, Any]
+
+
 class BrowserAccount(BaseModel):
     id: str
     platform: Platform
     platform_user_id: str
     username: str
     verified_at: int
+    status: Literal["connected", "invalid"] = "connected"
+    error_message: str | None = None
+    source: AccountSource = "cloud"
 
 
 def account_response(row: Any) -> BrowserAccount:
@@ -36,6 +58,9 @@ def account_response(row: Any) -> BrowserAccount:
         platform_user_id=row["platform_user_id"],
         username=row["username"],
         verified_at=int(row["verified_at"].timestamp()),
+        status=row["status"],
+        error_message=row["error_message"],
+        source=row["source"],
     )
 
 
@@ -43,12 +68,86 @@ def list_browser_accounts(conn: BusinessConnection, owner: str) -> list[BrowserA
     return [
         account_response(row)
         for row in conn.execute(
-            "SELECT id,platform,platform_user_id,username,verified_at "
-            "FROM publish_browser_accounts "
+            f"SELECT {_ACCOUNT_COLUMNS} FROM publish_browser_accounts "  # noqa: S608
             "WHERE user_id=%s ORDER BY verified_at DESC,id",
             (owner,),
         ).fetchall()
     ]
+
+
+def validate_storage_state(storage: Any) -> dict[str, Any]:
+    """Accept only the Playwright storage_state shape; reject anything else."""
+    if not isinstance(storage, dict) or set(storage) - {"cookies", "origins"}:
+        raise HTTPException(422, "平台登录状态格式不正确。")
+    cookies, origins = storage.get("cookies", []), storage.get("origins", [])
+    if not isinstance(cookies, list) or not all(isinstance(c, dict) for c in cookies):
+        raise HTTPException(422, "平台登录状态格式不正确。")
+    if not isinstance(origins, list) or not all(isinstance(o, dict) for o in origins):
+        raise HTTPException(422, "平台登录状态格式不正确。")
+    if not cookies:
+        raise HTTPException(422, "平台登录状态为空，请重新扫码。")
+    return {"cookies": cookies, "origins": origins}
+
+
+def upsert_browser_account(
+    conn: BusinessConnection,
+    owner: str,
+    *,
+    platform: str,
+    identity: dict[str, str],
+    storage: dict[str, Any],
+    fernet: Fernet,
+    source: AccountSource,
+    account_id: str | None = None,
+) -> BrowserAccount:
+    """Insert or refresh one (owner, platform, platform_user_id) login state.
+
+    A refresh resets ``status`` to connected: a fresh scan supersedes any
+    earlier platform rejection.
+    """
+    uid, username = identity["platform_user_id"].strip(), identity["username"].strip()
+    if not uid or len(uid) > 256 or not username or len(username) > 256:
+        raise HTTPException(422, "平台账号信息不完整。")
+    raw = json.dumps(storage, ensure_ascii=False).encode()
+    if len(raw) > MAX_STORAGE_STATE_BYTES:
+        raise HTTPException(422, "平台登录状态过大，请重新扫码。")
+    row = conn.execute(
+        "INSERT INTO publish_browser_accounts"
+        "(id,user_id,platform,platform_user_id,username,storage_state_enc,source) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(user_id,platform,platform_user_id) "
+        "DO UPDATE SET username=EXCLUDED.username,"
+        "storage_state_enc=EXCLUDED.storage_state_enc,source=EXCLUDED.source,"
+        "status='connected',error_message=NULL,verified_at=clock_timestamp() "
+        f"RETURNING {_ACCOUNT_COLUMNS}",  # noqa: S608 - fixed column literal
+        (
+            account_id or str(uuid4()),
+            owner,
+            platform,
+            uid,
+            username,
+            fernet.encrypt(raw).decode("ascii"),
+            source,
+        ),
+    ).fetchone()
+    return account_response(row)
+
+
+def import_browser_account(
+    conn: BusinessConnection,
+    owner: str,
+    request: BrowserAccountImportRequest,
+    fernet: Fernet,
+) -> BrowserAccount:
+    storage = validate_storage_state(request.storage_state)
+    return upsert_browser_account(
+        conn,
+        owner,
+        platform=request.platform,
+        identity=request.identity.model_dump(),
+        storage=storage,
+        fernet=fernet,
+        source="desktop",
+    )
 
 
 def start_login(conn: BusinessConnection, owner: str, request: BrowserLoginRequest) -> str:
@@ -109,8 +208,8 @@ def save_login(
     ).fetchone()
     if session is None:
         raise HTTPException(409, "扫码已取消或过期，请重新获取二维码。")
-    uid, username = identity["platform_user_id"].strip(), identity["username"].strip()
-    if not uid or len(uid) > 256 or not username or len(username) > 256:
+    uid = identity["platform_user_id"].strip()
+    if not uid or len(uid) > 256:
         raise HTTPException(422, "平台账号信息不完整。")
     previous = None
     if session["account_id"]:
@@ -120,27 +219,18 @@ def save_login(
         ).fetchone()
         if previous is None or previous["platform_user_id"] != uid:
             raise HTTPException(409, "扫码账号与原账号不同，请取消后添加新账号。")
-    raw = json.dumps(storage, ensure_ascii=False).encode()
-    if len(raw) > 2_000_000:
-        raise HTTPException(422, "平台登录状态过大，请重新扫码。")
-    row = conn.execute(
-        "INSERT INTO publish_browser_accounts"
-        "(id,user_id,platform,platform_user_id,username,storage_state_enc) "
-        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT(user_id,platform,platform_user_id) DO UPDATE SET "
-        "username=EXCLUDED.username,storage_state_enc=EXCLUDED.storage_state_enc,"
-        "verified_at=clock_timestamp() "
-        "RETURNING id,platform,platform_user_id,username,verified_at",
-        (
-            previous["id"] if previous else str(uuid4()),
-            owner,
-            session["platform"],
-            uid,
-            username,
-            fernet.encrypt(raw).decode("ascii"),
-        ),
-    ).fetchone()
+    account = upsert_browser_account(
+        conn,
+        owner,
+        platform=session["platform"],
+        identity=identity,
+        storage=storage,
+        fernet=fernet,
+        source="cloud",
+        account_id=previous["id"] if previous else None,
+    )
     conn.execute("DELETE FROM publish_browser_logins WHERE id=%s AND user_id=%s", (login_id, owner))
-    return account_response(row)
+    return account
 
 
 def delete_browser_account(conn: BusinessConnection, owner: str, account_id: str) -> None:

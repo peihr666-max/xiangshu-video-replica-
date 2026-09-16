@@ -231,3 +231,111 @@ def test_one_active_scan_per_owner_and_expired_slot_can_be_replaced(
     monkeypatch.setattr(routes, "login_events", events)
     assert client.post(BASE + "/logins", json={"platform": "douyin"}).status_code == 200
     assert pg.execute("SELECT count(*) FROM publish_browser_logins").fetchone()[0] == 0
+
+
+# --------------------------------------------------------------------------- #
+# PUBLISH-DELIVERY-20260917: desktop login-state import
+# --------------------------------------------------------------------------- #
+
+
+def _desktop_state(secret: str) -> dict[str, Any]:
+    return {
+        "cookies": [{"name": "sessionid", "value": secret, "domain": ".douyin.com", "path": "/"}],
+        "origins": [
+            {
+                "origin": "https://creator.douyin.com",
+                "localStorage": [{"name": "security-sdk", "value": '{"ticket":"t"}'}],
+            }
+        ],
+    }
+
+
+def test_import_desktop_account_encrypts_state_and_marks_source(
+    client: TestClient, pg: psycopg.Connection
+) -> None:
+    secret = "desktop-" + uuid4().hex
+    response = client.post(
+        BASE + "/accounts/import",
+        json={
+            "platform": "douyin",
+            "identity": {"platform_user_id": "uid-desktop", "username": "桌面昵称"},
+            "storage_state": _desktop_state(secret),
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["platform_user_id"] == "uid-desktop"
+    assert body["source"] == "desktop" and body["status"] == "connected"
+    assert secret not in response.text
+    row = pg.execute(
+        "SELECT storage_state_enc, source, status FROM publish_browser_accounts"
+    ).fetchone()
+    assert secret not in row[0] and row[1] == "desktop" and row[2] == "connected"
+    decrypted = json.loads(Fernet(os.environ[SETTINGS_KEY_ENV].encode()).decrypt(row[0].encode()))
+    assert decrypted == _desktop_state(secret)
+    listed = client.get(BASE + "/accounts").json()
+    assert listed[0]["source"] == "desktop" and "storage" not in listed[0]
+
+
+def test_import_refreshes_same_identity_and_clears_invalid_status(
+    client: TestClient, pg: psycopg.Connection
+) -> None:
+    payload = {
+        "platform": "douyin",
+        "identity": {"platform_user_id": "uid-1", "username": "旧昵称"},
+        "storage_state": _desktop_state("first"),
+    }
+    first = client.post(BASE + "/accounts/import", json=payload).json()
+    pg.execute(
+        "UPDATE publish_browser_accounts SET status='invalid', error_message='expired' WHERE id=%s",
+        (first["id"],),
+    )
+    payload["identity"]["username"] = "新昵称"
+    payload["storage_state"] = _desktop_state("second")
+    second = client.post(BASE + "/accounts/import", json=payload).json()
+    assert second["id"] == first["id"]
+    assert second["username"] == "新昵称"
+    assert second["status"] == "connected" and second["error_message"] is None
+    assert pg.execute("SELECT count(*) FROM publish_browser_accounts").fetchone()[0] == 1
+
+
+def test_import_rejects_malformed_or_empty_state(
+    client: TestClient, pg: psycopg.Connection
+) -> None:
+    identity = {"platform_user_id": "uid-1", "username": "昵称"}
+    for storage in (
+        {"cookies": [], "origins": []},
+        {"cookies": [{"name": "a", "value": "b"}], "origins": [], "extra": 1},
+        {"cookies": "not-a-list", "origins": []},
+        {"cookies": [{"name": "a", "value": "b"}], "origins": ["bad"]},
+    ):
+        response = client.post(
+            BASE + "/accounts/import",
+            json={"platform": "douyin", "identity": identity, "storage_state": storage},
+        )
+        assert response.status_code == 422, (storage, response.text)
+    assert pg.execute("SELECT count(*) FROM publish_browser_accounts").fetchone()[0] == 0
+
+
+def test_import_is_owner_scoped_and_auditor_blocked(
+    client: TestClient, pg: psycopg.Connection, holder: _PgBusinessDb
+) -> None:
+    payload = {
+        "platform": "wechat_channels",
+        "identity": {"platform_user_id": "finder-1", "username": "号主"},
+        "storage_state": {
+            "cookies": [{"name": "wxuin", "value": "x", "domain": ".weixin.qq.com"}],
+            "origins": [],
+        },
+    }
+    assert client.post(BASE + "/accounts/import", json=payload).status_code == 200
+    holder.current_actor = actor("employee_2")
+    assert client.get(BASE + "/accounts").json() == []
+    assert client.post(BASE + "/accounts/import", json=payload).status_code == 200
+    assert pg.execute("SELECT count(*) FROM publish_browser_accounts").fetchone()[0] == 2
+    pg.execute(
+        "INSERT INTO users (id, username, display_name, role) "
+        "VALUES ('auditor_x','auditor_x','Auditor','auditor')"
+    )
+    holder.current_actor = actor("auditor_x", role="auditor")
+    assert client.post(BASE + "/accounts/import", json=payload).status_code == 403

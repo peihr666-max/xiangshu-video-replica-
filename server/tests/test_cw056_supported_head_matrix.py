@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260916T2000_prompt_optimization_receipts"
+HEAD_REVISION = "20260917T1000_publish_records"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -99,16 +99,16 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
-    "check_constraints": 302,
-    "columns": 1129,
-    "foreign_keys": 180,
+    "check_constraints": 309,
+    "columns": 1158,
+    "foreign_keys": 184,
     "identity_columns": 0,
-    "jsonb_columns": 0,
-    "partial_indexes": 32,
-    "primary_keys": 97,
+    "jsonb_columns": 3,
+    "partial_indexes": 34,
+    "primary_keys": 98,
     "sequences": 4,
-    "tables": 97,
-    "timestamptz_columns": 46,
+    "tables": 98,
+    "timestamptz_columns": 52,
     "triggers": 27,
     "unique_constraints": 37,
 }
@@ -198,6 +198,7 @@ HEAD_TABLE_NAMES = (
     "publish_accounts",
     "publish_browser_accounts",
     "publish_browser_logins",
+    "publish_records",
     "recharge_orders",
     "runtime_settings",
     "script_from_audio_tasks",
@@ -249,7 +250,12 @@ HEAD_TABLE_NAMES = (
 # tables/primary_keys +1、columns +18、foreign_keys +1（owner_user_id→users）、
 # unique_constraints +1（owner+idempotency）、check_constraints +2（mode / status）；
 # 空库→新 head 于本地 postgres:16 fixture 用 migration_manifest.py --print-schema 重算。
-HEAD_SCHEMA_DIGEST = "70b97d8100f63d7b5ba22c5bb9e83eed1aeae837d3228bf1e684f39eaa9eeb49"
+# PUBLISH-DELIVERY-20260917 追加 publish_records 及 publish_browser_accounts 三列：
+# tables/primary_keys +1、columns +29（26 + 3）、foreign_keys +4（user/account/
+# video_asset/cover_asset）、check_constraints +7（records 5 条 + accounts status/source）、
+# jsonb_columns +3（tags/options/stats）、partial_indexes +2（account_active/sync）、
+# timestamptz_columns +6；unique_constraints 不变。同样以 --print-schema 重算。
+HEAD_SCHEMA_DIGEST = "0628591eb1ae124b02030a30041b314216a6960059bb657d2a6cf1ff8e3e8c0c"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (
