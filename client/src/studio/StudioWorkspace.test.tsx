@@ -613,33 +613,6 @@ describe("V1.4 workspace integration", () => {
     window.history.replaceState(null, "", "/#studio/workbench");
   });
 
-  it("场景形象进入口播分身后由真实 Studio 状态保留为照片来源", () => {
-    const state = createReviewState("person-photos");
-    state.draft.imageId = undefined;
-    render(
-      <StudioWorkspace
-        currentUser={reviewUser}
-        initialState={state}
-        reviewData={createReviewData()}
-      />,
-    );
-
-    const sceneCard = screen.getByText("庭院讲解", {
-      selector: "strong",
-    }).parentElement;
-    if (!sceneCard) throw new Error("scene card not found");
-    fireEvent.click(
-      within(sceneCard).getByRole("button", { name: "制作口播分身" }),
-    );
-
-    expect(
-      screen.getByRole("heading", { name: "制作口播分身" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "开始制作照片分身" }),
-    ).toBeDisabled();
-  });
   it("重新进入形象照片页读取新场景，不能永久复用首次空列表", async () => {
     const data = createReviewData();
     live.loadStudioData.mockResolvedValue({
@@ -700,18 +673,22 @@ describe("V1.4 workspace integration", () => {
       loaded: 1,
       total: 1,
     });
-    const state = createReviewState("person-avatars");
+    const state = createReviewState("person-photos");
     state.draft.imageId = "scene-after-refresh";
     const view = render(
       <StudioWorkspace currentUser={reviewUser} initialState={state} />,
     );
-    expect(await screen.findByText("已选：联调场景")).toBeVisible();
+    expect(
+      await screen.findByText("联调场景", { selector: "strong" }),
+    ).toBeVisible();
     view.rerender(
       <StudioWorkspace currentUser={{ ...reviewUser }} initialState={state} />,
     );
     expect(live.loadStudioData).toHaveBeenCalledTimes(1);
     expect(live.loadPersonAssets).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("已选：联调场景")).toBeVisible();
+    expect(
+      await screen.findByText("联调场景", { selector: "strong" }),
+    ).toBeVisible();
   });
   it("renders the approved navigation order and keeps review data isolated", () => {
     render(
@@ -902,7 +879,7 @@ describe("V1.4 workspace integration", () => {
       within(screen.getByRole("dialog")).getByRole("button", { name: /李总/ }),
     );
     expect(screen.queryByText("张工本人音色 V1")).not.toBeInTheDocument();
-    expect(screen.getByText("待确认 V3")).toBeInTheDocument();
+    expect(screen.getByText("待确认终稿")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
   });
   it("cancelling a picker leaves the original draft intact", () => {
@@ -919,94 +896,7 @@ describe("V1.4 workspace integration", () => {
     );
     expect(screen.getByText("张工本人音色 V1")).toBeInTheDocument();
   });
-  it("完整口播音频选择器服务端搜索并加载首屏外音频", async () => {
-    api.listMaterials
-      .mockResolvedValueOnce({
-        items: [],
-        page: 1,
-        page_size: 12,
-        total: 13,
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: "asset:deep-audio",
-            owner_user_id: "review-user",
-            asset_id: "deep-audio",
-            generation_task_id: null,
-            project_id: null,
-            person_id: null,
-            title: "深页口播.mp3",
-            group: "完整口播音频",
-            media_type: "audio",
-            source: "upload",
-            status: "ready",
-            delivery: "stored",
-            content_type: "audio/mpeg",
-            size_bytes: 100,
-            duration_seconds: 42,
-            created_at: "2026-09-07T00:00:00Z",
-            hidden: false,
-            saved: true,
-            allowed_uses: ["oral_audio"],
-            allowed_actions: ["preview"],
-          },
-          {
-            id: "asset:clone-only",
-            owner_user_id: "review-user",
-            asset_id: "clone-only",
-            generation_task_id: null,
-            project_id: null,
-            person_id: null,
-            title: "声音克隆样本.mp3",
-            group: "声音克隆样本",
-            media_type: "audio",
-            source: "upload",
-            status: "ready",
-            delivery: "stored",
-            content_type: "audio/mpeg",
-            size_bytes: 100,
-            duration_seconds: 20,
-            created_at: "2026-09-07T00:00:00Z",
-            hidden: false,
-            saved: true,
-            allowed_uses: ["voice_clone"],
-            allowed_actions: ["preview"],
-          },
-        ],
-        page: 1,
-        page_size: 12,
-        total: 1,
-      });
-    render(
-      <StudioWorkspace
-        currentUser={reviewUser}
-        reviewData={createReviewData()}
-        initialState={createReviewState("oral-audio")}
-      />,
-    );
 
-    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
-    await screen.findByText("没有可用音频");
-    const picker = screen.getByRole("dialog", { name: "选择完整口播音频" });
-    fireEvent.change(within(picker).getByLabelText("搜索云端音频"), {
-      target: { value: "深页" },
-    });
-    fireEvent.click(within(picker).getByRole("button", { name: "搜索" }));
-    expect(await screen.findByLabelText("预听深页口播.mp3")).toHaveAttribute(
-      "src",
-      "https://signed.example/deep-audio.mp3",
-    );
-    expect(screen.queryByText("声音克隆样本.mp3")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "选择深页口播.mp3" }));
-    expect(screen.getByText("深页口播.mp3")).toBeInTheDocument();
-    expect(api.listMaterials).toHaveBeenLastCalledWith({
-      mediaType: "audio",
-      query: "深页",
-      page: 1,
-      pageSize: 12,
-    });
-  });
   it("loads real data without falling back to review examples", async () => {
     live.loadStudioData.mockResolvedValue({
       people: [],
@@ -2446,91 +2336,6 @@ describe("数字人口播提交", () => {
       firstRequest.idempotencyKey,
     );
   });
-
-  it("完整音频上传后回填真实 Studio 状态并允许提交 AUDIO", async () => {
-    const state = createReviewState("oral-audio");
-    state.draft.audioId = undefined;
-    live.loadStudioData.mockResolvedValue({
-      ...createReviewData(),
-      loading: false,
-    });
-    api.createMaterialUploadIntent.mockResolvedValue({
-      asset_id: "uploaded-speech",
-      material_id: "asset:uploaded-speech",
-    });
-    api.uploadMaterial.mockResolvedValue(undefined);
-    // main 的 uploadOralAudioMaterial 在 completeMaterialUpload 后还会取签名下载链接；
-    // 未 mock 时 getAssetDownloadUrl() 返回 undefined，.then 同步抛错会中断上传流程，
-    // 导致成功提示永不出现（charlib 旧流程走裸 API 不经过这一步）。
-    api.getAssetDownloadUrl.mockResolvedValue({
-      url: "https://signed.example/uploaded-speech.mp3",
-    });
-    api.completeMaterialUpload.mockResolvedValue({
-      id: "asset:uploaded-speech",
-      owner_user_id: reviewUser.id,
-      asset_id: "uploaded-speech",
-      generation_task_id: null,
-      project_id: null,
-      person_id: null,
-      title: "new-speech.mp3",
-      group: "完整口播音频",
-      media_type: "audio",
-      source: "upload",
-      status: "ready",
-      delivery: "stored",
-      content_type: "audio/mpeg",
-      size_bytes: 5,
-      duration_seconds: 42,
-      created_at: "2026-09-07T10:00:00Z",
-      hidden: false,
-      saved: true,
-      allowed_uses: ["oral_audio", "reference"],
-      allowed_actions: ["preview", "download", "rename", "hide"],
-    });
-
-    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
-    await screen.findByText("张工 · 乡墅设计师");
-    expect(screen.getByText("未选择完整口播音频")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("选择口播音频"), {
-      target: {
-        files: [new File(["audio"], "new-speech.mp3", { type: "audio/mpeg" })],
-      },
-    });
-
-    await waitFor(() =>
-      expect(api.createMaterialUploadIntent).toHaveBeenCalledOnce(),
-    );
-    expect(api.uploadMaterial).toHaveBeenCalledOnce();
-    expect((api.uploadMaterial.mock.calls[0][3] as AbortSignal).aborted).toBe(
-      false,
-    );
-    expect(api.completeMaterialUpload).toHaveBeenCalledWith("uploaded-speech");
-    await expect(
-      api.completeMaterialUpload.mock.results[0].value,
-    ).resolves.toMatchObject({ title: "new-speech.mp3", media_type: "audio" });
-    await screen.findByText(/已上传并永久保存/);
-    expect(await screen.findByText("new-speech.mp3")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeEnabled();
-    api.createOralTask.mockResolvedValue({
-      id: "oral-from-audio",
-      status: "QUEUED",
-      estimated_cost_fen: 100,
-      replayed: false,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认费用并提交" }),
-    );
-
-    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
-    const request = api.createOralTask.mock.calls[0][0];
-    expect(request.mode).toBe("AUDIO");
-    expect(request.audioAssetId).toBe("uploaded-speech");
-    // main 无条件带上 draft.script.text（AUDIO 模式后端以 audioAssetId 为准，scriptText 仅作参考），
-    // 故不断言 scriptText 为空；AUDIO 契约由 mode/audioAssetId/voiceId/subtitle 界定。
-    expect(request.voiceId).toBeUndefined();
-    expect(request.subtitle).toBeUndefined();
-  });
 });
 
 describe("视频生成（C2 独立创作）", () => {
@@ -3310,7 +3115,7 @@ describe("视频生成（C2 独立创作）", () => {
     );
   });
 
-  it("音频口播不展示字幕开关也不提交 TTS 字幕配置", async () => {
+  it("旧音频页面提交统一使用 TTS、克隆声音和字幕配置", async () => {
     api.createOralTask.mockResolvedValue({ id: "oral-1", status: "QUEUED" });
     live.loadStudioData.mockResolvedValue(createReviewData());
     const initial = createReviewState("oral-audio");
@@ -3318,9 +3123,7 @@ describe("视频生成（C2 独立创作）", () => {
     render(<StudioWorkspace currentUser={reviewUser} initialState={initial} />);
 
     expect(await findEnabledButton("生成口播视频")).toBeEnabled();
-    expect(
-      screen.queryByRole("button", { name: "添加" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加" })).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
@@ -3328,17 +3131,14 @@ describe("视频生成（C2 独立创作）", () => {
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
     expect(api.createOralTask.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
-        mode: "AUDIO",
-        audioAssetId: "speech",
-        voiceId: undefined,
+        mode: "TTS",
+        voiceId: "voice-1",
       }),
     );
-    expect(api.createOralTask.mock.calls[0]?.[0]).not.toHaveProperty(
-      "subtitle",
-    );
+    expect(api.createOralTask.mock.calls[0]?.[0]).toHaveProperty("subtitle");
   });
 
-  it("旧文案口播响应不会把字幕状态带入后来打开的音频口播", async () => {
+  it("旧口播响应不会关闭后来重新打开的生成弹窗", async () => {
     let resolveTask:
       | ((value: { id: string; status: string }) => void)
       | undefined;
@@ -3364,10 +3164,6 @@ describe("视频生成（C2 独立创作）", () => {
     expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交", firstDialog));
     fireEvent.click(within(firstDialog).getByRole("button", { name: "关闭" }));
-    fireEvent.click(screen.getByRole("tab", { name: "用已有音频生成" }));
-    expect(
-      screen.queryByRole("button", { name: "添加" }),
-    ).not.toBeInTheDocument();
     fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(
       await screen.findByRole("dialog", { name: "生成确认 · 数字人口播" }),

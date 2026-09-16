@@ -28,7 +28,7 @@ export const pageTitles: Record<StudioPage, string> = {
   video: "视频生成 · 文/图生视频",
   reference: "视频生成 · 参考生视频",
   oral: "数字人口播",
-  "oral-audio": "数字人口播 · 用已有音频生成",
+  "oral-audio": "数字人口播",
   tasks: "任务中心",
   "task-detail": "任务详情与结果",
   people: "人物库",
@@ -78,6 +78,7 @@ export function studioRouteFromHash(hash: string): Pick<
     projects: "replica",
     characters: "people",
     wallet: "profile",
+    "oral-audio": "oral",
   };
   const params = new URLSearchParams(query);
   const result: ReturnType<typeof studioRouteFromHash> = {

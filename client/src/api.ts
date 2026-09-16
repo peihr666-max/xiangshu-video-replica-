@@ -1087,7 +1087,7 @@ export async function createOralAvatarClone(input: {
   identityId: string;
   title: string;
   sourceAssetId: string;
-  sourceKind: "VIDEO" | "IMAGE";
+  sourceKind: "VIDEO";
   consentId: string;
   idempotencyKey: string;
 }): Promise<OralCloneCreated> {
@@ -2585,9 +2585,11 @@ export async function putMaterial(
   onProgress: (progressPercent: number) => void,
   signal?: AbortSignal,
 ): Promise<MaterialItem> {
+  signal?.throwIfAborted();
   if (intent.upload_required === false) {
-    // 复用分支只是一次轻量解析，不带 signal：中断发生在传输阶段才有意义。
+    // Resolve the completed asset without repeating transfer or reference counting.
     const resolved = await resolveMaterials([intent.material_id]);
+    signal?.throwIfAborted();
     const item = resolved.items[0];
     if (!item) {
       throw new Error("复用素材后未能读取素材详情");

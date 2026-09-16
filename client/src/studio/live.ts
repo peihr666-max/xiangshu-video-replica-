@@ -49,6 +49,7 @@ import {
   type OralTaskRecord,
   type Project,
   type PublishAccountItem,
+  putMaterial,
   readAnalysisPayload,
   resolveMaterials,
   retryOralTaskArchive,
@@ -1134,8 +1135,7 @@ export async function uploadOralAudioMaterial(
     audioPurpose: purpose,
     durationSeconds,
   });
-  await uploadMaterial(intent, file, onProgress, signal);
-  const material = await completeMaterialUpload(intent.asset_id);
+  const material = await putMaterial(intent, file, onProgress, signal);
   const asset = studioAssetFromMaterial(material);
   const url = material.asset_id
     ? await getAssetDownloadUrl(material.asset_id)

@@ -78,3 +78,13 @@
 - 最终 TypeScript / 修改文件 Biome 通过。完整前端 106 文件 / 1634 项通过（native-image-ratio-retest.log）；预览标签与边框收尾后 CreationPages 107 项通过（native-image-ratio-label.log）。首轮高并发运行因机器内存耗尽导致 worker 退出，未记作通过；限制 2 workers 后完整通过。
 - 实际浏览器：原图 1672×941，首帧框 284.3×160、右侧 715.8×402.8，空尾帧 90×160；输出参数由 9:16 切换 1:1 后上述图片尺寸保持原图比例。参考缩略图 170.6×96，右侧同原图比例；手机宽 390px，文档宽 386px，横图按可用宽度缩小且无横向溢出。
 - 最新截图：[文图原图比例](creation-workflow-ui/frames-native-ratio.png)、[参考原图比例](creation-workflow-ui/reference-native-ratio.png)。前节竖框截图仅作历史记录，不是最终验收标准。仍为本地审核环境，无真实生成、合并或部署。
+
+## 2026-09-17 PR #128 主线冲突修复
+
+按用户要求继续原分支与锁定 worktree，将 `origin/main@d95a8db4`（已包含 #126 口播与 #127 H3 提示词增量）合入 PR #128；不创建重复分支或 PR。
+
+- `CreationPages.tsx`：两侧改造分别移除了旧口播音频上传和准备页直接生成逻辑，删除现已无调用的 `uploadOralAudioMaterial` 与 `runReplicaGeneration` 导入。主线新的 `OralPage` 与 main 逐字一致，保留本 PR 复刻准备、双素材交接与上传图片原始比例展示。
+- 两份公共账本分别新增创作界面与口播任务记录；逐项核对并保留双方内容，不改写历史验收状态。
+- 相关回归：CreationPages / StudioWorkspace / state / ReplicaPreparation，共 4 文件、235 项通过。秘密扫描、E2E lint、TypeScript 和冲突文件 Biome 通过。
+- 完整前端 `npm run check --workspace client -- --maxWorkers=2` 通过：106 文件 / 1624 项；包含全量 Biome 与 TypeScript。保留 4 条既有 CSS 选择器优先级警告，无错误。
+- 本次仅解决前端导入与文档追加冲突；既有后端全量证据见上文，未重复启动 Docker。本次合并提交的远程三门禁待 CI 核验，不将历史 CI 成功当作当前提交通过。
