@@ -635,7 +635,7 @@ def test_customer_catalog_never_exposes_supplier_costs(client, route_state):
     assert '"provider"' not in response.text
     assert "抖一抖" not in response.text
     assert {item["service"] for item in response.json()["services"]}.isdisjoint(
-        {"cos", "zpay", "quality_inspection", "analysis_repair"}
+        {"cos", "zpay", "quality_inspection", "analysis_repair", "analysis_repair_deepseek"}
     )
     from app.customer_pricing_routes import router as pricing_router
 
@@ -644,7 +644,7 @@ def test_customer_catalog_never_exposes_supplier_costs(client, route_state):
     assert pricing.status_code == 200
     assert "抖一抖" not in pricing.text
     assert {item["subject"] for item in pricing.json()["prices"]}.isdisjoint(
-        {"cos", "zpay", "quality_inspection", "analysis_repair"}
+        {"cos", "zpay", "quality_inspection", "analysis_repair", "analysis_repair_deepseek"}
     )
     response = client.get("/api/customer/billing/quote?service=analysis&units=2", headers=headers)
     assert response.status_code == 200, response.text

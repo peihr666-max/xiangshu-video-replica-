@@ -37,6 +37,9 @@ SERVICES: dict[str, Service] = {
     "voice_clone": Service("声音克隆", "call", "hifly", "people"),
     "quality_inspection": Service("图片及视频质量检查", "call", "apilio", "internal", False),
     "analysis_repair": Service("分析结果修复", "call", "apilio", "internal", False),
+    "analysis_repair_deepseek": Service(
+        "分析结果修复 · DeepSeek", "call", "deepseek", "internal", False
+    ),
     "cos": Service("云存储", "call", "cos", "infrastructure", False),
     "zpay": Service("支付通道", "call", "zpay", "infrastructure", False),
 }

@@ -122,6 +122,10 @@ class SimpleLibraryEntryResponse(BaseModel):
     service_scope: str
     target_audience: str
     expression_style: str
+    audience_needs: str = ""
+    factual_background: str = ""
+    sample_script: str = ""
+    forbidden_claims: str = ""
     owner_user_id: str | None
     status: str
     contact_sheet_asset_id: str | None
@@ -199,6 +203,10 @@ class SimpleCharacterProfileRequest(BaseModel):
     service_scope: str = Field(max_length=600)
     target_audience: str = Field(max_length=600)
     expression_style: str = Field(max_length=600)
+    audience_needs: str | None = Field(default=None, max_length=600)
+    factual_background: str | None = Field(default=None, max_length=2000)
+    sample_script: str | None = Field(default=None, max_length=2000)
+    forbidden_claims: str | None = Field(default=None, max_length=600)
 
 
 class CharacterSheetTaskResponse(BaseModel):
@@ -411,6 +419,10 @@ def read_simple_library(
             service_scope=entry.service_scope,
             target_audience=entry.target_audience,
             expression_style=entry.expression_style,
+            audience_needs=entry.audience_needs,
+            factual_background=entry.factual_background,
+            sample_script=entry.sample_script,
+            forbidden_claims=entry.forbidden_claims,
             owner_user_id=entry.owner_user_id,
             status=entry.status,
             contact_sheet_asset_id=entry.contact_sheet_asset_id,
@@ -606,6 +618,10 @@ def update_identity_profile(
             service_scope=request.service_scope,
             target_audience=request.target_audience,
             expression_style=request.expression_style,
+            audience_needs=request.audience_needs,
+            factual_background=request.factual_background,
+            sample_script=request.sample_script,
+            forbidden_claims=request.forbidden_claims,
         )
         return SimpleLibraryEntryResponse(
             identity_id=entry.identity_id,
@@ -616,6 +632,10 @@ def update_identity_profile(
             service_scope=entry.service_scope,
             target_audience=entry.target_audience,
             expression_style=entry.expression_style,
+            audience_needs=entry.audience_needs,
+            factual_background=entry.factual_background,
+            sample_script=entry.sample_script,
+            forbidden_claims=entry.forbidden_claims,
             owner_user_id=entry.owner_user_id,
             status=entry.status,
             contact_sheet_asset_id=entry.contact_sheet_asset_id,

@@ -1128,10 +1128,6 @@ export function TasksPage() {
         {!review && (
           <Button onClick={() => openLive("tasks")}>历史任务与下载</Button>
         )}
-        <Button variant="primary" onClick={() => navigate("replica")}>
-          <Icon name="play" />
-          视频复刻
-        </Button>
       </div>
       <div className="studio-filter-bar">
         <Tabs

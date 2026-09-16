@@ -1,0 +1,12 @@
+
+> @video-replica/client@2.0.0 test
+> vitest run src/studio/CreationPages.test.tsx src/studio/live.test.ts
+
+
+ RUN  v4.1.10 E:/众墅之家爆款短视频创作/.worktrees/UI-TYPOGRAPHY-BRAND-20260916/client
+
+
+ Test Files  2 passed (2)
+      Tests  159 passed (159)
+   Start at  20:45:19
+   Duration  3.18s (transform 535ms, setup 192ms, import 580ms, tests 2.18s, environment 941ms)

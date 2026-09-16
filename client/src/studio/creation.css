@@ -8,7 +8,7 @@
 }
 
 .creation-heading h1 {
-  font-size: 30px;
+  font-size: var(--font-title);
   font-weight: 520;
   letter-spacing: -0.03em;
   margin: 0;
@@ -16,7 +16,7 @@
 
 .creation-heading p {
   color: var(--studio-muted, #999b95);
-  font-size: 17px;
+  font-size: var(--font-subtitle);
   margin: 6px 0 0;
 }
 
@@ -51,7 +51,7 @@
 .creation-panel-title,
 .creation-panel-title-row {
   color: #e7e7e2;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   margin-bottom: 16px;
 }
 
@@ -63,28 +63,62 @@
 
 .creation-panel-title-row small {
   color: #65bd59;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .creation-copy-grid {
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(250px, 0.9fr) minmax(360px, 1.2fr) minmax(
-      220px,
-      0.68fr
-    );
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .creation-copy-source,
 .creation-copy-editor,
 .creation-copy-person {
-  min-height: 500px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.creation-copy-grid .creation-panel-title {
+  font-size: var(--font-section);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.creation-copy-grid .creation-panel-title-row .creation-panel-title {
+  margin: 0;
+}
+
+.creation-step-number {
+  color: var(--studio-gold);
+  font-variant-numeric: tabular-nums;
+}
+
+.creation-copy-person-row,
+.creation-copy-person-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.creation-copy-person-row {
+  justify-content: space-between;
+}
+
+.creation-copy-person-actions .studio-button {
+  min-width: 116px;
 }
 
 .creation-script-copy {
   color: #c8c9c4;
-  font-size: 16px;
-  line-height: 2.15;
+  font-size: var(--font-body);
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow-y: auto;
   white-space: pre-wrap;
 }
 
@@ -113,13 +147,26 @@
 }
 
 .creation-copy-textarea {
-  min-height: 374px;
+  min-height: 160px;
+  height: 180px;
   margin-top: 14px;
+}
+
+.creation-source-textarea {
+  height: 112px;
+  min-height: 96px;
+  overflow-y: auto;
+}
+
+.creation-resize-hint {
+  font-size: var(--font-caption);
+  text-align: right;
+  margin: 6px 0 0;
 }
 
 .creation-saved-state {
   color: #81837e;
-  font-size: 13px;
+  font-size: var(--font-label);
   margin-top: 12px;
   text-align: right;
 }
@@ -131,6 +178,13 @@
   gap: 13px;
   margin-bottom: 18px;
   padding-bottom: 18px;
+}
+
+.creation-copy-person-row .creation-person-card {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  flex: 1 1 240px;
 }
 
 .creation-person-card p,
@@ -580,7 +634,7 @@
 .creation-readonly-script {
   border: 1px solid #292b27;
   border-radius: 8px;
-  font-size: 15px;
+  font-size: var(--font-body);
   line-height: 1.7;
   min-height: 238px;
   padding: 16px;
@@ -694,7 +748,6 @@
 }
 
 @media (max-width: 1180px) {
-  .creation-copy-grid,
   .creation-replica-grid,
   .creation-replacement-grid {
     grid-template-columns: 1fr 1fr;
@@ -784,7 +837,7 @@
 .creation-prompt-list p {
   margin: 4px 6px;
   color: var(--text-muted, #777);
-  font-size: 12.5px;
+  font-size: var(--font-label);
 }
 
 .creation-upload-row {
@@ -804,7 +857,7 @@
   background: transparent;
   cursor: pointer;
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .creation-upload-mini:hover:not(:disabled) {
@@ -843,7 +896,7 @@
   border: 1px solid var(--line, #ddd);
   border-radius: 999px;
   color: var(--text-muted, #777);
-  font-size: 12.5px;
+  font-size: var(--font-label);
   padding: 5px 10px;
   text-align: center;
 }
@@ -868,12 +921,12 @@
   display: flex;
   justify-content: space-between;
   color: var(--text-muted, #777);
-  font-size: 12.5px;
+  font-size: var(--font-label);
 }
 
 .creation-progress-copy {
   color: var(--text-muted, #777);
-  font-size: 13px;
+  font-size: var(--font-label);
   margin: 0;
 }
 
@@ -886,7 +939,7 @@
   background: var(--panel, #fff);
   color: var(--text, #333);
   padding: 9px 12px;
-  font-size: 13.5px;
+  font-size: var(--font-label);
 }
 
 .creation-replica-analyze {
@@ -906,7 +959,7 @@
 .creation-shot-index {
   font-family: var(--mono, monospace);
   color: var(--text-muted, #777);
-  font-size: 13px;
+  font-size: var(--font-label);
   padding-top: 2px;
 }
 
@@ -917,12 +970,12 @@
 }
 
 .creation-shot-body strong {
-  font-size: 13.5px;
+  font-size: var(--font-label);
 }
 
 .creation-shot-body small {
   color: var(--text-muted, #777);
-  font-size: 12.5px;
+  font-size: var(--font-label);
 }
 
 /* Video references, opening frames and oral avatars share the playback framing. */
@@ -944,4 +997,99 @@
   min-height: 0;
   aspect-ratio: 9 / 16;
   margin-inline: auto;
+}
+
+.copy-methods {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 0;
+  border: 0;
+  margin: 20px 0;
+}
+.copy-methods legend {
+  font-size: var(--font-label);
+  margin-bottom: 10px;
+  color: #b9bbb3;
+}
+.copy-methods label {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 6px 10px;
+  padding: 16px;
+  border: 1px solid #33342e;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.copy-methods label:has(input:checked) {
+  border-color: #e5ad32;
+  background: #211d12;
+}
+.copy-methods input {
+  accent-color: #e5ad32;
+  margin: 2px 0;
+}
+.copy-methods small {
+  grid-column: 2;
+  color: #b9bbb3;
+  font-size: var(--font-label);
+}
+.copy-person-summary,
+.copy-generate-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+.copy-person-summary > div,
+.copy-generate-row > :first-child {
+  flex: 1;
+}
+.copy-person-summary p {
+  color: #b9bbb3;
+  margin: 6px 0;
+}
+.copy-requirements {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 16px;
+}
+.copy-requirements label {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  font-size: var(--font-label);
+}
+.copy-requirements select {
+  background: #0b0c0b;
+  color: #eee;
+  border: 1px solid #33342e;
+  border-radius: 6px;
+  padding: 10px;
+  font: inherit;
+}
+.creation-textarea.copy-instructions {
+  min-height: 80px;
+  height: 88px;
+  resize: vertical;
+}
+.copy-quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.copy-quick-actions .studio-button {
+  padding: 6px 12px;
+  font-size: var(--font-label);
+}
+.creation-copy-settings [role="alert"] {
+  color: #f5a79b;
+}
+@media (max-width: 760px) {
+  .copy-methods,
+  .copy-requirements {
+    grid-template-columns: 1fr;
+  }
 }

@@ -1,0 +1,43 @@
+
+> @video-replica/client@2.0.0 test
+> vitest run src/review-assets-ea022f0.test.ts
+
+
+ RUN  v4.1.10 E:/众墅之家爆款短视频创作/.worktrees/UI-TYPOGRAPHY-BRAND-20260916/client
+
+ ❯ src/review-assets-ea022f0.test.ts (1 test | 1 failed) 7ms
+   × REVIEW production assets include sidebar logo 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/review-assets-ea022f0.test.ts > REVIEW production assets include sidebar logo
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/review-assets-ea022f0.test.ts:13:103
+     11|   (plugin as { writeBundle: () => void }).writeBundle();
+     12|   const copies = vi.mocked(copyFileSync).mock.calls.map(([from, to]) =…
+     13|   expect(copies.some(([from, to]) => from.endsWith("logo-mark.svg") &&…
+       |                                                                                                       ^
+     14| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+   Start at  20:45:12
+   Duration  315ms (transform 29ms, setup 92ms, import 110ms, tests 7ms, environment 0ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path E:\众墅之家爆款短视频创作\.worktrees\UI-TYPOGRAPHY-BRAND-20260916\client
+npm error workspace @video-replica/client@2.0.0
+npm error location E:\众墅之家爆款短视频创作\.worktrees\UI-TYPOGRAPHY-BRAND-20260916\client
+npm error command failed
+npm error command C:\windows\system32\cmd.exe /d /s /c vitest run src/review-assets-ea022f0.test.ts

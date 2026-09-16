@@ -426,6 +426,28 @@ describe("真实 Studio 只读适配器", () => {
     });
   });
 
+  it.each([1, 5000, 5001, 0, 1.5])(
+    "恢复云端自定义字数 %s 时校验范围",
+    async (wordCount) => {
+      api.getStudioDraft.mockResolvedValue({
+        draft_kind: "copy",
+        payload: {
+          ...createDraft(),
+          rewriteLength: "custom",
+          rewriteWordCount: wordCount,
+        },
+        script_confirmed: false,
+        revision: 5,
+        updated_at: "2026-09-07T10:00:00+08:00",
+      });
+      const restored = await loadCloudDraft();
+      expect(restored?.draft.rewriteLength).toBe("custom");
+      expect(restored?.draft.rewriteWordCount).toBe(
+        wordCount === 1 || wordCount === 5000 ? wordCount : undefined,
+      );
+    },
+  );
+
   it("恢复旧模板草稿时迁移到当前真实可用的标准口播", async () => {
     api.getStudioDraft.mockResolvedValue({
       draft_kind: "copy",
@@ -701,7 +723,8 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.draft.script).toMatchObject({
       title: "三层新中式乡墅",
       original: "分析得到的原始口播。",
-      text: "分析得到的原始口播。",
+      text: "",
+      resultKind: "extracted",
       version: 1,
       confirmed: false,
     });
@@ -741,7 +764,8 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.draft.script.id).toMatch(/^script-/);
     expect(result.draft.script).toMatchObject({
       original: "分析得到的原始口播。",
-      text: "分析得到的原始口播。",
+      text: "",
+      resultKind: "extracted",
       version: 1,
       confirmed: false,
     });

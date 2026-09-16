@@ -1,0 +1,12 @@
+
+> @video-replica/client@2.0.0 test
+> vitest run src/entryContract.test.ts
+
+
+ RUN  v4.1.10 E:/众墅之家爆款短视频创作/.worktrees/UI-TYPOGRAPHY-BRAND-20260916/client
+
+
+ Test Files  1 passed (1)
+      Tests  14 passed (14)
+   Start at  21:40:12
+   Duration  358ms (transform 50ms, setup 104ms, import 128ms, tests 19ms, environment 0ms)
