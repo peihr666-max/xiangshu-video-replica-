@@ -1,8 +1,13 @@
 # Customer Edition Task Evidence Record V3
 
+## PUBLISH-QR-REUSE-20260915 — 双端官方扫码添加账号
+
+采用 MIT `dreammis/social-auto-upload@0012d2c355f88f683cc38dde2a2db209e14091bc` 的二维码定位适配；新增网页服务器隔离浏览器与 Fernet 状态保存，Windows 沿用本机 WebView2。三平台两套脚本实测取码通过；Linux 静态门（1465 前端 / 150 Python 文件类型检查）与专项 PG 11 项通过。后端首次全量 2168 passed / 18 failed / 1 既有 skip；修复后受影响模块分组复验 121、27、42 passed，覆盖全部失败，最终唯一覆盖 2186 passed / 1 既有 skip。查重确认 PR #109 为独立联调任务；扫码兼容其网页会话请求头后，前端专项 196 项通过。证据层级 AUTOMATED_VERIFIED；真实手机确认、Windows 安装包、PR 三门禁和部署未完成。Owner 当前 Codex 任务，Reviewer 待 PR；详见[独立证据](evidence/PUBLISH-QR-REUSE-20260915.md)。
+
 ## 2026-09-15 MEDIA-BOUNDARY / R91—R93
 
 R91 字幕越权覆盖 15 项有效 RED 后协议专项 32 passed；R92 错误网页假下载有效 RED 后下载/API 专项 138 passed；R93 重试与领取冲突 2 项有效 RED 后独立 PostgreSQL 恢复专项 26 passed。各项类型/静态与交叉评审通过，完整静态门通过（前端 1528 项）；后端全量首次 2269 passed、12 failed、1 既有 skipped，修正测试打包及一项旧字幕夹具后 44 项复验通过。历史音频 24.013197 秒在线和缓存两次完整播放均 ended=true、error=null；只读账务核对无残留冻结或重复结算。原始账号、任务与配置仅留本机。详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)。
+
 ## 2026-09-15 VIRAL-COPY-CACHE
 
 服务器文案缓存核心有效 RED 为 3 failed / 2 passed，实现后核心 5 passed、扩展边界 12 passed；迁移静态 17 passed、隔离 PostgreSQL 迁移/历史起点 6 passed。最终缓存20项通过；完整Worker/ASR专项102项后追加两项历史竞争回归通过，完整前端1515项，独立PG全量2283 passed / 1既有 skipped。静态初次两处行长失败后补验剩余Python检查通过；收尾仅新增等待提示，单项及类型/格式检查通过。独立复审通过，本机追加迁移和已有文案持久缓存验证完成，无新增识别或收费。详见[任务证据](evidence/VIRAL-COPY-CACHE-20260915.md)。
@@ -195,6 +200,7 @@ owner 决策正本 [COORD-W6-UNBLOCK-20260912.md](evidence/COORD-W6-UNBLOCK-2026
 分支 `feat/customer-v3-cw021-remove-local-backend`，基线 `origin/main@6390236`（＝CW-020 PR #18 squash「客户配置唯一默认」合入后的首个后续任务）。独立 worktree `E:/众墅之家爆款短视频创作/.worktrees/CW-021-remove-local-backend`，原子认领 `.git/codex-task-claims/CW-021/`（排班 §3 六层查重：fetch 后无 cw021 分支/PR/worktree/claim，确认独占）。承接 CW-020 在 `Cargo.toml` 留下的「CW-021 retires this feature」承诺与 CW-011 客户构建合同：本地 sidecar 启动链自**源码、配置、脚本、CI 制品检测**四个层面整体退役——`lib.rs` 删除 `local-sidecar` feature 门控全部启动代码（`BackendProcess`/`127.0.0.1:8000` 端口探测/`VIDEO_REPLICA_BOOT_COMMAND` 命令查找/`start_local_services`/退出杀进程；凭据与下载 handler 原样保留），`Cargo.toml` 删除整个 `[features]` 表使任何构建（含刻意 opt-in）都无法再编译回本地后端，删除 `tauri.internal.conf.json` 与 `resources/start-backend.sh/.bat`，`package.json` 删除三个 `:internal` 入口；ci.yml Windows job 收敛为仅构建客户云安装包，制品门禁由「排除本地启动器」**扩大为四层「排除本地后端分发」**（启动脚本/pyvenv.cfg/ffmpeg.exe/ffprobe.exe 文件名、.db/.sqlite/.sqlite3/.pyd 扩展名、server//.venv//ffmpeg/ 目录段、`start-backend`/`VIDEO_REPLICA_BOOT_COMMAND`/`127.0.0.1:8000` 二进制标记 ASCII+UTF-16 双编码扫描）；守卫测试同步重写（`test_build_contracts.py` launcher 执行用例改为「启动器必须保持删除」契约并新增 `test_packaged_local_backend_launchers_are_removed`，`test_customer_ha_smoke.py::test_customer_desktop_build_is_the_sole_default_target` 内部断言全部翻转为「必须不存在」，`test_desktop_artifact_no_pg_dsn.py` 三配置布局改双配置并新增 `test_internal_edition_stays_withdrawn`）。
 
 先红后绿：RED 7 failed（三守卫文件按新契约断言，失败点与 DoD 删除范围逐项对应）→ 实现 → GREEN 15 passed（既有 PG DSN 隔离/origin guard/版本链等不变契约全部保持）。制品检测逻辑本地 PowerShell mock 验证：三类文件违规全命中、ASCII 与 UTF-16LE 二进制标记全命中、合法 devUrl `127.0.0.1:5173` 不误报。静态门禁：`verify_no_secrets.sh` EXIT=0、`ruff check` All checks passed、`ruff format --check` 298 files already formatted、`mypy server/app` Success 104 source files。诚实边界：不触碰旧安装数据（旧内部版卸载迁移钩子保留，升级实机归 CW-046）；`resources/ffmpeg/` 仓库文件物理清理按 CW-001 P1 归 CW-040/042（客户默认 `resources: []` 不打包、无任何构建引用）；cargo 编译与 NSIS 解包检测本机无工具链，以 push 后 CI 三门禁为准（沿 CW-019/CW-020 先例）；全量 pytest 因共享 fixture(5433)被 CW-057 会话在制占用，按排班 §4 PG 资源串行规则等待后执行（结果回填于证据文件）。证据 `docs/evidence/CW-021-EVIDENCE.md`。
+
 ## CW-057 — 统一剩余维护与种子CLI的PG入口（2026-09-11，AUTOMATED_VERIFIED）
 
 分支 `feat/customer-v3-cw057-maintenance-seed-cli-pg`，基线 `origin/main@e829ad1`（CW-055 #13 后）；前置 CW-025/053/054 均已合入 main。交付：新增统一 PG 入口 `app.db_pg.resolve_cli_pg_dsn`+`CliDatabaseConfigError`（HTTP 外命令面 PG-01 的唯一 DSN 解析点：`--database-url` 优先、env 回退逐字沿用 CW-025 fail-closed 契约，sqlite:///DB_PATH 残留/错误 scheme 在连接前拒绝、失败零文件创建）；4 个维护 timer CLI 的 DSN 解析块收口（行为与退出码不变）；gate1_bootstrap/gate1_e2e 从 SQLite 转 PG（种子要求 pristine 迁移库 + advisory lock + 摘要脱敏；harness 进程内迁移 + 子进程环境 DATABASE_URL 取代 DB_PATH）；app.backup 与 internal backup systemd unit 注册为 historical-internal-p0（分类横幅 + 客户链零引用守卫；物理退出归 CW-060/040/042，客户包排除归 CW-032）。命令×分类×数据库×角色×写入矩阵以注册表断言固化为机器可核验（scripts/systemd/postgres 工具目录级防漏项扫描）。验证：新增专项 37 用例 + gate1 种子 PG 契约 8 用例（拒绝矩阵于无 PG 环境运行、--dry-run 只读零变化、实写双跑幂等、客户部署链零 SQLite backup 引用、CW-060 两文件零触碰反向钉住）；回归 db_pg/db_portable/bootstrap 门/幂等/ops/pitr 套件 234 passed + security/activation/wallet/fencing 套件 139 passed 零回归；ruff+mypy 全过。诚实边界：Gate-1 Playwright 全链路未实跑（人工门，CW-021 后退役）；全量 pytest 最终判定归 CI。完整矩阵与记录见 [CW057-EVIDENCE.md](evidence/CW057-EVIDENCE.md)。
@@ -1426,6 +1432,7 @@ W19主干整合最终复验：PR87正常合并为main e8445c4，本任务整合�
 ## IMAGE-CONSENT-20260914
 
 人物图片上传前声明、后端拒绝缺失授权及任务审计已实现。专项前端 33、后端 10 通过；真实组件浏览器验证未勾选禁用、取消后重新确认。本地完整静态门 1422 前端通过；PG 全量初次 2070 passed / 3 环境失败 / 1 既有 skip，补齐隔离 Git 元数据后对应 7 项复验通过，唯一覆盖 2073 passed / 1 skip；已按后续明确授权创建 [PR #106](https://github.com/peihr666-max/xiangshu-video-replica-/pull/106)，远程门禁待核验。详见[独立证据](evidence/IMAGE-CONSENT-20260914.md)。未部署到在用业务环境。
+
 ## FIX-R04-DELIVERY-20260914
 
 赠送积分未知结果安全重试已从旧 R04 worktree 迁到 `origin/main@50059bc1` 的独立交付分支。待确认意图在 POST 前按管理员与客户隔离写入浏览器会话，写入失败时不发送；关闭弹窗、返回列表、页面重建或请求仍在途时卸载后，仍冻结完整参数并原样重放。首次明确 4xx 拒绝才释放意图，出现未知结果后的 4xx 仍保留原意图，直到成功；迟到响应按 key 与 attempt ID 条件清理，已卸载组件不回写父页面。本地前端 99 个文件、1424 项测试及 e2e lint 通过；未执行真实赠送、支付或生产账本操作。范围与验证见[交付证据](evidence/FIX-R04-DELIVERY-20260914.md)。

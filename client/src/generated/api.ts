@@ -715,6 +715,74 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio/publish/browser/accounts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Accounts */
+    get: operations["accounts_api_studio_publish_browser_accounts_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/browser/accounts/{account_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** Remove Account */
+    delete: operations["remove_account_api_studio_publish_browser_accounts__account_id__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/browser/logins/{login_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** Cancel Login */
+    delete: operations["cancel_login_api_studio_publish_browser_logins__login_id__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/browser/logins": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Login */
+    post: operations["login_api_studio_publish_browser_logins_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/studio/materials": {
     parameters: {
       query?: never;
@@ -2551,6 +2619,23 @@ export interface paths {
     get: operations["read_collected_viral_videos_api_control_viral_videos_get"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/control/viral/videos/wechat_channels/{video_id}/statistics": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Refresh Collected Wechat Statistics */
+    post: operations["refresh_collected_wechat_statistics_api_control_viral_videos_wechat_channels__video_id__statistics_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -5692,6 +5777,32 @@ export interface components {
        * @default
        */
       persona_name: string;
+    };
+    /** BrowserAccount */
+    BrowserAccount: {
+      /** Id */
+      id: string;
+      /**
+       * Platform
+       * @enum {string}
+       */
+      platform: "douyin" | "wechat_channels" | "xiaohongshu";
+      /** Platform User Id */
+      platform_user_id: string;
+      /** Username */
+      username: string;
+      /** Verified At */
+      verified_at: number;
+    };
+    /** BrowserLoginRequest */
+    BrowserLoginRequest: {
+      /**
+       * Platform
+       * @enum {string}
+       */
+      platform: "douyin" | "wechat_channels" | "xiaohongshu";
+      /** Account Id */
+      account_id?: string | null;
     };
     /** CharacterAsset */
     CharacterAsset: {
@@ -11774,6 +11885,135 @@ export interface operations {
       };
     };
   };
+  accounts_api_studio_publish_browser_accounts_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BrowserAccount"][];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  remove_account_api_studio_publish_browser_accounts__account_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        account_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: boolean;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cancel_login_api_studio_publish_browser_logins__login_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        login_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: boolean;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  login_api_studio_publish_browser_logins_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BrowserLoginRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   read_materials_api_studio_materials_get: {
     parameters: {
       query?: {
@@ -15609,6 +15849,43 @@ export interface operations {
       cookie?: never;
     };
     requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  refresh_collected_wechat_statistics_api_control_viral_videos_wechat_channels__video_id__statistics_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        video_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AdminWriteContract"];
+      };
+    };
     responses: {
       /** @description Successful Response */
       200: {

@@ -42,8 +42,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 COPY server /opt/video-replica/server
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/video-replica/browsers
 RUN cd /opt/video-replica/server \
     && uv sync --locked --no-dev \
+    && .venv/bin/python -m playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/video-replica/browsers \
     && .venv/bin/python -m compileall -q app migrations \
     && command -v ffmpeg && command -v ffprobe \
     && .venv/bin/python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker" \

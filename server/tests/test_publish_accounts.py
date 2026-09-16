@@ -681,7 +681,8 @@ def test_claim_verify_does_not_touch_publish_records(lane_env: str, pg: psycopg.
     """
     tables = pg.execute(
         "SELECT tablename FROM pg_tables"
-        " WHERE schemaname = 'public' AND tablename LIKE 'publish%'"
+        # Browser login tables are independent of this legacy worker's records contract.
+        " WHERE schemaname = 'public' AND tablename IN ('publish_accounts','publish_records')"
         " ORDER BY tablename"
     ).fetchall()
     assert [row[0] for row in tables] == ["publish_accounts"]

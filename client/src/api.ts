@@ -4790,6 +4790,32 @@ async function requestControl(
   }
 }
 
+export async function publishBrowserRequest(
+  path: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  if (!path.startsWith("/api/studio/publish/browser/"))
+    throw new Error("发布账号请求地址无效");
+  const headers = new Headers(init.headers);
+  headers.set("X-Request-Id", crypto.randomUUID());
+  if (init.body) headers.set("Content-Type", "application/json");
+  const token = workspaceAccessToken();
+  const owner = customerSessionOwner;
+  if (!token) throw new Error("请先登录工作台");
+  headers.set("Authorization", `Bearer ${token}`);
+  if (token.startsWith("web-session:")) headers.set("X-Customer-Web", "1");
+  // Preserve the caller's signal after response headers: it owns the QR stream.
+  const response = await fetch(`${apiBaseUrl()}${path}`, {
+    ...init,
+    headers,
+    cache: "no-store",
+  });
+  if (response.status === 401) await emitWorkspaceSessionEnded(response, owner);
+  if (!response.ok)
+    throw new Error(await responseErrorMessage(response, "发布账号请求失败"));
+  return response;
+}
+
 async function requestApi(
   path: string,
   init: RequestInit,
