@@ -1505,3 +1505,7 @@ REVIEW / AUTOMATED_VERIFIED（本地）：最终提示词后置、确认文案�
 ## 2026-09-17 PUBLISH-DELIVERY-20260917
 
 发布链路第二阶段 PR-A。新增迁移 `20260917T1000_publish_records`（`publish_records` 表 + `publish_browser_accounts.status/error_message/source`）、`app/publish_records.py` / `publish_record_routes.py` / `publish_credentials.py` / `publish_delivery.py`，`publish_worker` 每轮追加一条发布投递；桌面 `publish_accounts.rs` connected 时导出 storage_state 并由前端 `POST /publish/browser/accounts/import` 加密入库；发布页立即/定时发布、`PublishRecordsPanel`、首页真实 `published_total`；compose/systemd/基础镜像（Node.js）接入 `worker-publish`。本地 ruff/format/mypy、cargo test 27、client check 105 文件 1617 passed，专项与迁移矩阵见证据；全量 PostgreSQL 四分片 2452 passed / 34 failed / 1 skipped，34 项均为 Windows 本机既有失败（对照未改动主检出复现），详见证据末段。AUTOMATED_VERIFIED；全部用例合成凭据与假投递器，未触网、未真实发布、未合并部署。详见[独立证据](evidence/PUBLISH-DELIVERY-20260917.md)。
+
+## WORKSPACE-STRUCTURE-20260917 目录与导航维护
+
+2026-09-17：按用户确认完成设计资料、历史工具发行包和开发导航整理。1693 个既有文件全部保留、168 个资料文件迁移，825 个既有链接目标保留，21 项图片校验通过；V1.3 图册 28 页及 V1.4 测试 7/7 通过，秘密检查通过。业务源码与配置保持原合同；此为资料维护验证，不改变业务及生产验收等级。详见[独立证据](evidence/WORKSPACE-STRUCTURE-20260917.md)。

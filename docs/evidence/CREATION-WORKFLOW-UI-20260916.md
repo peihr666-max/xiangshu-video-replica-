@@ -49,7 +49,7 @@
 
 2026-09-17 参考页续改：按用户最新要求，两种模式共用左右布局与底栏，替代上一轮“参考模式保留上一版”的决定。参考素材区支持多个素材在限定高度内滚动，预览切换和底部参数摘要联动已在浏览器验证。桌面参数底部约 786px、底栏顶部 812px，无遮挡；390px 手机文档宽 386px，无横向溢出。前端 2 文件 / 204 项、TypeScript 和本次文件 Biome 通过；无后端改动或新 Docker 资源。截图：[reference-split-desktop.png](creation-workflow-ui/reference-split-desktop.png)。
 
-2026-09-16 布局续改：文/图模式已按新增截图调整，参考模式保留上一版。3 个前端测试文件合计 210 项在更新旧布局断言后全部通过（原轮 209 通过 / 1 旧位置断言失败；修正后 CreationPages 全部 106 通过）；TypeScript 与本次文件 Biome 检查通过。未变更服务端，沿用本任务已完成的后端全量证据，不重复启动 Docker。视觉复核见 [design-qa.md](../../design-qa.md)；新截图见 [frames-desktop.png](creation-workflow-ui/frames-desktop.png)。
+2026-09-16 布局续改：文/图模式已按新增截图调整，参考模式保留上一版。3 个前端测试文件合计 210 项在更新旧布局断言后全部通过（原轮 209 通过 / 1 旧位置断言失败；修正后 CreationPages 全部 106 通过）；TypeScript 与本次文件 Biome 检查通过。未变更服务端，沿用本任务已完成的后端全量证据，不重复启动 Docker。视觉复核见 [design-qa.md](design-qa-20260917.md)；新截图见 [frames-desktop.png](creation-workflow-ui/frames-desktop.png)。
 
 - 原始拆解与最终生成提示词分开保存；历史恢复不会将已生成的新稿替换回原拆解。
 - 改写覆盖有版本/项目/登录会话隔离；撤销只作用于仍为该次结果的文案。

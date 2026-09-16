@@ -1,5 +1,7 @@
 # 短视频复刻工作台（xiangshu-video-replica）
 
+阅读入口：[开发导航与代码地图](docs/development/README.md) · [文档索引](docs/README.md) · [设计资料](docs/design/README.md) · [编辑器工作区](video-replica.code-workspace)。
+
 > 当前执行清单已更新为[本地实现去重V3](outputs/customer-cloud-convergence-analysis-2026-09-08/v3/客户版收敛剩余任务清单与验收完工标准-V3.md)：57项剩余排程，复用既有代码；原60项及CW-006/008/011保留追溯，当前状态仅见任务账本§18。此更新不代表代码或数据迁移已完成。
 
 > 2026-09-08 PostgreSQL 全面统一增量：用户已确定开发、业务数据库测试、CI、staging、生产均使用 PostgreSQL；SQLite 仅限精确登记的离线历史输入、归档与兼容工具。
@@ -122,7 +124,7 @@ npm run test:gate1             # 内部 FakeProvider 桌面纵向验收（隔离
 ## CI 与分支模型
 
 - 三门禁 CI（`.github/workflows/ci.yml`）：Secret scan → Linux 质量门（含 PG16 service 的全量测试）→ Windows Tauri/NSIS。
-- `main` 受保护，仅接受 squash merge；任务分支从最新 main 切出，命名 `feat/customer-v3-tXX-短横线描述`，同一时间只开一个任务分支。
+- `main` 受保护，仅接受 squash merge；新任务从最新 `origin/main` 创建独立分支与 worktree。不同任务按认领和文件边界并行，同一任务只保留一个在制主分支，详见 [Worktree 协作清单](docs/客户云版开发顺序排班与Worktree协作清单.md)。
 - 一个 PR 只承载一个任务；评审评论逐条实质修复后 resolve；同一 PR 内更新任务账本与证据（`docs/客户版任务清单-V3.md`、`docs/CUSTOMER-TASK-EVIDENCE-V3.md`、`docs/evidence/TXX-EVIDENCE.md`）。
 
 ## 红线（摘要）
@@ -153,14 +155,26 @@ npm run test:gate1             # 内部 FakeProvider 桌面纵向验收（隔离
 ## 仓库结构
 
 ```text
-server/           FastAPI 业务后端
-  app/            路由与服务（客户 lane / 内部 lane）、生成 Worker、运维探针
-  migrations/     Alembic 迁移链（001 → 055）
-  tests/          服务端测试（含 PG 专项，pytest 标记 pg）
-client/           React 19 + Vite 工作台（业务工作台 / 客户端 / 管理端）
-  src-tauri/      Tauri 2 桌面端（客户云版唯一默认 / 内部版显式 opt-in）
-e2e/              Playwright 套件（customer：激活/配对/充值；gate1：内部纵向验收）
-deploy/           部署模板（nginx / systemd / PG PITR / customer-git-rollout.sh）
-scripts/          PG fixture、secret 扫描、发布 preflight
-docs/             正本文档、任务账本、评审报告与证据
+client/                 React 客户工作台与独立管理端
+  src/                  界面、API 适配与相邻组件测试
+  src-tauri/            Tauri 客户桌面外壳
+server/                 FastAPI 业务后端
+  app/                  路由、业务服务与 Worker
+  migrations/           Alembic 迁移（以实际迁移清单为准）
+  tests/                服务端测试
+  scripts/              离线维护与兼容工具
+e2e/                    浏览器端到端验收
+scripts/                开发环境、质量检查、CI 与发行辅助
+deploy/                 部署、运维和发布回退配置
+docs/                   正本规范与文档导航
+  development/          开发入口与代码阅读地图
+  design/               审核图册、原型、设计参考与后台设计
+  business/             商务资料
+  evidence/             各任务验收证据
+  prompt-spec/          提示词业务规格
+outputs/                已归档的分析交付件
+archive/skill-releases/ 历史 Skill 发行包（原根目录 dist）
+video-reverse-prompt-script-firstframe/  独立视频拆解 Skill 源码
 ```
+
+业务源码和构建路径按现有合同保留；按业务查找文件请用[开发导航](docs/development/README.md)。原仓库顶层的六版审核包已集中到 `docs/design/reviews/`。
