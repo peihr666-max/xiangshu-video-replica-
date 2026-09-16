@@ -368,6 +368,37 @@ def test_wallet_ledger_sequence_migration_is_reversible_on_postgres() -> None:
         _drop_database(database_name)
 
 
+def test_hifly_migration_preserves_existing_zpay_settings() -> None:
+    """Production databases at 055 already contain zpay credentials."""
+    from alembic import command
+
+    database_name = "hifly_zpay_compatibility_test"
+    dsn = _pg_dsn().rsplit("/", 1)[0] + f"/{database_name}"
+    sqlalchemy_dsn = dsn.replace("postgresql://", "postgresql+psycopg://")
+    _drop_database(database_name)
+    with psycopg.connect(_admin_dsn(), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{database_name}"')
+
+    try:
+        config = _alembic_config(sqlalchemy_dsn)
+        command.upgrade(config, "063_wallet_ledger_sequence")
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO provider_settings(provider,encrypted_config) VALUES ('zpay','test')"
+            )
+        command.upgrade(config, "069_provider_whitelist_widen")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute(
+                "SELECT encrypted_config FROM provider_settings WHERE provider='zpay'"
+            ).fetchone() == ("test",)
+            conn.execute(
+                "INSERT INTO provider_settings(provider,encrypted_config) "
+                "VALUES ('hifly','test'),('tikhub','test')"
+            )
+    finally:
+        _drop_database(database_name)
+
+
 def test_empty_customer_bootstrap_runs_on_a_fresh_migrated_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
