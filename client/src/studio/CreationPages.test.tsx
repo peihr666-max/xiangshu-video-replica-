@@ -2668,10 +2668,17 @@ describe("视频复刻（模块①）", () => {
     expect(screen.queryByLabelText("最终提示词")).toBeNull();
     fireEvent.click(next);
     expect(value.navigate).toHaveBeenCalledWith("replacement");
-    value.state.draft = { ...value.state.draft, firstFrameId: "confirmed-frame" };
+    value.state.draft = {
+      ...value.state.draft,
+      firstFrameId: "confirmed-frame",
+    };
     view.rerender(<ReplicaPage />);
-    expect(screen.getByRole("button", { name: "合成最终提示词" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "确认费用并送生成" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "合成最终提示词" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "确认费用并送生成" }),
+    ).toBeDisabled();
   });
 
   function mockSavedReplicaVersions() {

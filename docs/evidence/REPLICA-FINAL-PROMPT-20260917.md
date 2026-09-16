@@ -9,8 +9,8 @@ Owner / Reviewer：Codex / 01a0aae7-8864-7c41-a255-4c8f62adc5e3；执行者自�
 改动文件：analysis/analysis_routes、generation/h3_prompts/prompt_context/prompt_optimizer、media、first_frames/image_tasks/source_frames；三套复刻前端、共享 PromptEditor/useGenerationDrafts、API 类型及对应回归。
 失败测试或回归锁定：最终编译器与普通台词保护先出现 3 项失败；禁止调用图片检查器的回归先失败后通过。旧界面测试改为确认文案、首帧和参数后合成；保留支付、失败恢复、账号隔离原断言。
 实现结果：见下方业务清单。
-验证命令与通过数：见验证记录；完整门禁尚在运行时不标记全绿。
-证据层级：CODE_PRESENT；专项自动化通过，整体待完整门禁。
+验证命令与通过数：见验证记录；远程三门禁以 PR 当前 head 为准。
+证据层级：AUTOMATED_VERIFIED（本地完整范围及失败项补验）；未做真实供应商与生产验收。
 安全与可观测性：真实供应商调用零次；任务/版本/幂等回执保留，后端拒绝过期文案、分镜与参数混用；不记录真实凭据。
 迁移与回滚：无数据库 migration；通过 PR revert 回滚代码。现有历史版本与质检记录保持可读。
 外部授权记录：用户明确授权实现、提交 PR 并合并主分支；未授权真实付费出片、生产开关切换或部署，本任务未执行这些操作。
@@ -58,11 +58,11 @@ Lore 提交 SHA：不适用；Git 提交与 PR 在提交阶段补记。
 
 ## 验证记录
 
-- 后端专项：209 passed（清理失活修复测试之前），覆盖 H3、图片、独立视频、优化与 Worker。
-- 新 PostgreSQL 集成：1 passed，最终预览等于任务正文；重复提交复用批次；新确认文案使旧稿失效。
-- 三入口专项：207 passed；工作台/恢复/优化追加专项：148 passed。
-- TypeScript、Ruff/mypy 与 Tauri fmt/check 已执行；Linux 全静态门及唯一一次全量 PostgreSQL 测试结果待补记。
-- 全量前端曾发现旧流程预期与异步恢复等待问题，已逐项修复；最终完整数字待 Linux 门记录。
+- 后端唯一一次全量 PostgreSQL：2424 passed / 8 failed / 1 既有 skipped（2741.75 秒）；8 项失败全部完成补验。两项旧链路夹具更新后与最终合成/优化/原子发布共同补验 14 passed；其余旧任务查询测试桩与 Git 元数据映射修正后 23 passed。没有并发执行第二份全量。
+- 合并 main 后图像供应商与 Worker：132 passed；覆盖场景替换、默认三张、无 AI 图片质检、归档/恢复/计费及分析原子发布。此前独立视频/H3/优化等专项 209 passed；确定性最终编译纯逻辑 15 passed。
+- 合并后完整前端：105 文件 / 1604 passed；AdminApp 文件因 ENOMEM 未启动，单进程补验 24 passed。总计 106 文件 / 1628 项覆盖通过，无未处理失败；新测试验证首帧确认前隐藏最终框、可先进入置换、确认后再合成。
+- TypeScript、Biome、Linux/Windows Tauri fmt/check、Ruff/format/mypy 与秘密扫描通过；完整静态命令因上述 ENOMEM 中断，补验管理页并顺序补齐余下检查。没有将首次中断标为一次性全绿。
+- 三入口恢复、迟到结果保护、参数冲突、空文案确认、最终正文冻结与幂等均有专项覆盖。真实模型出片质量没有用模拟测试替代。
 - 原始日志：本机 `outputs/replica-final-*.log`；证据归档不含密钥或供应商付费数据。
 
 ## 并行任务与资源

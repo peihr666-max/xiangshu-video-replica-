@@ -219,7 +219,9 @@ def test_real_analysis_rejects_local_asset_before_creating_task(monkeypatch):
     class Db:
         @contextmanager
         def write(self):
-            yield Mock(), SimpleNamespace(id="user-1")
+            conn = Mock()
+            conn.execute.return_value.fetchone.return_value = None
+            yield conn, SimpleNamespace(id="user-1")
 
     monkeypatch.setattr(
         analysis_routes,
