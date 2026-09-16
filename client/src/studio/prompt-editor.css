@@ -25,3 +25,16 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.h3-prompt-tools button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
+  color: var(--studio-gold, #e5aa36);
+  background: transparent;
+  border: 1px solid #665025;
+  border-radius: 6px;
+  font-size: var(--font-caption, 13px);
+}

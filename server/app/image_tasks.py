@@ -285,6 +285,7 @@ def enqueue_first_frame_task(
     character_reference_selection_id: str | None,
     idempotency_key: str,
     aspect_ratio: str | None = None,
+    replace_scene: bool = False,
 ) -> sqlite3.Row:
     # Authorization must precede the idempotent replay lookup. Otherwise an
     # unrelated user who guesses a project/key pair can observe another
@@ -309,6 +310,8 @@ def enqueue_first_frame_task(
         "character_version_id": character_version_id,
         "character_reference_selection_id": character_reference_selection_id,
     }
+    if replace_scene:
+        request_parameters["replace_scene"] = True
     if aspect_ratio is not None:
         request_parameters["aspect_ratio"] = aspect_ratio
     replay = conn.execute(
@@ -318,6 +321,10 @@ def enqueue_first_frame_task(
     if replay is not None:
         stored_payload = json.loads(str(replay["request_json"]))
         stored_parameters = {key: stored_payload.get(key) for key in request_parameters}
+        if bool(stored_payload.get("replace_scene", False)) != replace_scene:
+            raise _task_error(
+                409, "FIRST_FRAME_TASK_IDEMPOTENCY_CONFLICT", "场景设置已变化，请重新提交。"
+            )
         if stored_payload.get("aspect_ratio") != aspect_ratio:
             raise _task_error(
                 409, "FIRST_FRAME_TASK_IDEMPOTENCY_CONFLICT", "图片画幅已变化，请重新提交。"
@@ -342,6 +349,7 @@ def enqueue_first_frame_task(
         character_version_id=character_version_id,
         character_reference_selection_id=character_reference_selection_id,
         aspect_ratio=aspect_ratio,
+        replace_scene=replace_scene,
     )
     request_payload = {
         **request_parameters,
@@ -783,6 +791,7 @@ def prepare_first_frame_task(
             prompt=cast(str | None, payload.get("prompt")),
             quantity=int(payload["quantity"]),
             aspect_ratio=cast(str | None, payload.get("aspect_ratio")),
+            replace_scene=payload.get("replace_scene") is True,
             character_version_id=cast(str | None, payload.get("character_version_id")),
             character_reference_selection_id=cast(
                 str | None, payload.get("character_reference_selection_id")
@@ -808,6 +817,8 @@ def prepare_first_frame_task(
         "project_appearance_fingerprint": plan.project_appearance.fingerprint,
         "source_analysis_version_id": plan.project_appearance.source_analysis_version_id,
     }
+    if payload.get("replace_scene") is True:
+        current_payload["replace_scene"] = True
     if payload.get("aspect_ratio") is not None:
         current_payload["aspect_ratio"] = payload["aspect_ratio"]
     if canonical_request_hash(current_payload) != str(row["request_hash"]):

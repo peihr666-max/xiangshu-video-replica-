@@ -192,7 +192,6 @@ describe("CustomerWorkspace (T31)", () => {
       });
       const nextStore = replacement === "store" ? fakeStore() : initialStore;
       vi.mocked(nextStore.loadSessionToken).mockReturnValue(pendingCredential);
-      const requestCount = fetchMock.mock.calls.length;
       view.rerender(
         <CustomerWorkspace
           user={replacement === "session" ? { ...user } : user}
@@ -203,21 +202,35 @@ describe("CustomerWorkspace (T31)", () => {
       );
       expect(screen.queryByRole("navigation", { name: "主要导航" })).toBeNull();
       expect(screen.getByText("正在进入工作区…")).toBeInTheDocument();
+      // rerender's act can flush the old tree's pending effects before it
+      // commits the credential-loading screen. Only requests after that
+      // boundary belong to the replacement workspace.
+      const requestCount = fetchMock.mock.calls.length;
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(
+        fetchMock.mock.calls
+          .slice(requestCount)
+          .filter(([url]) => url.endsWith("/api/projects")),
+      ).toHaveLength(0);
       const nextSessionText = "replacement-workspace-session";
       await act(async () => {
         resolveCredential?.(nextSessionText);
         await pendingCredential;
       });
       await screen.findByRole("navigation", { name: "主要导航" });
-      const newProjectRequests = fetchMock.mock.calls
-        .slice(requestCount)
-        .filter(([url]) => url.endsWith("/api/projects"));
-      expect(newProjectRequests.length).toBeGreaterThan(0);
-      for (const [, init] of newProjectRequests) {
-        expect(new Headers(init?.headers).get("Authorization")).toBe(
-          `Bearer ${nextSessionText}`,
-        );
-      }
+      await waitFor(() => {
+        const newProjectRequests = fetchMock.mock.calls
+          .slice(requestCount)
+          .filter(([url]) => url.endsWith("/api/projects"));
+        expect(newProjectRequests.length).toBeGreaterThan(0);
+        for (const [, init] of newProjectRequests) {
+          expect(new Headers(init?.headers).get("Authorization")).toBe(
+            `Bearer ${nextSessionText}`,
+          );
+        }
+      });
       expect(onSessionExpired).not.toHaveBeenCalled();
     },
   );

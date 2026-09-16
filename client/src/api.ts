@@ -641,6 +641,7 @@ export type FirstFrameCandidate = {
 };
 
 export type FirstFrameCandidates = {
+  replace_scene?: boolean;
   aspect_ratio?: GenerateFirstFramesInput["aspect_ratio"];
   review_mode?: "HUMAN_CONFIRMATION" | "AUTOMATIC_QUALITY";
   source_frame_asset_id?: string;
@@ -4696,6 +4697,7 @@ export function readFirstFrameCandidates(
     return null;
   }
   return {
+    replace_scene: payload.replace_scene === true,
     review_mode:
       payload.review_mode === "HUMAN_CONFIRMATION"
         ? "HUMAN_CONFIRMATION"

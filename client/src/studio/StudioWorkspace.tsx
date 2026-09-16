@@ -945,6 +945,10 @@ export function StudioWorkspace({
     if (videoSubmittingRef.current || generationRef.current !== "视频生成")
       return;
     const draft = latestDraftRef.current;
+    if (draft.replicaPreparationPending) {
+      notify("请先完成复刻准备并交接新提示词与采用首帧。");
+      return;
+    }
     const draftFingerprint = JSON.stringify(draft);
     const page = studioPageRef.current;
     const dialogRevision = generationDialogRevisionRef.current;
@@ -1416,6 +1420,13 @@ export function StudioWorkspace({
     }
   };
   const requestGeneration = (kind: StudioTask["type"]) => {
+    if (
+      kind === "视频生成" &&
+      latestDraftRef.current.replicaPreparationPending
+    ) {
+      notify("请先完成复刻准备并交接新提示词与采用首帧。");
+      return;
+    }
     if (currentUserRoleRef.current === "auditor") {
       notify("当前账号为只读权限，不能提交生成。");
       return;
@@ -1820,10 +1831,14 @@ export function StudioWorkspace({
         ]
       : navGroups;
 
+  const creationWorkspace =
+    ["replica", "replacement", "video", "reference"].includes(state.page) &&
+    !livePanel;
+
   return (
     <StudioContext.Provider value={context}>
       <div
-        className={`studio-shell ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
+        className={`studio-shell ${creationWorkspace ? "studio-shell--creation" : ""} ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
       >
         {menuOpen && (
           <button
@@ -1906,6 +1921,12 @@ export function StudioWorkspace({
         </aside>
         <main className={`studio-main studio-route-${state.page}`}>
           <div className="studio-topbar">
+            {creationWorkspace && (
+              <div className="studio-creation-brand">
+                <img src="/studio/logo-mark.svg" alt="" />
+                <strong>众墅之家｜AI 即创</strong>
+              </div>
+            )}
             <button
               type="button"
               aria-label="展开导航"

@@ -1905,3 +1905,121 @@ html:has(.studio-shell) {
   z-index: 2;
   pointer-events: none;
 }
+
+.studio-creation-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-right: auto;
+  min-width: 0;
+}
+.studio-shell--creation .studio-creation-brand img {
+  width: 34px;
+  height: 34px;
+}
+.studio-shell--creation .studio-creation-brand strong {
+  color: var(--studio-gold);
+  white-space: nowrap;
+  font-size: 18px;
+  font-weight: 500;
+}
+.studio-shell--creation .studio-topbar {
+  position: relative;
+  inset: auto;
+  min-height: 64px;
+  height: auto;
+  padding: 12px 24px;
+  gap: 18px;
+  border-bottom: 1px solid var(--studio-border);
+}
+.studio-shell--creation .studio-global-search {
+  width: 230px;
+}
+.studio-shell--creation .studio-stage {
+  padding: 0;
+}
+.studio-shell--creation .studio-main {
+  padding-bottom: 0;
+}
+.studio-shell--creation .studio-version {
+  display: none;
+}
+.studio-shell--creation .studio-creation-nav {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--studio-border);
+  border-radius: 0;
+}
+.studio-shell--creation .studio-creation-nav .studio-tabs {
+  justify-content: flex-start;
+  padding-left: 20px;
+}
+.studio-shell--creation .studio-creation-nav .studio-tabs > button {
+  flex: 0 0 auto;
+  min-width: 140px;
+  padding: 16px 24px;
+}
+@media (min-width: 1100px) {
+  .studio-shell--creation {
+    --studio-sidebar: 88px;
+  }
+  .studio-shell--creation .studio-sidebar {
+    padding: 16px 6px;
+  }
+  .studio-shell--creation .studio-brand b,
+  .studio-shell--creation .studio-brand small,
+  .studio-shell--creation .studio-nav-label {
+    display: none;
+  }
+  .studio-shell--creation .studio-new-button {
+    font-size: 0;
+    min-height: 40px;
+    margin-bottom: 12px;
+  }
+  .studio-shell--creation .studio-new-button .studio-icon {
+    width: 20px;
+  }
+  .studio-shell--creation .studio-nav-group {
+    margin-bottom: 8px;
+  }
+  .studio-shell--creation .studio-nav-group button {
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 2px;
+    font-size: 12px;
+    text-align: center;
+    min-height: 56px;
+  }
+  .studio-shell--creation .studio-account-entry {
+    flex-direction: column;
+    padding: 8px 2px;
+    gap: 4px;
+  }
+  .studio-shell--creation .studio-account-name {
+    font-size: 12px;
+    max-width: 72px;
+  }
+}
+@media (max-width: 1280px) {
+  .studio-shell--creation .studio-global-search {
+    width: 170px;
+  }
+  .studio-shell--creation .studio-creation-brand strong {
+    font-size: 15px;
+  }
+}
+@media (max-width: 900px) {
+  .studio-shell--creation .studio-global-search {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .studio-shell--creation .studio-creation-nav .studio-tabs > button {
+    min-width: 0;
+    flex: 1;
+    padding: 14px 10px;
+  }
+  .studio-shell--creation .studio-topbar {
+    padding: 10px 16px;
+  }
+}
