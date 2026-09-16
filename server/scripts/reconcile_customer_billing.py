@@ -93,6 +93,10 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         "daily_external_prices",
         "operation_cost_rates",
         "operation_cost_records",
+        # 20260916T1400_content_objects: 内容寻址登记表（去重 + 引用计数），PG-only
+        # （迁移在非 postgresql 方言下 return，SQLite lane 不建表）。T07 导入源无此表，
+        # 目标库为空属预期；非空即 divergent，仍 fail closed。
+        "content_objects",
     }
 )
 
@@ -151,6 +155,10 @@ PG_ONLY_COLUMNS: dict[str, frozenset[str]] = {
             "billing_operation_id",
         }
     ),
+    # 20260916T1400_content_objects: 内容寻址登记表的外键列仅存在于 PG
+    # （该迁移非 postgresql 方言 return，SQLite lane 不加此列）。
+    # T07 导入时留空，随后由 `python -m scripts.backfill_content_objects` 回填。
+    "assets": frozenset({"content_object_id"}),
 }
 DEFAULT_DIGEST_BATCH_SIZE = 1000
 _DIGEST_MODULUS = 1 << 256

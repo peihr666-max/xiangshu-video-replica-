@@ -176,6 +176,15 @@ HISTORICAL_CLI_ROWS: tuple[CommandRow, ...] = tuple(
             "historical reconciliation",
             "CW-060 isolated operator artifact only",
         ),
+        (
+            "python -m scripts.backfill_content_objects",
+            "scripts/backfill_content_objects.py",
+            "current-pg",
+            "PostgreSQL (business)",
+            "backfill (one-shot)",
+            "dry-run by default; writes only with --apply; idempotent; "
+            "registers existing objects without moving any bytes",
+        ),
     )
 )
 
