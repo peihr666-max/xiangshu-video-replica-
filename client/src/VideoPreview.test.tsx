@@ -1,11 +1,53 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Media } from "./studio/ui";
 import { VideoPreview } from "./VideoPreview";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("VideoPreview", () => {
+  it.each([
+    [1600, 900],
+    [900, 1600],
+    [800, 800],
+  ])(
+    "fits image placeholders to uploaded dimensions %s × %s",
+    (width, height) => {
+      const { container, rerender } = render(<Media alt="上传图片" />);
+      expect(container.firstElementChild).toHaveStyle({
+        aspectRatio: "0.5625",
+      });
+      rerender(
+        <Media
+          alt="上传图片"
+          asset={{
+            id: "upload",
+            name: "照片",
+            kind: "image",
+            url: "/upload.jpg",
+            group: "上传",
+            source: "上传",
+            saved: true,
+          }}
+        />,
+      );
+      const image = screen.getByRole("img", { name: "上传图片" });
+      Object.defineProperties(image, {
+        naturalWidth: { value: width },
+        naturalHeight: { value: height },
+      });
+      fireEvent.load(image);
+      expect(container.firstElementChild).toHaveStyle({
+        aspectRatio: String(width / height),
+      });
+      rerender(<Media alt="上传图片" />);
+      expect(container.firstElementChild).toHaveStyle({
+        aspectRatio: "0.5625",
+      });
+    },
+  );
+
   it("uses the selected frame ratio for loaded and empty images", () => {
     const { container, rerender } = render(
       <VideoPreview frameRatio="9:16" alt="首帧" />,
@@ -29,9 +71,9 @@ describe("VideoPreview", () => {
     expect(container.firstElementChild).toHaveStyle({ aspectRatio: "1" });
   });
 
-  it("uses native dimensions only in automatic mode and resets them for a new source", () => {
+  it("uses native image dimensions by default and resets them for a new source", () => {
     const { container, rerender } = render(
-      <VideoPreview frameRatio="adaptive" poster="/wide.jpg" alt="自动预览" />,
+      <VideoPreview poster="/wide.jpg" alt="自动预览" />,
     );
     const image = screen.getByRole("img", { name: "自动预览" });
     Object.defineProperties(image, {
@@ -42,9 +84,7 @@ describe("VideoPreview", () => {
     expect(container.firstElementChild).toHaveStyle({
       aspectRatio: String(16 / 9),
     });
-    rerender(
-      <VideoPreview frameRatio="adaptive" poster="/new.jpg" alt="自动预览" />,
-    );
+    rerender(<VideoPreview poster="/new.jpg" alt="自动预览" />);
     expect(container.firstElementChild).toHaveStyle({ aspectRatio: "0.5625" });
   });
 

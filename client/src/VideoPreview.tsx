@@ -31,7 +31,7 @@ export function VideoPreview({
   fallback,
   overlay,
   children,
-  frameRatio,
+  frameRatio = src ? undefined : "adaptive",
   onLoadedMetadata,
   ...videoProps
 }: Props) {

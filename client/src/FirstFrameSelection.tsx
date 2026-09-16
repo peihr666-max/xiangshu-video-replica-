@@ -741,11 +741,6 @@ export function FirstFrameSelection({
             {payload.candidates.map((candidate, index) => (
               <FirstFrameOption
                 candidate={candidate}
-                aspectRatio={
-                  isHistoryVersion
-                    ? (payload.aspect_ratio ?? "source")
-                    : aspectRatio
-                }
                 manualReview={payload.review_mode === "HUMAN_CONFIRMATION"}
                 checked={selectedAssetId === candidate.asset_id}
                 disabled={
@@ -827,7 +822,6 @@ function firstFrameTaskStageLabel(task: FirstFrameTask | null): string {
 
 function FirstFrameOption({
   candidate,
-  aspectRatio,
   manualReview = false,
   checked,
   disabled,
@@ -838,7 +832,6 @@ function FirstFrameOption({
   readOnly,
 }: {
   candidate: FirstFrameCandidate;
-  aspectRatio: string;
   manualReview?: boolean;
   checked: boolean;
   disabled: boolean;
@@ -865,7 +858,7 @@ function FirstFrameOption({
         value={candidate.asset_id}
       />
       <VideoPreview
-        frameRatio={aspectRatio}
+        frameRatio="adaptive"
         alt={`首帧候选 ${index + 1}`}
         onPosterError={onPreviewError}
         poster={previewUrl}

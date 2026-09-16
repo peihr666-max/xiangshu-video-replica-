@@ -68,3 +68,13 @@
 - 截图来自本地审核数据，不代表真实付费生成。本轮无后端或 Docker 改动；沿用已完成的后端证据，仍随 PR #128 待评审，未合并/部署。
 
 截图：[参考竖屏](creation-workflow-ui/reference-ratio-portrait.png)、[首尾帧竖屏](creation-workflow-ui/frames-ratio-portrait.png)。
+
+## 2026-09-17 最终澄清：按上传图片原始比例
+
+用户最新明确选择“跟随上传图片：横图自动变横框”。此规则替代上一节按生成参数控制展示框的版本。
+
+- 没有图片时占位为 9:16；图片加载后按 naturalWidth/naturalHeight 适配，横图横框、竖图竖框、方图方框。更换图片时重新读取尺寸，移除后回到 9:16；完整显示而不拉伸或裁剪。共享图片组件覆盖文图、参考、人物库、素材库及首帧候选。
+- 生成参数只控制输出请求，不再改变上传素材的显示比例。右侧标签改为“原图比例”；去掉首尾帧固定横向外框，虚线边界落在真实占位区域。
+- 最终 TypeScript / 修改文件 Biome 通过。完整前端 106 文件 / 1634 项通过（native-image-ratio-retest.log）；预览标签与边框收尾后 CreationPages 107 项通过（native-image-ratio-label.log）。首轮高并发运行因机器内存耗尽导致 worker 退出，未记作通过；限制 2 workers 后完整通过。
+- 实际浏览器：原图 1672×941，首帧框 284.3×160、右侧 715.8×402.8，空尾帧 90×160；输出参数由 9:16 切换 1:1 后上述图片尺寸保持原图比例。参考缩略图 170.6×96，右侧同原图比例；手机宽 390px，文档宽 386px，横图按可用宽度缩小且无横向溢出。
+- 最新截图：[文图原图比例](creation-workflow-ui/frames-native-ratio.png)、[参考原图比例](creation-workflow-ui/reference-native-ratio.png)。前节竖框截图仅作历史记录，不是最终验收标准。仍为本地审核环境，无真实生成、合并或部署。

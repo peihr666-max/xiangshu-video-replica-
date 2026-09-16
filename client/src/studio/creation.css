@@ -1553,6 +1553,8 @@
   grid-column: 1 / -1;
   padding: 0 0 10px;
   overflow: hidden;
+  border: 0;
+  background: transparent;
 }
 .creation-video-workspace--split .creation-frame-slot > .studio-button {
   min-height: 36px;
@@ -1566,6 +1568,10 @@
 .creation-video-workspace--split .creation-frame-row button > .video-preview {
   --image-preview-height: 160px;
   height: 160px;
+}
+/* The image frame itself is the placeholder, not a fixed landscape outer card. */
+.creation-video-workspace--split .creation-frame-slot .studio-media--empty {
+  border: 1px dashed #555851;
 }
 .creation-video-workspace--split .creation-video-composer textarea {
   height: 90px;

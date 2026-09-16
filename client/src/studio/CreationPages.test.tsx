@@ -1814,7 +1814,7 @@ describe("V1.4 创作页面", () => {
     expect(value.navigate).toHaveBeenCalledWith("reference");
   });
 
-  it("文图与参考预览和占位同步跟随生成画面比例", () => {
+  it("文图与参考空占位默认竖屏且不随输出比例变化", () => {
     const value = studio({ state: { ...studio().state, page: "video" } });
     useStudio.mockReturnValue(value);
     const view = render(<VideoPage />);
@@ -1826,11 +1826,10 @@ describe("V1.4 创作页面", () => {
           draft: { ...value.state.draft, ratio },
         };
         view.rerender(<VideoPage />);
-        const [width, height] = ratio.split(":").map(Number);
         for (const preview of view.container.querySelectorAll(
           ".creation-video-grid .video-preview",
         )) {
-          expect(preview).toHaveStyle({ aspectRatio: String(width / height) });
+          expect(preview).toHaveStyle({ aspectRatio: "0.5625" });
         }
         expect(
           view.container.querySelector(".creation-preview-media"),

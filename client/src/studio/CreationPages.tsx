@@ -3171,7 +3171,6 @@ export function VideoPage() {
                                 ? { ...asset, kind: "image", url: asset.poster }
                                 : undefined
                           }
-                          aspectRatio={state.draft.ratio}
                           alt={asset.kind === "audio" ? "音频预览" : asset.name}
                         />
                       </button>
@@ -3288,12 +3287,7 @@ export function VideoPage() {
                     onClick={() => openPicker("first-frame")}
                     type="button"
                   >
-                    <Media
-                      asset={firstFrame}
-                      alt="首帧"
-                      presentation="video"
-                      aspectRatio={state.draft.ratio}
-                    />
+                    <Media asset={firstFrame} alt="首帧" presentation="video" />
                     <span>首帧（选填）</span>
                   </button>
                   {firstFrameId && (
@@ -3321,12 +3315,7 @@ export function VideoPage() {
                     onClick={() => openPicker("tail-frame")}
                     type="button"
                   >
-                    <Media
-                      asset={tailFrame}
-                      alt="尾帧"
-                      presentation="video"
-                      aspectRatio={state.draft.ratio}
-                    />
+                    <Media asset={tailFrame} alt="尾帧" presentation="video" />
                     <span>尾帧（可选）</span>
                   </button>
                   {state.draft.tailFrameId && (
@@ -3441,7 +3430,9 @@ export function VideoPage() {
           <div className="creation-panel-title">
             {referenceMode ? "参考预览" : "首帧预览"}
             <small className="creation-preview-ratio">
-              {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
+              {(referenceMode ? references.length > 0 : Boolean(firstFrame))
+                ? "原图比例"
+                : "9:16"}
             </small>
           </div>
           {!referenceMode && firstFrameLoading ? (
@@ -3495,14 +3486,12 @@ export function VideoPage() {
                 }
                 alt="参考画布"
                 className="creation-preview-media"
-                aspectRatio={state.draft.ratio}
                 presentation="video"
               />
             ) : (
               <Media
                 alt="还没有参考素材"
                 className="creation-preview-media"
-                aspectRatio={state.draft.ratio}
                 fallback={
                   <Empty
                     title="还没有参考素材"
@@ -3516,14 +3505,12 @@ export function VideoPage() {
               asset={firstFrame}
               alt="首帧预览"
               className="creation-preview-media"
-              aspectRatio={state.draft.ratio}
               presentation="video"
             />
           ) : (
             <Media
               alt="当前为文生视频"
               className="creation-preview-media"
-              aspectRatio={state.draft.ratio}
               fallback={
                 <Empty
                   title="当前为文生视频"

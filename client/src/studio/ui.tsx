@@ -336,7 +336,7 @@ export function Media({
       <VideoPreview
         onPlay={onPlay}
         frameRatio={
-          aspectRatio ?? (asset.kind === "image" ? "9:16" : undefined)
+          aspectRatio ?? (asset.kind === "image" ? "adaptive" : undefined)
         }
         className={`studio-media ${className}`}
         controls
