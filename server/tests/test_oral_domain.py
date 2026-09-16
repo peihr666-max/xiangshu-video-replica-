@@ -2401,7 +2401,7 @@ def test_oral_task_snapshots_configured_unit_price(scene: str) -> None:
         title="价格快照",
         script_text="测试口播价格快照",
         audio_asset_id=None,
-        subtitle={"enabled": True},
+        subtitle={"st_show": True},
         idempotency_key="oral-price-snapshot-key",
     )
 

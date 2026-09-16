@@ -3307,6 +3307,12 @@ def retry_generation_task(
             )
 
         if archive_status == "ARCHIVE_FAILED":
+            if status != "SUCCEEDED":
+                raise generation_error(
+                    409,
+                    "TASK_RETRY_NOT_ALLOWED",
+                    "The saved result is already being recovered; refresh before retrying.",
+                )
             if (
                 provider_result_url is None
                 or int(row["archive_retry_count"]) >= MAX_ARCHIVE_RETRIES
@@ -3318,7 +3324,7 @@ def retry_generation_task(
                 )
             retry_path = "ARCHIVE_ONLY"
             audit_action = "generation_task.archive_retry_queued"
-            conn.execute(
+            updated = conn.execute(
                 """
                 UPDATE generation_tasks
                 SET
@@ -3331,9 +3337,23 @@ def retry_generation_task(
                     retry_requested_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = %s
+                  AND status = 'SUCCEEDED'
+                  AND archive_status = 'ARCHIVE_FAILED'
+                  AND locked_by IS NULL AND locked_until IS NULL
+                  AND provider_result_url = %s
+                  AND archive_retry_count < %s
+                  AND superseded_by_task_id IS NULL
                 """,
-                (request.retry_reason, actor.id, task_id),
+                (request.retry_reason, actor.id, task_id, provider_result_url, MAX_ARCHIVE_RETRIES),
             )
+            # Queue acquisition commits separately from the initial read.
+            # Never clear a recovery lease or reopen a concurrently finished result.
+            if updated.rowcount != 1:
+                raise generation_error(
+                    409,
+                    "TASK_RETRY_NOT_ALLOWED",
+                    "The saved result changed or is being recovered; refresh before retrying.",
+                )
         elif quality_status in {"AUDIO_QUALITY_FAILED", "VISUAL_QUALITY_FAILED"}:
             raise generation_error(
                 409,

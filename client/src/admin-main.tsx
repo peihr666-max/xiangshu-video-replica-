@@ -15,6 +15,7 @@ import { AdminApp } from "./AdminApp";
 // 拆分双入口后它只剩客户壳 App.tsx 一处导入，管理端产物随之半裸渲染；
 // 管理入口必须在此显式导入，契约由 entryContract.test.ts 钉住。
 import "./styles.css";
+import "./scrollbars.css";
 
 const root = document.getElementById("root");
 
