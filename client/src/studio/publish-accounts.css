@@ -23,3 +23,32 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+
+.studio-publish-account.publish-account {
+  flex-wrap: wrap;
+}
+
+.publish-account > span {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.publish-account > span > small {
+  display: block;
+  margin-left: 0;
+}
+
+@media (max-width: 640px) {
+  .studio-publish-account.publish-account {
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .studio-publish-account.publish-account > small,
+  .studio-publish-account.publish-account > button {
+    grid-column: 1 / -1;
+    margin-left: 0;
+  }
+}

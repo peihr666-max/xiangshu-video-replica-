@@ -221,12 +221,25 @@ fn read_accounts(root: &Path) -> Result<Vec<LocalAccount>, String> {
     Ok(accounts)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum OfficialWindowMode {
+    Login,
+    Publish,
+    Clear,
+}
+
+impl OfficialWindowMode {
+    fn visible(self) -> bool {
+        self == Self::Publish
+    }
+}
+
 fn official_window(
     app: &AppHandle,
     dir: &Path,
     id: &str,
     platform: &Platform,
-    clearing: bool,
+    mode: OfficialWindowMode,
 ) -> Result<WebviewWindow, String> {
     if !cfg!(windows) {
         return Err("本地扫码账号管理需要 Windows 桌面客户端".into());
@@ -238,7 +251,7 @@ fn official_window(
     }
     let profile = dir.join(id).join("browser");
     fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
-    let url = if clearing {
+    let url = if mode == OfficialWindowMode::Clear {
         "about:blank"
     } else {
         platform.login_url()
@@ -248,7 +261,9 @@ fn official_window(
         label,
         WebviewUrl::External(url.parse().map_err(|_| "平台地址错误")?),
     )
-    .visible(!clearing)
+    .visible(mode.visible())
+    .focused(mode.visible())
+    .skip_taskbar(!mode.visible())
     .title("官方平台 · 扫码登录 / 发布")
     .inner_size(1080.0, 780.0)
     .data_directory(profile)
@@ -355,7 +370,7 @@ pub async fn start_local_publish_login(
         .as_ref()
         .map(|a| a.id.clone())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    official_window(&app, &dir, &id, &platform, false)?;
+    official_window(&app, &dir, &id, &platform, OfficialWindowMode::Login)?;
     logins.insert(
         id.clone(),
         Login {
@@ -379,7 +394,7 @@ pub async fn check_local_publish_login(
 ) -> Result<LoginStatus, String> {
     main_only(&window)?;
     let dir = root(&app, &owner)?;
-    let platform = {
+    let (platform, elapsed) = {
         let logins = state.logins.lock().map_err(|_| "扫码会话忙，请重试")?;
         let login = logins
             .get(&login_id)
@@ -388,23 +403,21 @@ pub async fn check_local_publish_login(
         if login.started.elapsed() > Duration::from_secs(300) {
             return Ok(LoginStatus::phase("expired"));
         }
-        login.platform.clone()
+        (login.platform.clone(), login.started.elapsed())
     };
     let Some(official) = app.get_webview_window(&format!("publish-{login_id}")) else {
         return Ok(LoginStatus::phase("closed"));
     };
-    if official
-        .url()
-        .map_err(|e| e.to_string())?
-        .origin()
-        .ascii_serialization()
-        != platform.origin()
-    {
+    let url = official.url().map_err(|e| e.to_string())?;
+    if url.as_str() == "about:blank" && elapsed < Duration::from_secs(45) {
+        return Ok(LoginStatus::phase("loading"));
+    }
+    if url.origin().ascii_serialization() != platform.origin() {
         return Ok(LoginStatus::phase("action_required"));
     }
     let (send, receive) = std::sync::mpsc::channel();
     let script = format!(
-        "location.origin === {} ? ({{identity: window.__xiangshuPublishIdentity || null, login: window.__xiangshuPublishLogin || null}}) : null",
+        "location.origin === {} ? ({{identity: window.__xiangshuPublishIdentity || null, login: window.__xiangshuReadPublishLogin ? window.__xiangshuReadPublishLogin() : window.__xiangshuPublishLogin || null}}) : null",
         serde_json::to_string(platform.origin()).map_err(|e| e.to_string())?
     );
     official
@@ -412,11 +425,17 @@ pub async fn check_local_publish_login(
             let _ = send.send(value);
         })
         .map_err(|e| e.to_string())?;
-    let value =
+    let response =
         tauri::async_runtime::spawn_blocking(move || receive.recv_timeout(Duration::from_secs(5)))
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|_| "官方页面未响应，请稍后重试")?;
+            .map_err(|e| e.to_string())?;
+    // Navigation can briefly delay script execution; do not exhaust the UI's
+    // retry budget before the platform's initial login page has loaded.
+    let value = match response {
+        Ok(value) => value,
+        Err(_) if elapsed < Duration::from_secs(45) => return Ok(LoginStatus::phase("loading")),
+        Err(_) => return Err("官方页面未响应，请重新获取二维码或打开官方窗口检查".into()),
+    };
     if value.len() > 620_000 {
         return Err("平台登录信息过大，请重新扫码".into());
     }
@@ -505,6 +524,9 @@ pub async fn focus_local_publish_login(
         .get_webview_window(&format!("publish-{login_id}"))
         .ok_or("官方窗口已关闭，请重新扫码")?;
     official.unminimize().map_err(|e| e.to_string())?;
+    official
+        .set_skip_taskbar(false)
+        .map_err(|e| e.to_string())?;
     official.show().map_err(|e| e.to_string())?;
     official.set_focus().map_err(|e| e.to_string())
 }
@@ -530,7 +552,13 @@ pub async fn cancel_local_publish_login(
                         .map_err(|e| e.to_string())?;
                     official
                 }
-                None => official_window(&app, &dir, &login.id, &login.platform, true)?,
+                None => official_window(
+                    &app,
+                    &dir,
+                    &login.id,
+                    &login.platform,
+                    OfficialWindowMode::Clear,
+                )?,
             };
             if let Err(error) = clear_profile(&official) {
                 let _ = official.close();
@@ -567,7 +595,13 @@ pub async fn open_local_publish_account(
         .into_iter()
         .find(|a| a.id == account_id)
         .ok_or("账号不存在，请重新扫码")?;
-    official_window(&app, &dir, &account.id, &account.platform, false)?;
+    official_window(
+        &app,
+        &dir,
+        &account.id,
+        &account.platform,
+        OfficialWindowMode::Publish,
+    )?;
     Ok(())
 }
 
@@ -591,7 +625,13 @@ pub async fn remove_local_publish_account(
         .find(|a| a.id == account_id)
         .ok_or("账号不存在")?;
     // Clear only this exact WebView2 profile; no cookies are read into Rust or JS.
-    let official = official_window(&app, &dir, &account.id, &account.platform, true)?;
+    let official = official_window(
+        &app,
+        &dir,
+        &account.id,
+        &account.platform,
+        OfficialWindowMode::Clear,
+    )?;
     if let Err(error) = clear_profile(&official) {
         let _ = official.close();
         return Err(error);
@@ -604,6 +644,12 @@ pub async fn remove_local_publish_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn login_and_cleanup_do_not_open_a_visible_official_window() {
+        assert!(!OfficialWindowMode::Login.visible());
+        assert!(!OfficialWindowMode::Clear.visible());
+        assert!(OfficialWindowMode::Publish.visible());
+    }
     #[test]
     fn qr_snapshot_rejects_stale_remote_and_non_raster_images() {
         for image in [
