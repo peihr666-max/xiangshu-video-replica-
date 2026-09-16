@@ -180,7 +180,10 @@ NNN和description必须替换为真实任务编号和含义，路径不能直接
 - [ ] 从worktree外执行git worktree remove <已核对的绝对路径>。命令失败就检查原因，不加--force，不用Remove-Item -Recurse/rmdir绕过Git保护。
 - [ ] 再检查worktree list和路径状态，归档并释放本机认领，更新执行登记为CLEANED。跨设备占用解除由集成人同步，不能只删本地锁就宣称全局已释放。
 
-**默认保留本地分支和远程分支。** 用户本次允许删除的是合并后的worktree目录；分支/回滚引用是另一对象，不顺手删除。没有合并或检查尚未通过，保持REVIEW/MERGED待核验并保留目录。
+**合并核验通过后，worktree 目录、本地分支、远程分支三者一起清理（2026-09-16 起）。** 顺序：`git worktree remove <绝对路径>` → `git branch -D <分支>`（squash 合并后 `-d` 会拒绝）→ `git push origin --delete <分支>`。回滚引用由 PR 页面与 `refs/pull/<N>/head` 永久保留，不依赖分支存在。没有合并或检查尚未通过，保持REVIEW/MERGED待核验并保留目录与分支；被取代而不再需要的未合并分支，删除前打注释标签 `archive/<分支名>` 并推送 origin。
+
+- [ ] worktree remove 后目录若残留，几乎都是 `node_modules` 的 Junction（指向主仓库或其他 worktree）：只删链接（`cmd /c rmdir <path>`），不得递归删除跟随进目标。
+- [ ] 需要把 main 合进任务分支时，在同一分支上 `git merge origin/main` 后 push；不另开 `*-pr` 分支、不另开第二个 PR、不留临时合并 worktree。
 
 ## 7. 每次任务必须交付的最小记录
 
