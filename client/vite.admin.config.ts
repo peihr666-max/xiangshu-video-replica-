@@ -91,6 +91,9 @@ const renameAdminHtmlPlugin: Plugin = {
       );
     }
     copyFileSync(faviconSource, resolve(outDir, "favicon.svg"));
+    for (const icon of ["favicon.png", "favicon.ico"]) {
+      copyFileSync(resolve(scriptDir, "public", icon), resolve(outDir, icon));
+    }
     // The admin and customer surfaces share the official wordmark. Copy only
     // this asset; the rest of public/studio remains customer-only.
     const brandSource = resolve(scriptDir, "public/studio/brand.png");

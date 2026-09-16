@@ -288,11 +288,13 @@ class ApilioGemini:
         base_url: str = APILIO_DEFAULT_BASE_URL,
         model: str = APILIO_GEMINI_MODEL,
         transport: ApilioChatTransport | None = None,
+        text_ai_config: tuple[str, str, str] | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.transport = transport or UrllibApilioChatTransport()
+        self.text_ai_config = text_ai_config
 
     def analyze(self, *, video_uri: str, duration_seconds: float) -> ProviderResponse:
         if not is_https_video_url(video_uri):
@@ -364,26 +366,39 @@ class ApilioGemini:
         return ProviderResponse(text=text, raw=raw)
 
     def repair_json(self, *, invalid_json: str, error: str) -> ProviderResponse:
-        payload = {
-            "model": self.model,
-            "temperature": 0,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {
-                    "role": "user",
-                    "content": (
-                        "修复下面的视频拆解 JSON，只返回符合要求结构的合法 JSON，不要解释。"
-                        f"校验错误：{error}。"
-                        f"待修复的 JSON：{invalid_json}"
-                    ),
-                }
-            ],
-        }
-        from app.billing_meter import meter_call
+        from fastapi import HTTPException
 
-        with meter_call("analysis_repair"):
-            text, raw = self._complete(payload)
-        return ProviderResponse(text=text, raw=raw)
+        from app.billing_meter import meter_call
+        from app.script_rewrite import ConfirmedRewriteResponseError, request_deepseek_text
+
+        if self.text_ai_config is None:
+            raise HTTPException(
+                503,
+                detail={
+                    "code": "DEEPSEEK_NOT_CONFIGURED",
+                    "message": "分析结果修复需要配置文本 AI · DeepSeek。",
+                    "retryable": False,
+                },
+            )
+        base_url, api_key, model = self.text_ai_config
+        confirmed_failure = None
+        # A separate service preserves legacy Apilio cost snapshots and tariffs.
+        # Complete HTTP responses still incur supplier usage if text is invalid.
+        with meter_call("analysis_repair_deepseek"):
+            try:
+                text = request_deepseek_text(
+                    base_url=base_url,
+                    api_key=api_key,
+                    model=model,
+                    source_text=invalid_json,
+                    instructions=error,
+                    purpose="json_repair",
+                )
+            except ConfirmedRewriteResponseError as exc:
+                confirmed_failure = exc
+        if confirmed_failure is not None:
+            raise confirmed_failure
+        return ProviderResponse(text=text, raw={"provider": "deepseek", "model": model})
 
     def _complete(self, payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         raw_body, _ = self.transport.post(

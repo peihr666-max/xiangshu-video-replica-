@@ -92,7 +92,7 @@ async function loginThroughAccountForm() {
     target: { value: "test-6" },
   });
   fireEvent.click(screen.getByRole("button", { name: "登录" }));
-  await screen.findByRole("button", { name: "用户档案，积分 读取失败" });
+  await screen.findByRole("button", { name: "用户档案，user-1" });
 }
 
 describe("RootApp", () => {
@@ -469,7 +469,7 @@ describe("RootApp", () => {
     // The workspace stub does not serve /api/customer/wallet pricing, so the
     // wallet summary settles to the error label instead of a credit count.
     expect(
-      await screen.findByRole("button", { name: "用户档案，积分 读取失败" }),
+      await screen.findByRole("button", { name: "用户档案，user-1" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });

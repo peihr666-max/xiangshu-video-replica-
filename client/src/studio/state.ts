@@ -3,9 +3,20 @@ import type {
   StudioAsset,
   StudioDraft,
   StudioPage,
+  StudioScript,
   StudioState,
   StudioTask,
 } from "./types";
+
+export function hasCopyResult(script: StudioScript): boolean {
+  if (script.resultKind === "extracted") return false;
+  if (script.resultKind === "rewritten" || script.resultKind === "manual")
+    return true;
+  return (
+    script.confirmed ||
+    Boolean(script.text.trim() && script.text.trim() !== script.original.trim())
+  );
+}
 
 export const pageTitles: Record<StudioPage, string> = {
   workbench: "工作台",
@@ -275,6 +286,22 @@ export function patchStudioDraft(
     next.promptBindingsStale = true;
   if (Object.hasOwn(patch, "prompt") && patch.promptBindingsStale === undefined)
     next.promptBindingsStale = false;
+  if (
+    sourceChanged ||
+    projectChanged ||
+    (Object.hasOwn(patch, "ipId") && patch.ipId !== draft.ipId) ||
+    (
+      [
+        "rewriteMethod",
+        "rewriteInstructions",
+        "rewriteLength",
+        "rewriteWordCount",
+      ] as const
+    ).some((key) => Object.hasOwn(patch, key) && patch[key] !== draft[key])
+  ) {
+    next.pendingRewrite = undefined;
+    next.rewriteCandidate = undefined;
+  }
   if (sourceChanged) {
     if (!Object.hasOwn(patch, "projectId")) next.projectId = undefined;
     if (!Object.hasOwn(patch, "sourceAssetId")) next.sourceAssetId = undefined;

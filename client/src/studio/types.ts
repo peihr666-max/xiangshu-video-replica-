@@ -95,6 +95,11 @@ export type StudioPerson = {
   scope: string;
   audience: string;
   expression: string;
+  audience_needs?: string;
+  factual_background?: string;
+  sample_script?: string;
+  forbidden_claims?: string;
+
   sheetId?: string;
   sceneLookCount: number;
   photoIds: string[];
@@ -195,6 +200,8 @@ export type StudioData = {
   };
 };
 export type StudioScript = {
+  resultKind?: "extracted" | "rewritten" | "manual";
+  rewriteTaskId?: string;
   id: string;
   title: string;
   original: string;
@@ -206,6 +213,18 @@ export type StudioScript = {
   sourceKind?: "viral" | "project" | "link" | "upload";
 };
 export type StudioDraft = {
+  pendingRewrite?: {
+    scopeKey: string;
+    resultText: string;
+    taskId?: string;
+    requestKey?: string;
+    startedAt?: number;
+  };
+  rewriteCandidate?: { scopeKey: string; text: string };
+  rewriteMethod?: "ip" | "custom";
+  rewriteInstructions?: string;
+  rewriteLength?: "original" | "100" | "200" | "300" | "custom";
+  rewriteWordCount?: number;
   id: string;
   ipId?: string;
   sourceId?: string;

@@ -217,6 +217,10 @@ class SimpleLibraryEntry:
     generation_source: str | None
     scene_look_count: int
     views: tuple[SimpleCharacterView, ...]
+    audience_needs: str = ""
+    factual_background: str = ""
+    sample_script: str = ""
+    forbidden_claims: str = ""
 
 
 @dataclass(frozen=True)
@@ -919,6 +923,10 @@ def _load_simple_library_entries(
                 service_scope=_profile_constraint(constraints, "ip_service_scope"),
                 target_audience=_profile_constraint(constraints, "ip_target_audience"),
                 expression_style=_profile_constraint(constraints, "ip_expression_style"),
+                audience_needs=_profile_constraint(constraints, "ip_audience_needs"),
+                factual_background=_profile_constraint(constraints, "ip_factual_background"),
+                sample_script=_profile_constraint(constraints, "ip_sample_script"),
+                forbidden_claims=_profile_constraint(constraints, "ip_forbidden_claims"),
                 owner_user_id=(
                     None
                     if identity_rows[0]["owner_user_id"] is None
@@ -1045,6 +1053,10 @@ def update_simple_character_profile(
     service_scope: str,
     target_audience: str,
     expression_style: str,
+    audience_needs: str | None = None,
+    factual_background: str | None = None,
+    sample_script: str | None = None,
+    forbidden_claims: str | None = None,
 ) -> SimpleLibraryEntry:
     """Update the owner-facing IP profile on the identity's base persona."""
     require_not_auditor(
@@ -1105,6 +1117,16 @@ def update_simple_character_profile(
             "ip_expression_style": clean_expression_style,
         }
     )
+    for field_name, value, limit in [
+        ("audience_needs", audience_needs, 600),
+        ("factual_background", factual_background, 2000),
+        ("sample_script", sample_script, 2000),
+        ("forbidden_claims", forbidden_claims, 600),
+    ]:
+        if value is not None:
+            constraints[f"ip_{field_name}"] = _validated_ip_profile_field(
+                value, field_name=field_name, max_length=limit, multiline=True
+            )
     persona_id = str(base_persona["id"])
     profile_changed = (
         str(identity["display_name"]) != clean_name
@@ -1155,11 +1177,15 @@ def _validated_ip_profile_field(
     field_name: str,
     max_length: int,
     required: bool = False,
+    multiline: bool = False,
 ) -> str:
     clean = value.strip()
     if required and not clean:
         raise character_error(422, "IDENTITY_NAME_REQUIRED", "人物显示名不能为空。")
-    has_control_character = any(ord(character) < 32 or ord(character) == 127 for character in clean)
+    has_control_character = any(
+        (ord(character) < 32 or ord(character) == 127) and not (multiline and character in "\n\r\t")
+        for character in clean
+    )
     if len(clean) > max_length or has_control_character:
         raise character_error(
             422,

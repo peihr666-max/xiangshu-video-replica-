@@ -77,6 +77,7 @@ import {
   DEFAULT_MAX_REFERENCE_AUDIOS,
   DEFAULT_MAX_REFERENCE_IMAGES,
   DEFAULT_MAX_REFERENCE_VIDEOS,
+  hasCopyResult,
   isReferenceAsset,
   MAX_REFERENCE_MEDIA_SECONDS,
   navigateStudioState,
@@ -123,15 +124,6 @@ type WalletSummary = Pick<
   StudioAccountSummary,
   "walletStatus" | "availableCredits"
 >;
-
-function walletSummaryLabel(summary: WalletSummary) {
-  if (summary.walletStatus === "ready" && summary.availableCredits !== null) {
-    return `${summary.availableCredits} 积分`;
-  }
-  if (summary.walletStatus === "loading") return "查询中";
-  if (summary.walletStatus === "error") return "读取失败";
-  return "未查询";
-}
 
 function quoteMatchesInput(
   quote: GenerationPriceQuote | null,
@@ -1333,7 +1325,10 @@ export function StudioWorkspace({
             script: {
               ...current.script,
               original: text,
-              text: current.script.text.trim() ? current.script.text : text,
+              text: hasCopyResult(current.script) ? current.script.text : "",
+              resultKind: hasCopyResult(current.script)
+                ? "manual"
+                : "extracted",
               confirmed: false,
             },
             scriptEdited: true,
@@ -1700,6 +1695,13 @@ export function StudioWorkspace({
       openLive("projects");
       return;
     }
+    const extractionScope = JSON.stringify([
+      latestDraftRef.current.id,
+      latestDraftRef.current.projectId,
+      latestDraftRef.current.sourceId,
+      latestDraftRef.current.sourceAssetId,
+    ]);
+    const extractionAccount = currentUser.id;
     extractingRef.current = true;
     const permissionGeneration = permissionGenerationRef.current;
     notify("正在提取音频并转写文案，预计一到两分钟，请勿关闭页面…");
@@ -1711,7 +1713,28 @@ export function StudioWorkspace({
           permissionGenerationRef.current !== permissionGeneration
         )
           return;
-        const currentScript = latestDraftRef.current.script;
+        const currentDraft = latestDraftRef.current;
+        if (
+          saveAccountRef.current !== extractionAccount ||
+          (JSON.stringify([
+            currentDraft.id,
+            currentDraft.projectId,
+            currentDraft.sourceId,
+            currentDraft.sourceAssetId,
+          ]) !== extractionScope &&
+            !(
+              explicitSource &&
+              currentDraft.projectId === projectId &&
+              (currentDraft.sourceAssetId ?? currentDraft.sourceId) === assetId
+            ))
+        )
+          return;
+        const sameSource =
+          currentDraft.projectId === projectId &&
+          (currentDraft.sourceAssetId ?? currentDraft.sourceId) === assetId;
+        const currentScript = sameSource
+          ? currentDraft.script
+          : createDraft().script;
         patchDraft({
           projectId,
           sourceId: assetId,
@@ -1720,13 +1743,14 @@ export function StudioWorkspace({
           script: {
             ...currentScript,
             original: text,
-            text: currentScript.text.trim() ? currentScript.text : text,
+            text: hasCopyResult(currentScript) ? currentScript.text : "",
+            resultKind: hasCopyResult(currentScript) ? "manual" : "extracted",
             confirmed: false,
           },
         });
         navigate("copy", { returnTo: "workbench" });
         setWalletRevision((value) => value + 1);
-        notify("文案已提取，请在文案工坊核对内容并确认终稿。");
+        notify("文案已提取，请核对原文并选择二创方式。");
       })
       .catch((cause: unknown) => {
         extractingRef.current = false;
@@ -1836,8 +1860,8 @@ export function StudioWorkspace({
             }}
           >
             <span>
-              <img src="/studio/brand.png" alt="众墅之家" />
-              <b>｜ AI 即创</b>
+              <img src="/studio/logo-mark.svg" alt="众墅之家" />
+              <b>众墅之家｜AI 即创</b>
             </span>
             <small>乡墅爆款视频创作平台</small>
           </button>
@@ -1879,13 +1903,12 @@ export function StudioWorkspace({
           <button
             type="button"
             className={`studio-account-entry ${state.page === "profile" ? "is-active" : ""}`}
-            aria-label={`用户档案，积分 ${walletSummaryLabel(walletSummary)}`}
+            aria-label={`用户档案，${currentUser.username}`}
             onClick={() => navigate("profile")}
           >
             <WorkspaceUserAvatar currentUser={currentUser} review={review} />
-            <span className="studio-account-points">
-              <small>积分</small>
-              <strong>{walletSummaryLabel(walletSummary)}</strong>
+            <span className="studio-account-name" title={currentUser.username}>
+              {currentUser.username}
             </span>
           </button>
         </aside>

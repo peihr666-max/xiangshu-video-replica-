@@ -113,6 +113,10 @@ class ScriptRewriteIpProfileSummary(BaseModel):
     service_scope: str
     target_audience: str
     expression_style: str
+    audience_needs: str = ""
+    factual_background: str = ""
+    sample_script: str = ""
+    forbidden_claims: str = ""
     profile_version: int
 
 
@@ -124,6 +128,7 @@ class ScriptRewriteTaskResponse(BaseModel):
     ip_profile_snapshot: ScriptRewriteIpProfileSummary | None
     source_asset_id: str | None
     source_text: str
+    instructions: str = ""
     status: str
     attempt: int
     result: ScriptRewriteResult | None
@@ -188,6 +193,7 @@ def rewrite_project_script(
             idempotency_key=request.idempotency_key or str(uuid4()),
             identity_id=request.identity_id,
             source_asset_id=request.source_asset_id,
+            instructions=request.instructions,
         )
         return script_rewrite_task_response(row)
 
@@ -294,6 +300,7 @@ def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
         ip_profile_snapshot=snapshot,
         source_asset_id=request.source_asset_id,
         source_text=request.source_text,
+        instructions=request.instructions,
         status=str(row["status"]),
         attempt=int(row["attempt"]),
         result=script_rewrite_task_result(row),

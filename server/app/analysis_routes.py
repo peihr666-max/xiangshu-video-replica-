@@ -950,6 +950,7 @@ def fail_analysis_task(
         code = str(cause.detail.get("code") or code)
         message = str(cause.detail.get("message") or message)
         retryable = bool(cause.detail.get("retryable", True))
+        failure_phase = cause.detail.get("failure_phase")
     now_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     updated = conn.execute(
         """

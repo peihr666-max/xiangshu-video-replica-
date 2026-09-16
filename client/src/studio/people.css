@@ -14,7 +14,7 @@
 .people-toolbar h1,
 .person-page h1 {
   margin: 0;
-  font-size: 30px;
+  font-size: var(--font-title);
 }
 .people-toolbar p,
 .person-header p,
@@ -33,7 +33,7 @@
   color: #ecece8;
   border-radius: 8px;
   padding: 11px 26px;
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .people-filter.is-active {
   background: #e5aa36;
@@ -67,7 +67,7 @@
 }
 .person-card h2 {
   margin: 0;
-  font-size: 23px;
+  font-size: var(--font-lead);
 }
 .person-card p {
   color: #999b95;
@@ -77,7 +77,7 @@
   flex-wrap: wrap;
   gap: 8px;
   color: #b7baaf;
-  font-size: 13px;
+  font-size: var(--font-label);
   min-height: 42px;
 }
 .person-card__meta span.is-warning {
@@ -95,7 +95,7 @@
   background: none;
   border: 0;
   color: #ecece8;
-  font-size: 17px;
+  font-size: var(--font-subtitle);
   padding: 8px 0;
   margin-bottom: 14px;
 }
@@ -121,7 +121,7 @@
   flex: 1 1 auto;
 }
 .person-header h1 {
-  font-size: 27px;
+  font-size: var(--font-title);
   margin: 0 0 8px;
 }
 .person-header p {
@@ -158,7 +158,7 @@
   margin-top: 0;
 }
 .ip-preview {
-  font-size: 17px;
+  font-size: var(--font-subtitle);
   line-height: 2;
   color: #e2e1dc;
   white-space: pre-wrap;
@@ -230,7 +230,7 @@
 .scene-set-label {
   margin: 6px 0 14px;
   color: #999b95;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .photos-panel {
   display: grid;
@@ -262,7 +262,7 @@
 }
 .photos-panel .panel-heading p {
   color: #999b95;
-  font-size: 14px;
+  font-size: var(--font-body);
   margin-bottom: 0;
 }
 .photos-panel .panel-heading > div:last-child {
@@ -287,7 +287,7 @@
 }
 .ip-layout .studio-field:has(textarea)::after {
   content: "可换行输入，拖动右下角可展开";
-  font-size: 12px;
+  font-size: var(--font-caption);
   color: #999b95;
 }
 .scene-grid strong {
@@ -295,7 +295,7 @@
   margin-top: 12px;
 }
 .scene-grid .studio-panel button {
-  font-size: 13px;
+  font-size: var(--font-label);
   padding: 8px 11px;
 }
 .avatar-grid {

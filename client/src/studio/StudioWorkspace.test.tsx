@@ -268,7 +268,7 @@ describe("V1.4 workspace integration", () => {
     onSessionExpired: vi.fn(),
   });
 
-  it("正式客户侧栏读取真实钱包，并把零余额明确显示为 0 积分", async () => {
+  it("账户页读取真实钱包，并把零余额明确显示为 0 积分", async () => {
     api.customerGetWallet.mockResolvedValue({
       available_credits: 0,
       reserved_credits: 0,
@@ -285,18 +285,21 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户甲",
           role: "customer",
         }}
-        customerAccount={account}
-        initialState={createState("workbench")}
+        customerWallet={account}
+        initialState={createState("profile")}
       />,
     );
 
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 0 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("0 积分")).toBeInTheDocument();
     expect(screen.getByText("0 积分")).toBeInTheDocument();
+    const accountButton = screen.getByRole("button", {
+      name: "用户档案，customer-a",
+    });
+    expect(accountButton).toHaveTextContent("customer-a");
+    expect(accountButton).not.toHaveTextContent("积分");
   });
 
-  it("正式内部工作区沿用已有钱包接口显示积分", async () => {
+  it("内部账户页沿用已有钱包接口显示积分", async () => {
     api.getWallet.mockResolvedValue({
       available_credits: 21,
       reserved_credits: 0,
@@ -312,17 +315,15 @@ describe("V1.4 workspace integration", () => {
           display_name: "员工甲",
           role: "employee",
         }}
-        initialState={createState("workbench")}
+        initialState={createState("profile")}
       />,
     );
 
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 21 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("21 积分")).toBeInTheDocument();
     expect(api.getWallet).toHaveBeenCalledOnce();
   });
 
-  it("任务轮询同步钱包，后台结算后侧栏不需要重新登录", async () => {
+  it("任务轮询同步钱包，后台结算后账户页不需要重新登录", async () => {
     const intervals = vi.spyOn(window, "setInterval");
     api.getWallet.mockResolvedValue({
       available_credits: 21,
@@ -331,10 +332,10 @@ describe("V1.4 workspace integration", () => {
     render(
       <StudioWorkspace
         currentUser={{ ...reviewUser, role: "employee" }}
-        initialState={createState("workbench")}
+        initialState={createState("profile")}
       />,
     );
-    await screen.findByRole("button", { name: "用户档案，积分 21 积分" });
+    await screen.findByText("21 积分");
     api.getWallet.mockResolvedValue({
       available_credits: 16,
       reserved_credits: 0,
@@ -347,9 +348,7 @@ describe("V1.4 workspace integration", () => {
     await act(async () => {
       callback();
     });
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 16 积分" }),
-    ).toBeVisible();
+    expect(await screen.findByText("16 积分")).toBeVisible();
   });
 
   it("切换账号后忽略旧钱包的迟到响应", async () => {
@@ -377,8 +376,8 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户甲",
           role: "customer",
         }}
-        customerAccount={olderAccount}
-        initialState={createState("workbench")}
+        customerWallet={olderAccount}
+        initialState={createState("profile")}
       />,
     );
     await waitFor(() =>
@@ -395,14 +394,12 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户乙",
           role: "customer",
         }}
-        customerAccount={newerAccount}
-        initialState={createState("workbench")}
+        customerWallet={newerAccount}
+        initialState={createState("profile")}
       />,
     );
 
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 8 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("8 积分")).toBeInTheDocument();
     resolveOlder({
       available_credits: 99,
       reserved_credits: 0,
@@ -411,12 +408,10 @@ describe("V1.4 workspace integration", () => {
       recharge_step_fen: 100,
     });
     await act(async () => Promise.resolve());
-    expect(
-      screen.getByRole("button", { name: "用户档案，积分 8 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("8 积分")).toBeInTheDocument();
   });
 
-  it("侧栏钱包读取失败与未知余额明确区分", async () => {
+  it("账户页钱包读取失败与未知余额明确区分", async () => {
     api.customerGetWallet
       .mockRejectedValueOnce(new Error("wallet offline"))
       .mockResolvedValueOnce({
@@ -435,15 +430,13 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户甲",
           role: "customer",
         }}
-        customerAccount={account}
-        initialState={createState("workbench")}
+        customerWallet={account}
+        initialState={createState("profile")}
       />,
     );
 
     await waitFor(() => expect(api.customerGetWallet).toHaveBeenCalledOnce());
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 读取失败" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("读取失败")).toBeInTheDocument();
     expect(screen.getByText("读取失败")).toBeInTheDocument();
   });
 
@@ -496,7 +489,7 @@ describe("V1.4 workspace integration", () => {
     );
     expect(api.customerGetWallet).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: "用户档案，积分 读取失败" }),
+      screen.getByRole("button", { name: "用户档案，customer-a" }),
     ).toBeInTheDocument();
   });
   it("展开导航后可直接关闭并恢复入口焦点，无需切换当前业务", () => {
@@ -554,7 +547,7 @@ describe("V1.4 workspace integration", () => {
     );
 
     const accountAvatar = screen
-      .getByRole("button", { name: "用户档案，积分 2680 积分" })
+      .getByRole("button", { name: "用户档案，review" })
       .querySelector("img");
     const topAvatar = screen
       .getByRole("button", { name: "用户档案" })
@@ -735,7 +728,7 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getByText("粘贴一条爆款乡墅视频链接，")).toBeInTheDocument();
     expect(screen.getByText("快速生成它的原创视频")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "用户档案，积分 2680 积分" }),
+      screen.getByRole("button", { name: "用户档案，review" }),
     ).toBeInTheDocument();
     expect(live.loadStudioData).not.toHaveBeenCalled();
     expect(nav.queryByRole("button", { name: "系统设置" })).toBeNull();
@@ -1162,6 +1155,12 @@ describe("V1.4 workspace integration", () => {
 
     async function openCopyPage() {
       fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const manual = screen.queryByRole("button", { name: "手动写稿" });
+      if (manual && !(manual as HTMLButtonElement).disabled)
+        fireEvent.click(manual);
       await waitFor(() =>
         expect(screen.getByLabelText("二创文案")).toBeInTheDocument(),
       );
@@ -1598,7 +1597,7 @@ describe("V1.4 workspace integration", () => {
           screen.queryByText(/换设备登录也能找回/),
         ).not.toBeInTheDocument();
         expect(
-          screen.getByRole("button", { name: "按 IP 二创" }),
+          screen.getByRole("button", { name: "生成二创文案" }),
         ).toBeDisabled();
 
         fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
@@ -1709,7 +1708,9 @@ describe("V1.4 workspace integration", () => {
         "identity-1",
       );
       expect(await screen.findByText(/已保存到我的文案/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeEnabled();
+      expect(
+        screen.getByRole("button", { name: "生成二创文案" }),
+      ).toBeEnabled();
       expect(live.persistCloudDraft).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "project-1",
@@ -1831,8 +1832,10 @@ describe("V1.4 workspace integration", () => {
       await waitFor(() =>
         expect(screen.getByText(/云端保存失败/)).toBeInTheDocument(),
       );
-      expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeDisabled();
-      expect(screen.getByText(/先保存当前编辑/)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "生成二创文案" }),
+      ).toBeEnabled();
+      expect(screen.queryByText(/先保存当前编辑/)).not.toBeInTheDocument();
     });
 
     it("保存等待期间账号A到B再回A时不写草稿、不更新列表且保持静默", async () => {
@@ -2090,7 +2093,7 @@ describe("V1.4 workspace integration", () => {
           "copy",
           expect.any(String),
         );
-        expect(await screen.findByLabelText("二创文案")).toHaveValue(
+        expect(await screen.findByLabelText("来源原文")).toHaveValue(
           "新来源的提取结果",
         );
         expect(live.extractScriptFromUpload).toHaveBeenCalledTimes(1);
@@ -2111,7 +2114,7 @@ describe("V1.4 workspace integration", () => {
       state.draft.sourceAssetId = "asset-1";
       render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
       fireEvent.click(screen.getByRole("button", { name: /^提取文案$/ }));
-      expect(await screen.findByLabelText("二创文案")).toHaveValue(
+      expect(await screen.findByLabelText("来源原文")).toHaveValue(
         "需要保留的未保存转写原文",
       );
       fireEvent.click(screen.getByRole("button", { name: /^视频创作$/ }));
@@ -2120,7 +2123,7 @@ describe("V1.4 workspace integration", () => {
       );
       await act(async () => {});
       fireEvent.click(screen.getByRole("button", { name: /^文案工坊$/ }));
-      expect(await screen.findByLabelText("二创文案")).toHaveValue(
+      expect(await screen.findByLabelText("来源原文")).toHaveValue(
         "需要保留的未保存转写原文",
       );
       expect(screen.queryByText("尚未提取文案")).not.toBeInTheDocument();
@@ -2146,12 +2149,12 @@ describe("V1.4 workspace integration", () => {
         ),
       );
       await waitFor(() =>
-        expect(screen.getByLabelText("二创文案")).toBeInTheDocument(),
+        expect(screen.getByLabelText("来源原文")).toBeInTheDocument(),
       );
       expect(screen.getByText(/文案已提取/)).toBeInTheDocument();
       fireEvent.click(screen.getByRole("tab", { name: "文案改写" }));
       expect(
-        (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
+        (screen.getByLabelText("来源原文") as HTMLTextAreaElement).value,
       ).toBe("提取出的乡墅口播原文");
     });
 
@@ -2176,20 +2179,21 @@ describe("V1.4 workspace integration", () => {
         render(
           <StudioWorkspace
             currentUser={{ ...reviewUser, id: "customer-a" }}
-            customerAccount={customerAccount(customerStore("session-token"))}
+            customerWallet={customerAccount(customerStore("session-token"))}
             initialState={state}
           />,
         );
-        await screen.findByRole("button", { name: "用户档案，积分 351 积分" });
+        await waitFor(() => expect(api.customerGetWallet).toHaveBeenCalled());
         fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
         api.customerGetWallet.mockResolvedValue({
           available_credits: outcome === "success" ? 353 : 377,
         });
         await act(async () => finish());
+        fireEvent.click(
+          screen.getByRole("button", { name: "用户档案，review" }),
+        );
         expect(
-          await screen.findByRole("button", {
-            name: `用户档案，积分 ${outcome === "success" ? 353 : 377} 积分`,
-          }),
+          await screen.findByText(`${outcome === "success" ? 353 : 377} 积分`),
         ).toBeInTheDocument();
       },
     );
@@ -2298,7 +2302,7 @@ describe("V1.4 workspace integration", () => {
         await screen.findByText(/文案提取已完成.*恢复到当前草稿/),
       ).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
-      expect(screen.getByLabelText("二创文案")).toHaveValue(
+      expect(screen.getByLabelText("来源原文")).toHaveValue(
         "后台已经完成的转写文案",
       );
     });

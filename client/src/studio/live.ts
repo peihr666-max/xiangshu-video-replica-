@@ -351,7 +351,8 @@ export async function loadProjectDraft(
   }
 
   draft.script.original = original;
-  draft.script.text = original;
+  draft.script.text = "";
+  draft.script.resultKind = "extracted";
   if (scriptResult.status === "rejected") {
     errors.push(`读取项目已保存文案失败：${errorText(scriptResult.reason)}`);
   } else {
@@ -360,6 +361,7 @@ export async function loadProjectDraft(
     if (!state.stale && state.version && typeof fullText === "string") {
       draft.script.id = state.version.id;
       draft.script.text = fullText;
+      draft.script.resultKind = "manual";
       draft.script.version = state.version.version_number;
     }
   }
@@ -455,6 +457,11 @@ function basePerson(
     scope: entry.service_scope,
     audience: entry.target_audience,
     expression: entry.expression_style,
+    audience_needs: entry.audience_needs ?? "",
+    factual_background: entry.factual_background ?? "",
+    sample_script: entry.sample_script ?? "",
+    forbidden_claims: entry.forbidden_claims ?? "",
+
     sheetId: entry.contact_sheet_asset_id ?? undefined,
     sceneLookCount: entry.scene_look_count,
     photoIds: [],
@@ -1205,6 +1212,25 @@ function draftFromPayload(payload: unknown): StudioDraft | null {
             (value) => typeof value === "string" && value.length > 0,
           ),
   };
+  merged.rewriteMethod = payload.rewriteMethod === "custom" ? "custom" : "ip";
+  merged.rewriteInstructions =
+    typeof payload.rewriteInstructions === "string"
+      ? payload.rewriteInstructions
+      : "";
+  merged.rewriteLength = ["100", "200", "300", "custom"].includes(
+    String(payload.rewriteLength),
+  )
+    ? (payload.rewriteLength as StudioDraft["rewriteLength"])
+    : "original";
+  if (!["extracted", "rewritten", "manual"].includes(String(script.resultKind)))
+    delete merged.script.resultKind;
+  merged.rewriteWordCount =
+    typeof payload.rewriteWordCount === "number" &&
+    Number.isInteger(payload.rewriteWordCount) &&
+    payload.rewriteWordCount >= 1 &&
+    payload.rewriteWordCount <= 5000
+      ? payload.rewriteWordCount
+      : undefined;
   merged.style = "standard";
   return merged;
 }
@@ -1254,6 +1280,7 @@ export function savedScriptFromRecord(record: {
   source_kind?: string | null;
 }): StudioScript {
   return {
+    resultKind: "manual",
     id: record.script_id,
     title: record.title,
     original: record.original ?? "",

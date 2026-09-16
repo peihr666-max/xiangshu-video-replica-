@@ -7,7 +7,7 @@
   color: #eee7db;
   background: #0e0e12;
   font-family: var(--mono);
-  font-size: 15px;
+  font-size: var(--font-body);
   line-height: 1.7;
   resize: vertical;
 }
