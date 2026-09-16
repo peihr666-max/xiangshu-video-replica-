@@ -161,7 +161,7 @@ function ControlGroup({
   label,
   children,
 }: {
-  label: string;
+  label: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -3020,9 +3020,29 @@ export function VideoPage() {
     });
   };
 
+  const generationActions = (
+    <div className="creation-form-actions">
+      <Button
+        variant="outline"
+        disabled={readOnly}
+        onClick={() => !readOnly && saveDraft()}
+      >
+        保存草稿
+      </Button>
+      <Button
+        variant="primary"
+        disabled={readOnly || !ready}
+        onClick={() => requestGeneration("视频生成")}
+      >
+        <Icon name="play" />
+        生成视频
+      </Button>
+    </div>
+  );
+
   return (
     <section
-      className="creation-page creation-video-workspace"
+      className={`creation-page creation-video-workspace ${referenceMode ? "" : "creation-video-workspace--frames"}`}
       aria-label="AI 视频"
     >
       <CreationNavigation />
@@ -3219,8 +3239,14 @@ export function VideoPage() {
               />
             </ControlGroup>
           ) : (
-            <ControlGroup label="首尾帧">
-              <Hint>无首帧时文生视频；添加首帧后图生视频。</Hint>
+            <ControlGroup
+              label={
+                <span className="creation-frame-heading">
+                  <b className="creation-step-number">01</b> 首尾帧
+                  <small>无首帧时文生视频；添加首帧后图生视频。</small>
+                </span>
+              }
+            >
               {videoCapabilityPending && (
                 <p role="status">正在读取视频生成能力，请稍候。</p>
               )}
@@ -3256,6 +3282,15 @@ export function VideoPage() {
                     <Media asset={firstFrame} alt="首帧" presentation="video" />
                     <span>首帧（选填）</span>
                   </button>
+                  {firstFrameId && (
+                    <Button
+                      variant="quiet"
+                      disabled={readOnly}
+                      onClick={() => patchDraft({ firstFrameId: undefined })}
+                    >
+                      移除首帧
+                    </Button>
+                  )}
                   <VideoMaterialUpload
                     group="首帧素材"
                     label="首帧"
@@ -3275,6 +3310,15 @@ export function VideoPage() {
                     <Media asset={tailFrame} alt="尾帧" presentation="video" />
                     <span>尾帧（可选）</span>
                   </button>
+                  {state.draft.tailFrameId && (
+                    <Button
+                      variant="quiet"
+                      disabled={readOnly}
+                      onClick={() => patchDraft({ tailFrameId: undefined })}
+                    >
+                      移除尾帧
+                    </Button>
+                  )}
                   <VideoMaterialUpload
                     group="尾帧素材"
                     label="尾帧"
@@ -3301,6 +3345,15 @@ export function VideoPage() {
             label="提示词"
             rows={5}
             showToolbarLabel
+            toolbarLabel={
+              referenceMode ? (
+                "画面描述"
+              ) : (
+                <>
+                  <b className="creation-step-number">02</b> 画面描述
+                </>
+              )
+            }
             toolbarStart={
               <SavedPromptImporter
                 onImport={(promptText, context) =>
@@ -3368,30 +3421,21 @@ export function VideoPage() {
             <span className="creation-step-number">03</span> 生成参数
           </div>
           <ParameterControls />
-          <div className="creation-form-actions">
-            <Button
-              variant="outline"
-              disabled={readOnly}
-              onClick={() => {
-                if (readOnly) return;
-                saveDraft();
-              }}
-            >
-              保存草稿
-            </Button>
-            <Button
-              variant="primary"
-              disabled={readOnly || !ready}
-              onClick={() => requestGeneration("视频生成")}
-            >
-              生成视频
-            </Button>
-          </div>
-          <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
+          {referenceMode && (
+            <>
+              {generationActions}
+              <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
+            </>
+          )}
         </Panel>
         <Panel className="creation-video-preview">
           <div className="creation-panel-title">
             {referenceMode ? "参考预览" : "首帧预览"}
+            {!referenceMode && (
+              <small className="creation-preview-ratio">
+                {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
+              </small>
+            )}
           </div>
           {!referenceMode && firstFrameLoading ? (
             <Empty
@@ -3468,8 +3512,29 @@ export function VideoPage() {
           {videoTask && (
             <Hint>成片与历史进度可在任务中心查看，任务记录不会丢失。</Hint>
           )}
+          {!referenceMode && (
+            <div className="creation-preview-footer">
+              <Hint>生成后可在此查看视频</Hint>
+              <Button variant="quiet" onClick={() => navigate("tasks")}>
+                前往任务中心 <Icon name="arrow" />
+              </Button>
+            </div>
+          )}
         </Panel>
       </div>
+      {!referenceMode && (
+        <div className="creation-video-bottom-bar">
+          <div>
+            <strong>
+              {firstFrameId ? "图生视频" : "文生视频"} ·{" "}
+              {state.draft.resolution} · {state.draft.duration} 秒 ·{" "}
+              {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
+            </strong>
+            <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
+          </div>
+          {generationActions}
+        </div>
+      )}
     </section>
   );
 }

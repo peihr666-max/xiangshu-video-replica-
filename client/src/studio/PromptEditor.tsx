@@ -16,6 +16,7 @@ type Props = {
   rows?: number;
   toolbarStart?: ReactNode;
   showToolbarLabel?: boolean;
+  toolbarLabel?: ReactNode;
 };
 
 export function PromptEditor({
@@ -30,13 +31,16 @@ export function PromptEditor({
   rows = 8,
   toolbarStart,
   showToolbarLabel = false,
+  toolbarLabel = "画面描述",
 }: Props) {
   const optimization = usePromptOptimization(value, context, onChange, scope);
   const count = Array.from(value).length;
   return (
     <div className="h3-prompt-editor">
       <div className="h3-prompt-tools">
-        {showToolbarLabel && <span className="h3-prompt-label">画面描述</span>}
+        {showToolbarLabel && (
+          <span className="h3-prompt-label">{toolbarLabel}</span>
+        )}
         {toolbarStart}
         {optimization.canUndo && !readOnly && (
           <button type="button" onClick={optimization.undo}>

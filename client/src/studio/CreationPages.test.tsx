@@ -1836,7 +1836,11 @@ describe("V1.4 创作页面", () => {
     const controls = grid?.querySelector(":scope > .creation-video-controls");
     expect(controls).not.toBeNull();
     expect(
-      within(controls as HTMLElement).getByRole("button", {
+      within(
+        view.container.querySelector(
+          ".creation-video-bottom-bar",
+        ) as HTMLElement,
+      ).getByRole("button", {
         name: "生成视频",
       }),
     ).toBeInTheDocument();
