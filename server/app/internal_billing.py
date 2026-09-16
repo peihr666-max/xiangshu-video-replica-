@@ -720,6 +720,9 @@ def finalize_internal_billing(
                 (task_id,),
             ).fetchone()[0]
             if usage is None:
+                # 上游未回传成片秒数时保持 PENDING：计费口径必须等「已核验证据」
+                # 落账（billing_evidence.record_evidence）后再结算，不用提交时约定的
+                # 预留秒数去猜真实用量。对账侧同样不选它，避免在无证据时推进。
                 return BillingFinalization(task_id, None, None)
         else:
             if task["status"] not in {"FAILED", "CANCELLED"}:

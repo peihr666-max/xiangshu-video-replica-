@@ -499,6 +499,9 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
         "AND o.service='link_resolution' AND o.state='PENDING')"
     )
     # Select terminal candidates in SQL; old active tasks must not starve newer completions.
+    # 可对账性由「租约到期」或「任务已进入终态」决定（见上方 link receipt 的 lease 收敛），
+    # 不设墙钟宽限期——否则刚进入终态的操作会被无谓推迟数十分钟。
+    # SKIP LOCKED 让多实例各自认领不同行，避免同一批候选被并发重复扫描。
     operations = conn.execute(
         """SELECT o.id,o.service,o.source_id FROM billing_operations o WHERE o.state='PENDING'
         AND (
@@ -529,7 +532,8 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
             ('SUCCEEDED','FAILED'))
           OR EXISTS(SELECT 1 FROM viral_link_resolution_receipts t WHERE t.id=o.source_id AND
             t.status IN ('SUCCEEDED','FAILED_SAFE','UNCERTAIN'))
-        ) ORDER BY o.created_at,o.id LIMIT %s""",
+        ) ORDER BY o.created_at,o.id LIMIT %s
+        FOR UPDATE OF o SKIP LOCKED""",
         (limit,),
     ).fetchall()
     settled = len(stale)

@@ -140,7 +140,24 @@ class UrllibHiflyHttpTransport(HiflyHttpTransport):
                 detail = exc.read()[:1000].decode("utf-8", "replace")
             except OSError:
                 pass
-            logger.warning("ORAL vendor request failed with HTTP status %s: %s", exc.code, detail)
+            if exc.code == 429:
+                # 上游限流要和"我们配错了/参数非法"区分开：前者是对方在压流，
+                # 后者要人改配置。把 Retry-After 一并记下来，运维才知道该等多久。
+                # 真正的退避重排属于任务重投机制的改造，不在本次范围内；这里
+                # 至少保证信号可见，且 429 仍以 http_status 透出，便于调用方
+                # 将来据此做退避。
+                retry_after = None
+                if exc.headers is not None:
+                    retry_after = exc.headers.get("Retry-After")
+                logger.warning(
+                    "ORAL vendor rate limited (HTTP 429, retry_after=%s): %s",
+                    retry_after or "unspecified",
+                    detail,
+                )
+            else:
+                logger.warning(
+                    "ORAL vendor request failed with HTTP status %s: %s", exc.code, detail
+                )
             if exc.code in {408, 504}:
                 raise HiflyTimeoutError("数字人服务请求超时，请稍后重试") from exc
             raise HiflyError(f"数字人服务返回 HTTP {exc.code}", http_status=exc.code) from exc

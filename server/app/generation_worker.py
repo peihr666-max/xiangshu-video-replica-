@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -1082,6 +1084,59 @@ def _run_pg_generation_step(
             )
 
 
+_RECONCILE_INTERVAL_ENV = "VIDEO_REPLICA_RECONCILE_INTERVAL_SECONDS"
+_DEFAULT_RECONCILE_INTERVAL_SECONDS = 30.0
+# 对账专用的 advisory lock 命名空间。用事务级（xact）变体，事务结束即释放，
+# 不需要也不应该显式 unlock。沿用项目既有约定：hashtext('域:用途') 字符串，
+# 与 payment:settings / billing:tariffs 同构。
+_RECONCILE_LOCK_NAMESPACE = "billing:reconcile"
+
+_WORKER_CONCURRENCY_ENV = "VIDEO_REPLICA_WORKER_CONCURRENCY"
+
+_reconcile_deadline = 0.0
+
+
+def _reconcile_interval_seconds() -> float:
+    """对账周期秒数；0 表示每轮都尝试（等价旧行为，仅用于排障）。"""
+    raw = os.environ.get(_RECONCILE_INTERVAL_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_RECONCILE_INTERVAL_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        logger.warning(
+            "invalid %s=%r, falling back to %.0fs",
+            _RECONCILE_INTERVAL_ENV,
+            raw,
+            _DEFAULT_RECONCILE_INTERVAL_SECONDS,
+        )
+        return _DEFAULT_RECONCILE_INTERVAL_SECONDS
+
+
+def _reconcile_due() -> bool:
+    """进程内节流：到点才返回 True，并顺延下一次截止时间。"""
+    global _reconcile_deadline
+    now = time.monotonic()
+    if now < _reconcile_deadline:
+        return False
+    _reconcile_deadline = now + _reconcile_interval_seconds()
+    return True
+
+
+def _worker_concurrency(cli_value: int | None = None) -> int:
+    """单进程可同时推进的任务数：CLI 优先，其次环境变量，默认 1（串行）。"""
+    if cli_value is not None:
+        return max(1, cli_value)
+    raw = os.environ.get(_WORKER_CONCURRENCY_ENV, "").strip()
+    if not raw:
+        return 1
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning("invalid %s=%r, falling back to 1", _WORKER_CONCURRENCY_ENV, raw)
+        return 1
+
+
 def run_pg_worker_once(
     *,
     worker_id: str,
@@ -1114,8 +1169,18 @@ def run_pg_worker_once(
     from app.usage_billing import reconcile_operations
 
     while True:
-        with pg_transaction() as raw_conn:
-            reconcile_operations(BusinessConnection.postgres(raw_conn))
+        # 对账是兜底维护，不是任务路径。旧实现放在循环顶部无条件执行，空转时
+        # 每个 worker 每秒扫一遍 11 张表，多实例还会成倍重复。现在按周期节流，
+        # 并用事务级 advisory lock 保证同一时刻全集群只有一个 worker 真正在跑；
+        # 拿不到锁说明别人正在对账，本轮直接跳过。
+        if _reconcile_due():
+            with pg_transaction() as raw_conn:
+                reconcile_conn = BusinessConnection.postgres(raw_conn)
+                if reconcile_conn.execute(
+                    "SELECT pg_try_advisory_xact_lock(hashtext(%s))",
+                    (_RECONCILE_LOCK_NAMESPACE,),
+                ).fetchone()[0]:
+                    reconcile_operations(reconcile_conn)
         processed_round = False
         with pg_transaction() as raw_conn:
             viral_import_lease = acquire_viral_import_task(
@@ -1712,7 +1777,59 @@ def run_pg_worker_round(
         )
 
 
-def run_forever_pg(*, worker_id: str, idle_seconds: float, viral_collection: bool = False) -> None:
+def run_forever_pg(
+    *,
+    worker_id: str,
+    idle_seconds: float,
+    viral_collection: bool = False,
+    concurrency: int = 1,
+) -> None:
+    """常驻循环。
+
+    concurrency=1 与历史行为完全一致：单线程串行，每轮推进一个任务。
+    concurrency>1 时用线程池并行推进：每个线程各走一整轮（领取 → 调用上游 →
+    落库），线程间不共享事务，也不会重复领取同一条任务——领取路径依赖数据库
+    上的 FOR UPDATE SKIP LOCKED，本就不要求单线程。
+
+    计费与结算链路（accept_operation / finish_operation / finalize_*_billing）
+    不做任何改动：其正确性来自事务、唯一键与条件更新，同样不依赖单线程前提。
+
+    并发度须不超过 VIDEO_REPLICA_PG_POOL_MAX，否则线程会在连接池上排队等待。
+    """
+    if concurrency <= 1:
+        _run_forever_serial(
+            worker_id=worker_id,
+            idle_seconds=idle_seconds,
+            viral_collection=viral_collection,
+        )
+        return
+
+    logger.info("generation worker concurrency=%d instance=%s", concurrency, worker_id)
+    with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="gen-worker") as pool:
+        while True:
+            futures = [
+                pool.submit(
+                    run_pg_worker_round,
+                    worker_id=f"{worker_id}-{slot}",
+                    viral_collection=viral_collection,
+                )
+                for slot in range(concurrency)
+            ]
+            processed = 0
+            for future in as_completed(futures):
+                try:
+                    processed += int(future.result())
+                except HTTPException as exc:
+                    code = exc.detail.get("code") if isinstance(exc.detail, dict) else exc.detail
+                    logger.error("generation worker configuration unavailable: %s", code)
+                except Exception:
+                    logger.exception("generation worker iteration failed")
+            if processed == 0:
+                time.sleep(idle_seconds)
+
+
+def _run_forever_serial(*, worker_id: str, idle_seconds: float, viral_collection: bool) -> None:
+    """历史单线程循环，行为保持不变。"""
     while True:
         try:
             processed = run_pg_worker_round(worker_id=worker_id, viral_collection=viral_collection)
@@ -1746,7 +1863,17 @@ def main() -> None:
         type=int,
         help="with --once, stop after processing this many generation/character tasks",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        help=(
+            "tasks this process advances in parallel; overrides "
+            f"${_WORKER_CONCURRENCY_ENV}, default 1 (serial)"
+        ),
+    )
     args = parser.parse_args()
+    if args.concurrency is not None and args.concurrency < 1:
+        parser.error("--concurrency must be at least 1")
     if args.max_tasks is not None and not args.once:
         parser.error("--max-tasks requires --once")
 
@@ -1804,6 +1931,7 @@ def main() -> None:
                 worker_id=worker_id,
                 idle_seconds=args.idle_seconds,
                 viral_collection=args.viral_collection,
+                concurrency=_worker_concurrency(args.concurrency),
             )
         finally:
             close_pg_pool()
