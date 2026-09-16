@@ -1,5 +1,7 @@
 # CREATION-WORKFLOW-UI-20260916 · 创作布局与两步复刻流程
 
+交付：[Draft PR #128](https://github.com/peihr666-max/xiangshu-video-replica-/pull/128)，REVIEW。已核对远程提交仅含本任务；远程 CI / 独立评审待完成，未合并、未部署。
+
 ## 任务领取与证据（§14）
 
 | 字段 | 记录 |
