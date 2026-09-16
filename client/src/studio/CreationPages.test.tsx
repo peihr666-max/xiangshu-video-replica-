@@ -2826,7 +2826,10 @@ describe("视频复刻（模块①）", () => {
     await waitFor(() =>
       expect(replicaApi.saveGenerationPrompt).toHaveBeenCalledWith(
         "project-1",
-        { name: "我的复刻", prompt_text: "我改过的复刻提示词" },
+        expect.objectContaining({
+          name: "我的复刻",
+          prompt_text: "我改过的复刻提示词",
+        }),
       ),
     );
     expect(value.notify).toHaveBeenCalledWith(
@@ -2887,7 +2890,10 @@ describe("视频复刻（模块①）", () => {
     fireEvent.click(screen.getByRole("button", { name: "保存为自定义提示词" }));
     fireEvent.click(screen.getByRole("button", { name: "确认保存" }));
     await waitFor(() =>
-      expect(value.patchDraft).toHaveBeenCalledWith({ promptEdited: false }),
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        prompt: "刚保存的新 Prompt",
+        promptEdited: true,
+      }),
     );
 
     resolveShots?.({
@@ -2904,7 +2910,7 @@ describe("视频复刻（模块①）", () => {
     expect(value.patchDraft).toHaveBeenLastCalledWith(
       expect.objectContaining({
         prompt: "刚保存的新 Prompt",
-        promptEdited: false,
+        promptEdited: true,
       }),
     );
     expect(screen.queryByText(/正在读取已保存/)).toBeNull();

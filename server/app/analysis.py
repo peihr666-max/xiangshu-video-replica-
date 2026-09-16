@@ -33,6 +33,7 @@ SUBJECT_MOTION_STATES = (
     "GESTURING_ONLY",
     "OBJECT_MOTION",
     "NO_PERSON",
+    "UNKNOWN",
 )
 SUBJECT_DIRECTIONS = (
     "toward_camera",
@@ -42,6 +43,7 @@ SUBJECT_DIRECTIONS = (
     "lateral",
     "in_place",
     "none",
+    "unknown",
 )
 MOTION_CAMERA_MODES = (
     "STATIC",
@@ -51,6 +53,12 @@ MOTION_CAMERA_MODES = (
     "PAN",
     "TILT",
     "FOLLOW",
+    "ORBIT",
+    "CRANE_UP",
+    "CRANE_DOWN",
+    "ZOOM_IN",
+    "ZOOM_OUT",
+    "UNKNOWN",
 )
 
 # Failure phases let the desktop tell "the network hiccuped, retry" apart from
@@ -80,6 +88,7 @@ class ShotMotion(BaseModel):
         "GESTURING_ONLY",
         "OBJECT_MOTION",
         "NO_PERSON",
+        "UNKNOWN",
     ]
     subject_direction: Literal[
         "toward_camera",
@@ -89,6 +98,7 @@ class ShotMotion(BaseModel):
         "lateral",
         "in_place",
         "none",
+        "unknown",
     ]
     subject_displacement: str = Field(min_length=1)
     hand_action: str = Field(min_length=1)
@@ -100,6 +110,12 @@ class ShotMotion(BaseModel):
         "PAN",
         "TILT",
         "FOLLOW",
+        "ORBIT",
+        "CRANE_UP",
+        "CRANE_DOWN",
+        "ZOOM_IN",
+        "ZOOM_OUT",
+        "UNKNOWN",
     ]
     relative_motion: str = Field(min_length=1)
 
@@ -120,6 +136,11 @@ class ShotCard(BaseModel):
     person_count: int | None = Field(default=None, ge=0)
     action: str = Field(min_length=1)
     scene: str = Field(min_length=1)
+    scene_dressing: str = ""
+    scene_lighting: str = ""
+    wardrobe_pose_detail: str = ""
+    ambient_sound: str = ""
+    music_style_hint: str = ""
     spoken_text: str
     transition: str = Field(min_length=1)
     # ``shots`` remains the compatibility name consumed by the existing
@@ -149,6 +170,7 @@ class VideoAnalysis(BaseModel):
     fps: float = Field(gt=0)
     theme: str = Field(min_length=1)
     visual_style: str = Field(min_length=1)
+    color_tone: str = ""
     pace: str = Field(min_length=1)
     camera_language: str = Field(min_length=1)
     original_script: str
@@ -295,6 +317,52 @@ class ApilioGemini:
         text, raw = self._complete(payload)
         return ProviderResponse(text=text, raw=raw)
 
+    def analyze_with_context(
+        self,
+        *,
+        video_uri: str,
+        duration_seconds: float,
+        context: dict[str, Any],
+        media: list[dict[str, Any]],
+    ) -> ProviderResponse:
+        from app.h3_prompts import RULES, mode_rules
+
+        if not is_https_video_url(video_uri):
+            raise AnalysisProviderFailed(
+                "Analysis requires HTTPS video", failure_phase=REQUEST_FAILURE_PHASE
+            )
+        instruction = (RULES / "analysis.txt").read_text(encoding="utf-8")
+        instruction = instruction.replace(
+            "{MEDIA_INFO_JSON}",
+            json.dumps(
+                {
+                    **context.get("media_info", {}),
+                    "duration_seconds": duration_seconds,
+                },
+                ensure_ascii=False,
+            ),
+        ).replace("{GENERATION_CONTEXT_JSON}", json.dumps(context, ensure_ascii=False))
+        text, raw = self._complete(
+            {
+                "model": self.model,
+                "temperature": 0,
+                "max_tokens": 16000,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": instruction + "\n" + mode_rules(context["mode"])},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "以下视频仅用于分析；生成参考素材另列。"},
+                            {"type": "image_url", "image_url": {"url": video_uri}},
+                            *media,
+                        ],
+                    },
+                ],
+            }
+        )
+        return ProviderResponse(text=text, raw=raw)
+
     def repair_json(self, *, invalid_json: str, error: str) -> ProviderResponse:
         payload = {
             "model": self.model,
@@ -384,6 +452,7 @@ class AnalysisResult(BaseModel):
 
     analysis: VideoAnalysis
     provider_response_ref: dict[str, Any]
+    generation_prompt: dict[str, Any] | None = None
 
 
 def analyze_video(
@@ -392,43 +461,63 @@ def analyze_video(
     video_duration_seconds: float,
     provider: VideoAnalysisProvider,
     on_provider_result: Callable[[], None] | None = None,
+    generation_context: dict[str, Any] | None = None,
+    generation_media: list[dict[str, Any]] | None = None,
 ) -> AnalysisResult:
-    response = provider.analyze(video_uri=video_uri, duration_seconds=video_duration_seconds)
+    from app.h3_prompts import analysis_prompt_result
+
+    if generation_context is not None and isinstance(provider, ApilioGemini):
+        response = provider.analyze_with_context(
+            video_uri=video_uri,
+            duration_seconds=video_duration_seconds,
+            context=generation_context,
+            media=generation_media or [],
+        )
+    else:
+        response = provider.analyze(video_uri=video_uri, duration_seconds=video_duration_seconds)
     if on_provider_result is not None:
         on_provider_result()
     try:
-        analysis = parse_analysis_response(response.text, duration_seconds=video_duration_seconds)
+        payload = json.loads(response.text)
+        candidate = None
+        if isinstance(payload, dict) and payload.get("schema_version") == "analysis-h3.v1":
+            candidate = payload.get("generation_prompt")
+            payload = payload.get("analysis")
+        if not isinstance(payload, dict):
+            raise ValueError("analysis must be an object")
+        if generation_context is not None:
+            for key, value in generation_context.get("media_info", {}).items():
+                if key in ("fps", "resolution", "aspect_ratio"):
+                    payload[key] = value
+        analysis = parse_analysis_response(
+            json.dumps(payload), duration_seconds=video_duration_seconds
+        )
     except (json.JSONDecodeError, ValidationError, ValueError) as exc:
-        logger.warning(
-            "Video analysis response validation failed before repair: %s",
-            _validation_diagnostic(exc),
-        )
-        repaired = provider.repair_json(
-            invalid_json=response.text,
-            error=(
-                f"verified duration_seconds={_canonical_duration_text(video_duration_seconds)}; "
-                f"{exc}"
-            ),
-        )
+        logger.warning("Video analysis validation failed: %s", _validation_diagnostic(exc))
+        raise AnalysisProviderFailed(
+            "拆解结果格式无效，未自动调用付费修复；请检查后主动重试。"
+        ) from exc
+    generation_prompt = None
+    if generation_context is not None:
         try:
-            analysis = parse_analysis_response(
-                repaired.text, duration_seconds=video_duration_seconds
+            generation_prompt = analysis_prompt_result(
+                candidate, context=generation_context, analysis=analysis.model_dump(mode="json")
             )
-        except (json.JSONDecodeError, ValidationError, ValueError) as repair_exc:
-            logger.warning(
-                "Video analysis response validation failed after repair: %s",
-                _validation_diagnostic(repair_exc),
-            )
-            raise AnalysisProviderFailed(
-                "Provider returned invalid JSON even after a repair attempt"
-            ) from repair_exc
-        return AnalysisResult(
-            analysis=analysis,
-            provider_response_ref=_provider_response_ref(response.raw, repaired.raw),
-        )
-
+        except (ValidationError, ValueError, TypeError):
+            generation_prompt = {
+                "mode": generation_context["mode"],
+                "status": "INVALID",
+                "prompt_text": None,
+                "issues": [
+                    {
+                        "code": "H3_RESPONSE_INVALID",
+                        "message": "H3 提示词格式无效，已保留分镜分析。",
+                    }
+                ],
+            }
     return AnalysisResult(
         analysis=analysis,
+        generation_prompt=generation_prompt,
         provider_response_ref=_provider_response_ref(response.raw, None),
     )
 
@@ -649,6 +738,7 @@ def analysis_version_payload(
         "analysis": result.analysis.model_dump(mode="json"),
         "source_asset": {"id": asset_id, "storage_uri": asset_uri},
         "provider_response_ref": result.provider_response_ref,
+        "generation_prompt": result.generation_prompt,
     }
 
 
@@ -744,7 +834,36 @@ def enqueue_analysis_task(
     asset_id: str,
     created_by_user_id: str,
     duration_seconds: float,
+    generation_context: dict[str, Any] | None = None,
 ) -> tuple[sqlite3.Row, bool]:
+    if generation_context is None:
+        from app.auth import CurrentUser, Role
+        from app.h3_prompts import GenerationContext
+        from app.prompt_context import resolve_context
+
+        user = conn.execute(
+            "SELECT id, username, display_name, role FROM users WHERE id=%s", (created_by_user_id,)
+        ).fetchone()
+        if user is None:
+            raise ValueError("analysis owner no longer exists")
+        actor = CurrentUser(
+            id=str(user["id"]),
+            username=str(user["username"]),
+            display_name=str(user["display_name"]),
+            role=cast(Role, str(user["role"])),
+        )
+        generation_context = resolve_context(
+            conn,
+            actor=actor,
+            request=GenerationContext(project_id=project_id, source_asset_id=asset_id),
+        )
+        asset = conn.execute("SELECT metadata_json FROM assets WHERE id=%s", (asset_id,)).fetchone()
+        metadata = json.loads(str(asset["metadata_json"] or "{}")) if asset else {}
+        generation_context["media_info"] = {
+            key: metadata[key]
+            for key in ("fps", "resolution", "aspect_ratio")
+            if metadata.get(key) is not None
+        }
     existing = conn.execute(
         """
         SELECT * FROM analysis_tasks
@@ -756,6 +875,16 @@ def enqueue_analysis_task(
         (project_id, asset_id),
     ).fetchone()
     if existing is not None:
+        if json.loads(str(existing["generation_context_json"] or "null")) != generation_context:
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                409,
+                detail={
+                    "code": "ANALYSIS_CONTEXT_CONFLICT",
+                    "message": "该视频正在按其他素材或参数拆解，请等待当前任务完成后重试。",
+                },
+            )
         return existing, False
 
     task_id = str(uuid4())
@@ -763,8 +892,8 @@ def enqueue_analysis_task(
         """
         INSERT INTO analysis_tasks (
             id, project_id, asset_id, created_by_user_id,
-            duration_seconds, status
-        ) VALUES (%s, %s, %s, %s, %s, 'PENDING')
+            duration_seconds, status, generation_context_json
+        ) VALUES (%s, %s, %s, %s, %s, 'PENDING', %s)
         ON CONFLICT DO NOTHING
         """,
         (
@@ -773,6 +902,7 @@ def enqueue_analysis_task(
             asset_id,
             created_by_user_id,
             duration_seconds,
+            json.dumps(generation_context) if generation_context is not None else None,
         ),
     )
     inserted = conn.execute(
@@ -799,6 +929,16 @@ def enqueue_analysis_task(
     ).fetchone()
     if concurrent is None:
         raise RuntimeError("analysis task enqueue conflict left no active task")
+    if json.loads(str(concurrent["generation_context_json"] or "null")) != generation_context:
+        from fastapi import HTTPException
+
+        raise HTTPException(
+            409,
+            detail={
+                "code": "ANALYSIS_CONTEXT_CONFLICT",
+                "message": "该视频正在按其他素材或参数拆解，请等待当前任务完成后重试。",
+            },
+        )
     return concurrent, False
 
 

@@ -4,6 +4,7 @@ import type {
   GenerationRuntimeLimits,
   GenerationVersion,
 } from "./api";
+import { PromptEditor } from "./studio/PromptEditor";
 import {
   type GenerationBusyAction,
   type GenerationQuoteStatus,
@@ -14,6 +15,8 @@ import {
 import "./generation-controls.css";
 
 type GenerationLauncherProps = {
+  projectId?: string;
+  promptScope?: string;
   analysisVersionId: string;
   busyAction: GenerationBusyAction;
   canCompile: boolean;
@@ -60,6 +63,8 @@ type GenerationLauncherProps = {
 };
 
 export function GenerationLauncher({
+  projectId,
+  promptScope,
   analysisVersionId,
   busyAction,
   canCompile,
@@ -139,14 +144,14 @@ export function GenerationLauncher({
         <p className="attention-banner">镜头卡已变化，请重新保存口播稿</p>
       ) : null}
       {promptStale ? (
-        <p className="attention-banner">上游输入已变化，请重新编译 Prompt</p>
+        <p className="attention-banner">上游素材已变化，请核对当前提示词</p>
       ) : null}
       {promptVersion && !promptParametersMatch ? (
-        <p className="attention-banner">生成参数已变化，请重新编译 Prompt</p>
+        <p className="attention-banner">生成参数已变化，请核对当前提示词</p>
       ) : null}
 
       <fieldset className="generation-block">
-        <legend>2. 编译、修订并锁定 Prompt</legend>
+        <legend>2. 编辑与优化提示词</legend>
         <fieldset className="generation-ratio-options">
           <legend>画面比例</legend>
           {(
@@ -207,26 +212,31 @@ export function GenerationLauncher({
         <button disabled={!canCompile} onClick={onCompilePrompt} type="button">
           {busyAction === "compile" ? "正在编译" : "编译视频生成提示词"}
         </button>
+        <div className="generation-field">
+          <span>视频生成提示词内容</span>
+          <PromptEditor
+            label="视频生成提示词内容"
+            scope={
+              promptScope ?? promptVersion?.project_id ?? analysisVersionId
+            }
+            context={{
+              route: "replica",
+              project_id: projectId ?? promptVersion?.project_id,
+              analysis_version_id: analysisVersionId,
+              first_frame_asset_id: firstFrameAssetId,
+              duration_seconds: Number(outputDuration),
+              ratio,
+            }}
+            onChange={onPromptTextChange}
+            readOnly={
+              readOnly || busyAction === "compile" || busyAction === "prompt"
+            }
+            rows={10}
+            value={promptText}
+          />
+        </div>
         {promptVersion ? (
           <>
-            <label className="generation-field">
-              <span>视频生成提示词内容</span>
-              <textarea
-                aria-label="视频生成提示词内容"
-                onChange={(event) => onPromptTextChange(event.target.value)}
-                readOnly={
-                  readOnly ||
-                  busyAction === "compile" ||
-                  busyAction === "prompt" ||
-                  promptStatus === "LOCKED" ||
-                  promptStatus === "USED"
-                }
-                rows={10}
-                maxLength={7000}
-                value={promptText}
-              />
-              <small>{promptText.length}/7000 字</small>
-            </label>
             <fieldset className="prompt-diff">
               <legend>Prompt 差异</legend>
               <div>

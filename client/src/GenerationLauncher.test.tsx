@@ -90,18 +90,16 @@ function renderLauncher(overrides: Record<string, unknown> = {}) {
 }
 
 describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () => {
-  it("无 Prompt 时仅显示参数与编译入口", () => {
+  it("无已保存 Prompt 时也能直接编辑与优化", () => {
     renderLauncher();
 
-    expect(screen.getByText("2. 编译、修订并锁定 Prompt")).toBeInTheDocument();
+    expect(screen.getByText("2. 编辑与优化提示词")).toBeInTheDocument();
     expect(screen.getByLabelText("成片时长")).toBeInTheDocument();
     expect(screen.getByLabelText("分辨率")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "编译视频生成提示词" }),
     ).toBeEnabled();
-    expect(
-      screen.queryByLabelText("视频生成提示词内容"),
-    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("视频生成提示词内容")).toBeEnabled();
   });
 
   it("时长非法时提示只能选择最终档位", () => {
@@ -124,7 +122,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
   it("promptStale 显示上游变化警示", () => {
     renderLauncher({ promptStale: true });
     expect(
-      screen.getByText("上游输入已变化，请重新编译 Prompt"),
+      screen.getByText("上游素材已变化，请核对当前提示词"),
     ).toBeInTheDocument();
   });
 
@@ -134,7 +132,7 @@ describe("GenerationLauncher Prompt 编译修订锁定（受控组件）", () =>
       promptVersion: promptVersionWith({}),
     });
     expect(
-      screen.getByText("生成参数已变化，请重新编译 Prompt"),
+      screen.getByText("生成参数已变化，请核对当前提示词"),
     ).toBeInTheDocument();
   });
 

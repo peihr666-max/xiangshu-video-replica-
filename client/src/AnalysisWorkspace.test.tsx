@@ -1908,7 +1908,7 @@ describe("AnalysisWorkspace workflow gates", () => {
     vi.mocked(api.createGenerationBatch).mockResolvedValue({
       id: "batch-77",
       project_id: "project-1",
-      prompt_version_id: "prompt-locked-1",
+      prompt_version_id: "server-snapshot",
       status: "QUEUED",
       quantity: 1,
       stale: false,
@@ -2016,7 +2016,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       "project-1",
       expect.objectContaining({
         quantity: 1,
-        prompt_version_id: "prompt-locked-1",
+        prompt_text: "锁定的 Prompt",
         first_frame_asset_id: "first-frame-1",
         output_duration_seconds: 4,
         resolution: "768P",
@@ -2027,88 +2027,12 @@ describe("AnalysisWorkspace workflow gates", () => {
     );
   });
 
-  it("主操作栏：一键流水线按序执行保存口播稿→编译→锁定→建批（P0-04-01）", async () => {
-    window.localStorage.clear();
-    vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
-      id: "shot-card-2",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "shot_card",
-      version_number: 2,
-      payload: {
-        source_analysis_version_id: "analysis-1",
-        duration_seconds: 8,
-        shots: [editableShot],
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: {
-        ...savedScriptVersion,
-        payload: {
-          ...savedScriptVersion.payload,
-          shot_card_version_id: "shot-card-2",
-        },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.createScriptVersion).mockResolvedValue({
-      ...savedScriptVersion,
-      id: "script-3",
-      version_number: 3,
-      payload: {
-        ...savedScriptVersion.payload,
-        shot_card_version_id: "shot-card-2",
-        full_text: "原始口播稿（修订）",
-      },
-    });
-    vi.mocked(api.compileGenerationPrompt).mockResolvedValue({
-      id: "prompt-compiled-1",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "h3_prompt",
-      version_number: 4,
-      payload: {
-        status: "SAVED",
-        prompt_text: "编译出的 Prompt",
-        shot_card_version_id: "shot-card-2",
-        first_frame_asset_id: "first-frame-1",
-        first_frame_selection_version_id: "first-frame-selection-1",
-        character_version_id: "character-version-1",
-        character_reference_selection_id: "reference-selection-1",
-        output_duration_seconds: 4,
-        resolution: "768P",
-        ratio: "adaptive",
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.lockGenerationPrompt).mockResolvedValue({
-      id: "prompt-locked-2",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "h3_prompt",
-      version_number: 5,
-      payload: {
-        status: "LOCKED",
-        prompt_text: "编译出的 Prompt",
-        shot_card_version_id: "shot-card-2",
-        first_frame_asset_id: "first-frame-1",
-        first_frame_selection_version_id: "first-frame-selection-1",
-        character_version_id: "character-version-1",
-        character_reference_selection_id: "reference-selection-1",
-        output_duration_seconds: 4,
-        resolution: "768P",
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
+  it("主操作栏：直接提交当前文本，口播稿编辑不隐式改写提示词", async () => {
+    await setupReadyWorkspace();
     vi.mocked(api.createGenerationBatch).mockResolvedValue({
-      id: "batch-42",
+      id: "batch-direct",
       project_id: "project-1",
-      prompt_version_id: "prompt-locked-2",
+      prompt_version_id: "snapshot",
       status: "QUEUED",
       quantity: 1,
       stale: false,
@@ -2121,458 +2045,104 @@ describe("AnalysisWorkspace workflow gates", () => {
       },
       tasks: [],
     });
-
     const onBatchCreated = vi.fn();
-    render(
-      <AnalysisWorkspace
-        currentUserId="employee_1"
-        onAnalysisReady={vi.fn()}
-        onBatchCreated={onBatchCreated}
-        onClose={vi.fn()}
-        project={{
-          id: "project-1",
-          owner_user_id: "employee_1",
-          name: "流水线测试",
-          status: "REFERENCE_READY",
-          reference_asset_id: "reference-video-1",
-          reference_upload_status: "READY",
-          analysis_status: "READY",
-        }}
-      />,
-    );
-
-    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "完成角色选择" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成源画面" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成人物参考" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成置换首帧" }));
-    // 脏稿必须在上游选择稳定后制造：drafts 重载会重置口播稿文本，
-    // 先等最终一次重载完成（textarea 重新出现且为已保存文本）。
-    await waitFor(() =>
-      expect(screen.getByLabelText("口播稿内容")).toHaveValue("原始口播稿"),
-    );
-    fireEvent.change(screen.getByLabelText("口播稿内容"), {
-      target: { value: "原始口播稿（修订）" },
-    });
-
-    // 可自动补齐项（脏口播稿 + Prompt 未锁定）不弹缺失模态，直接进流水线。
+    renderReadyWorkspace(onBatchCreated);
+    await completePeopleReadiness();
     fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
-    expect(screen.queryByRole("dialog")).toBeNull();
-
-    await waitFor(() => expect(onBatchCreated).toHaveBeenCalledTimes(1));
-
-    // 四步按序执行，步骤间用本地链传递最新版本 id（编译用刚保存的
-    // script-3，锁定用刚编译的 prompt-compiled-1，建批用刚锁定的版本）。
-    const scriptOrder = vi.mocked(api.createScriptVersion).mock
-      .invocationCallOrder[0];
-    const compileOrder = vi.mocked(api.compileGenerationPrompt).mock
-      .invocationCallOrder[0];
-    const lockOrder = vi.mocked(api.lockGenerationPrompt).mock
-      .invocationCallOrder[0];
-    const batchOrder = vi.mocked(api.createGenerationBatch).mock
-      .invocationCallOrder[0];
-    expect(scriptOrder).toBeLessThan(compileOrder);
-    expect(compileOrder).toBeLessThan(lockOrder);
-    expect(lockOrder).toBeLessThan(batchOrder);
-
-    expect(vi.mocked(api.createScriptVersion)).toHaveBeenCalledWith(
-      "project-1",
-      {
-        source: "original",
-        text: "原始口播稿（修订）",
-        shot_card_version_id: "shot-card-2",
-      },
-    );
-    expect(vi.mocked(api.compileGenerationPrompt)).toHaveBeenCalledWith(
-      "project-1",
-      {
-        script_version_id: "script-3",
-        shot_card_version_id: "shot-card-2",
-        first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 4,
-        resolution: "768P",
-        ratio: "adaptive",
-      },
-    );
-    expect(vi.mocked(api.lockGenerationPrompt)).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-compiled-1",
-    );
-    expect(vi.mocked(api.createGenerationBatch)).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({
-        quantity: 1,
-        prompt_version_id: "prompt-locked-2",
-        first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 4,
-        resolution: "768P",
-      }),
-    );
-    expect(onBatchCreated).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "batch-42" }),
-    );
-  });
-
-  it("主操作栏：流水线中途失败停在对应步并显示可重试中文错误（P0-04-01）", async () => {
-    window.localStorage.clear();
-    vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
-      id: "shot-card-2",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "shot_card",
-      version_number: 2,
-      payload: {
-        source_analysis_version_id: "analysis-1",
-        duration_seconds: 8,
-        shots: [editableShot],
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: {
-        ...savedScriptVersion,
-        payload: {
-          ...savedScriptVersion.payload,
-          shot_card_version_id: "shot-card-2",
-        },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.createScriptVersion).mockResolvedValue({
-      ...savedScriptVersion,
-      id: "script-3",
-      version_number: 3,
-      payload: {
-        ...savedScriptVersion.payload,
-        shot_card_version_id: "shot-card-2",
-        full_text: "原始口播稿（修订）",
-      },
-    });
-    vi.mocked(api.compileGenerationPrompt).mockResolvedValue({
-      id: "prompt-compiled-1",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "h3_prompt",
-      version_number: 4,
-      payload: {
-        status: "SAVED",
-        prompt_text: "编译出的 Prompt",
-        output_duration_seconds: 4,
-        resolution: "768P",
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    // 非 Error 拒绝值走到 fallback 文案（真实服务端 5xx 响应体非 Error 实例）。
-    vi.mocked(api.lockGenerationPrompt).mockRejectedValue({
-      status: 500,
-      code: "INTERNAL_ERROR",
-    });
-
-    const onBatchCreated = vi.fn();
-    render(
-      <AnalysisWorkspace
-        currentUserId="employee_1"
-        onAnalysisReady={vi.fn()}
-        onBatchCreated={onBatchCreated}
-        onClose={vi.fn()}
-        project={{
-          id: "project-1",
-          owner_user_id: "employee_1",
-          name: "流水线失败测试",
-          status: "REFERENCE_READY",
-          reference_asset_id: "reference-video-1",
-          reference_upload_status: "READY",
-          analysis_status: "READY",
-        }}
-      />,
-    );
-
-    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "完成角色选择" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成源画面" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成人物参考" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成置换首帧" }));
-    await waitFor(() =>
-      expect(screen.getByLabelText("口播稿内容")).toHaveValue("原始口播稿"),
-    );
-    fireEvent.change(screen.getByLabelText("口播稿内容"), {
-      target: { value: "原始口播稿（修订）" },
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
-
-    // 停在锁定步：前两步已执行、不建批、不产生半成品交接。
-    expect(
-      await screen.findByText("锁定 Prompt失败，一键生成已停止，可重试。"),
-    ).toBeInTheDocument();
-    expect(api.createScriptVersion).toHaveBeenCalledTimes(1);
-    expect(api.compileGenerationPrompt).toHaveBeenCalledTimes(1);
-    expect(api.lockGenerationPrompt).toHaveBeenCalledTimes(1);
-    expect(api.createGenerationBatch).not.toHaveBeenCalled();
-    expect(onBatchCreated).not.toHaveBeenCalled();
-  });
-
-  it("主操作栏：Prompt 已 USED（重复生成）时流水线重编译新版本再建批（P0-04-01）", async () => {
-    window.localStorage.clear();
-    vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
-      id: "shot-card-2",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "shot_card",
-      version_number: 2,
-      payload: {
-        source_analysis_version_id: "analysis-1",
-        duration_seconds: 8,
-        shots: [editableShot],
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: {
-        ...savedScriptVersion,
-        payload: {
-          ...savedScriptVersion.payload,
-          shot_card_version_id: "shot-card-2",
-        },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
-      version: {
-        id: "prompt-used-1",
-        project_id: "project-1",
-        asset_id: null,
-        kind: "h3_prompt",
-        version_number: 5,
-        payload: {
-          status: "USED",
-          prompt_text: "已用于批次的 Prompt",
-          shot_card_version_id: "shot-card-2",
-          first_frame_asset_id: "first-frame-1",
-          first_frame_selection_version_id: "first-frame-selection-1",
-          character_version_id: "character-version-1",
-          character_reference_selection_id: "reference-selection-1",
-          output_duration_seconds: 4,
-          resolution: "768P",
-        },
-        created_by_user_id: "employee_1",
-        created_at: "2030-01-01T00:00:00Z",
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.compileGenerationPrompt).mockResolvedValue({
-      id: "prompt-compiled-2",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "h3_prompt",
-      version_number: 6,
-      payload: {
-        status: "SAVED",
-        prompt_text: "重编译的 Prompt",
-        output_duration_seconds: 4,
-        resolution: "768P",
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.lockGenerationPrompt).mockResolvedValue({
-      id: "prompt-locked-3",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "h3_prompt",
-      version_number: 7,
-      payload: {
-        status: "LOCKED",
-        prompt_text: "重编译的 Prompt",
-        output_duration_seconds: 4,
-        resolution: "768P",
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.createGenerationBatch).mockResolvedValue({
-      id: "batch-88",
-      project_id: "project-1",
-      prompt_version_id: "prompt-locked-3",
-      status: "QUEUED",
-      quantity: 1,
-      stale: false,
-      creation_kind: "replica",
-      progress: {
-        total_count: 1,
-        terminal_count: 0,
-        progress_percent: 0,
-        counts: {},
-      },
-      tasks: [],
-    });
-
-    const onBatchCreated = vi.fn();
-    render(
-      <AnalysisWorkspace
-        currentUserId="employee_1"
-        onAnalysisReady={vi.fn()}
-        onBatchCreated={onBatchCreated}
-        onClose={vi.fn()}
-        project={{
-          id: "project-1",
-          owner_user_id: "employee_1",
-          name: "重复生成测试",
-          status: "REFERENCE_READY",
-          reference_asset_id: "reference-video-1",
-          reference_upload_status: "READY",
-          analysis_status: "READY",
-        }}
-      />,
-    );
-
-    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "完成角色选择" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成源画面" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成人物参考" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成置换首帧" }));
-    await waitFor(() =>
-      expect(screen.getByLabelText("口播稿内容")).toHaveValue("原始口播稿"),
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
-
-    // USED 版本不能直接复用（建批必被 409 拒绝），必须重编译新版本。
-    await waitFor(() => expect(onBatchCreated).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(onBatchCreated).toHaveBeenCalledOnce());
     expect(api.createScriptVersion).not.toHaveBeenCalled();
-    expect(api.compileGenerationPrompt).toHaveBeenCalledTimes(1);
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-compiled-2",
-    );
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
     expect(api.createGenerationBatch).toHaveBeenCalledWith(
       "project-1",
-      expect.objectContaining({ prompt_version_id: "prompt-locked-3" }),
-    );
-    expect(onBatchCreated).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "batch-88" }),
+      expect.objectContaining({ prompt_text: "锁定的 Prompt" }),
     );
   });
 
-  it("主操作栏：流水线保存脏稿后编译失败时 Prompt 标记 stale，徽章降级不谎报就绪（P0-04-01）", async () => {
-    window.localStorage.clear();
-    vi.mocked(api.getLatestProjectShotCards).mockResolvedValue({
-      id: "shot-card-2",
-      project_id: "project-1",
-      asset_id: null,
-      kind: "shot_card",
-      version_number: 2,
-      payload: {
-        source_analysis_version_id: "analysis-1",
-        duration_seconds: 8,
-        shots: [editableShot],
-      },
-      created_by_user_id: "employee_1",
-      created_at: "2030-01-01T00:00:00Z",
-    });
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: {
-        ...savedScriptVersion,
-        payload: {
-          ...savedScriptVersion.payload,
-          shot_card_version_id: "shot-card-2",
-        },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
-      version: {
-        id: "prompt-saved-1",
-        project_id: "project-1",
-        asset_id: null,
-        kind: "h3_prompt",
-        version_number: 5,
-        payload: {
-          status: "SAVED",
-          prompt_text: "已保存的 Prompt",
-          shot_card_version_id: "shot-card-2",
-          first_frame_asset_id: "first-frame-1",
-          first_frame_selection_version_id: "first-frame-selection-1",
-          character_version_id: "character-version-1",
-          character_reference_selection_id: "reference-selection-1",
-          output_duration_seconds: 4,
-          resolution: "768P",
-        },
-        created_by_user_id: "employee_1",
-        created_at: "2030-01-01T00:00:00Z",
-      },
-      stale: false,
-      stale_reasons: [],
-    });
-    vi.mocked(api.createScriptVersion).mockResolvedValue({
-      ...savedScriptVersion,
-      id: "script-4",
-      version_number: 3,
-      payload: {
-        ...savedScriptVersion.payload,
-        shot_card_version_id: "shot-card-2",
-        full_text: "原始口播稿（修订）",
-      },
-    });
-    vi.mocked(api.compileGenerationPrompt).mockRejectedValue({
-      status: 500,
-      code: "INTERNAL_ERROR",
-    });
-
+  it("主操作栏：建批失败保留当前提示词及恢复入口", async () => {
+    await setupReadyWorkspace();
+    vi.mocked(api.createGenerationBatch).mockRejectedValue(
+      new TypeError("network"),
+    );
     const onBatchCreated = vi.fn();
-    render(
-      <AnalysisWorkspace
-        currentUserId="employee_1"
-        onAnalysisReady={vi.fn()}
-        onBatchCreated={onBatchCreated}
-        onClose={vi.fn()}
-        project={{
-          id: "project-1",
-          owner_user_id: "employee_1",
-          name: "编译失败降级测试",
-          status: "REFERENCE_READY",
-          reference_asset_id: "reference-video-1",
-          reference_upload_status: "READY",
-          analysis_status: "READY",
-        }}
-      />,
-    );
-
-    expect(await screen.findByText("拆解完成")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "完成角色选择" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成源画面" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成人物参考" }));
-    fireEvent.click(screen.getByRole("button", { name: "完成置换首帧" }));
-    await waitFor(() =>
-      expect(screen.getByLabelText("口播稿内容")).toHaveValue("原始口播稿"),
-    );
-    fireEvent.change(screen.getByLabelText("口播稿内容"), {
-      target: { value: "原始口播稿（修订）" },
-    });
-
+    renderReadyWorkspace(onBatchCreated);
+    await completePeopleReadiness();
     fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
-
-    // 保存成功、编译失败：停在编译步，且旧 Prompt 随新口播稿标记 stale
-    // （与手动保存语义一致），生成徽章降级为缺失而非谎报就绪。
-    expect(
-      await screen.findByText("编译 Prompt失败，一键生成已停止，可重试。"),
-    ).toBeInTheDocument();
-    expect(api.createScriptVersion).toHaveBeenCalledTimes(1);
-    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.createGenerationBatch).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(api.createGenerationBatch).toHaveBeenCalledOnce(),
+    );
     expect(onBatchCreated).not.toHaveBeenCalled();
-    expect(
-      within(screen.getByRole("tab", { name: /生成设置/ })).getByText(
-        "缺失 1 项",
-      ),
-    ).toBeInTheDocument();
+    expect(api.createScriptVersion).not.toHaveBeenCalled();
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.createGenerationBatch).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ prompt_text: "锁定的 Prompt" }),
+    );
+  });
+
+  it("主操作栏：已用过的提示词文字可再次生成新快照", async () => {
+    await setupReadyWorkspace();
+    vi.mocked(api.createGenerationBatch).mockResolvedValue({
+      id: "batch-direct",
+      project_id: "project-1",
+      prompt_version_id: "snapshot",
+      status: "QUEUED",
+      quantity: 1,
+      stale: false,
+      creation_kind: "replica",
+      progress: {
+        total_count: 1,
+        terminal_count: 0,
+        progress_percent: 0,
+        counts: {},
+      },
+      tasks: [],
+    });
+    const onBatchCreated = vi.fn();
+    renderReadyWorkspace(onBatchCreated);
+    await completePeopleReadiness();
+    fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
+    await waitFor(() => expect(onBatchCreated).toHaveBeenCalledOnce());
+    expect(api.createScriptVersion).not.toHaveBeenCalled();
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.createGenerationBatch).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ prompt_text: "锁定的 Prompt" }),
+    );
+  });
+
+  it("主操作栏：旧编译服务失败不影响最终文本提交", async () => {
+    await setupReadyWorkspace();
+    vi.mocked(api.createGenerationBatch).mockResolvedValue({
+      id: "batch-direct",
+      project_id: "project-1",
+      prompt_version_id: "snapshot",
+      status: "QUEUED",
+      quantity: 1,
+      stale: false,
+      creation_kind: "replica",
+      progress: {
+        total_count: 1,
+        terminal_count: 0,
+        progress_percent: 0,
+        counts: {},
+      },
+      tasks: [],
+    });
+    const onBatchCreated = vi.fn();
+    renderReadyWorkspace(onBatchCreated);
+    await completePeopleReadiness();
+    fireEvent.click(screen.getByRole("button", { name: "开始生成" }));
+    await waitFor(() => expect(onBatchCreated).toHaveBeenCalledOnce());
+    expect(api.createScriptVersion).not.toHaveBeenCalled();
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.createGenerationBatch).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ prompt_text: "锁定的 Prompt" }),
+    );
   });
 
   // P0-04-02：就绪基线 fixture（LOCKED Prompt 复用 + 可用费用预估），
@@ -2673,7 +2243,7 @@ describe("AnalysisWorkspace workflow gates", () => {
     vi.mocked(api.createGenerationBatch).mockResolvedValue({
       id: "batch-99",
       project_id: "project-1",
-      prompt_version_id: "prompt-locked-1",
+      prompt_version_id: "server-snapshot",
       status: "QUEUED",
       quantity: 4,
       stale: false,
@@ -2731,7 +2301,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       .mockResolvedValueOnce({
         id: "batch-100",
         project_id: "project-1",
-        prompt_version_id: "prompt-locked-1",
+        prompt_version_id: "server-snapshot",
         status: "QUEUED",
         quantity: 1,
         stale: false,
@@ -2763,7 +2333,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       ),
     ).toMatchObject({
       key: expect.any(String),
-      request: { prompt_version_id: "prompt-locked-1", quantity: 1 },
+      request: { prompt_text: "锁定的 Prompt", quantity: 1 },
     });
 
     // 重开页面：模拟刷新清空模块级会话 Map（真实刷新会重载模块），

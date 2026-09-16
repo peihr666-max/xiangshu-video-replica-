@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260916T1400_content_objects"
+HEAD_REVISION = "20260916T2000_prompt_optimization_receipts"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -99,24 +99,24 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # 例如 triggers 用 information_schema.triggers 的**行数**（BEFORE UPDATE 与
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
-    "check_constraints": 300,
-    "columns": 1111,
-    "foreign_keys": 179,
+    "check_constraints": 302,
+    "columns": 1129,
+    "foreign_keys": 180,
     "identity_columns": 0,
     "jsonb_columns": 0,
     "partial_indexes": 32,
-    "primary_keys": 96,
+    "primary_keys": 97,
     "sequences": 4,
-    "tables": 96,
+    "tables": 97,
     "timestamptz_columns": 46,
     "triggers": 27,
-    "unique_constraints": 36,
+    "unique_constraints": 37,
 }
 
 # head 的表名全集。counts 只能证明「数量没漂」，证明不了「同一批表」：
 # 掉一张旧表再建一张新表，tables 计数仍不变。表名集合与下面的完整目录
 # 摘要一起构成结构等价的两级断言，失配时的报错可直接指出 missing/unexpected。
-# 082 的增量：tables/primary_keys +1（publish_accounts）、columns +15、
+# 082 的增量：tables/primary_keys +1（publish_accounts）、columns +18、
 # check_constraints +3（platform/status/verify_flag 三条 CHECK）、foreign_keys +1
 # （user_id → users.id ON DELETE CASCADE）。两个新索引都不是 partial，故
 # partial_indexes 不变；时间戳走 sa.Text()，timestamptz_columns 不变。
@@ -193,6 +193,7 @@ HEAD_TABLE_NAMES = (
     "person_identities",
     "project_main_characters",
     "projects",
+    "prompt_optimization_receipts",
     "provider_settings",
     "publish_accounts",
     "publish_browser_accounts",
@@ -244,7 +245,11 @@ HEAD_TABLE_NAMES = (
 # 其中 content_objects 一段：check_constraints +4（size_bytes>0 / scope /
 # ref_count>=0 / scope_owner）、partial_indexes +3（user 与 global 两条唯一部分索引
 # + 回收索引）；unique_constraints 不变，因为两条唯一性都用部分索引表达而非 UNIQUE。
-HEAD_SCHEMA_DIGEST = "bd46c0f858a43683ff4c4a48456b1a142e58be04635bff8ef2473170a6849d11"
+# PROMPT-OPTIMIZE-20260916 追加 prompt_optimization_receipts及 analysis_tasks 上下文列：
+# tables/primary_keys +1、columns +18、foreign_keys +1（owner_user_id→users）、
+# unique_constraints +1（owner+idempotency）、check_constraints +2（mode / status）；
+# 空库→新 head 于本地 postgres:16 fixture 用 migration_manifest.py --print-schema 重算。
+HEAD_SCHEMA_DIGEST = "70b97d8100f63d7b5ba22c5bb9e83eed1aeae837d3228bf1e684f39eaa9eeb49"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

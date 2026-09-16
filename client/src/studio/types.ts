@@ -2,6 +2,7 @@ import type {
   CurrentUser,
   IndependentCapabilities,
   Project,
+  SavedPromptItem,
   StudioAnalytics,
 } from "../api";
 
@@ -228,6 +229,9 @@ export type StudioDraft = {
   /** 当前 Prompt 是否包含尚未保存为项目版本的本地编辑，包括主动清空。 */
   promptEdited?: boolean;
   referenceIds: string[];
+  referencePurposes?: Record<string, string>;
+  promptBindingsStale?: boolean;
+  importedPromptContext?: SavedPromptItem["generation_context"];
   resolution: string;
   ratio: string;
   duration: number;

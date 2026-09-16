@@ -39,6 +39,7 @@ from app.first_frames import (
     ImageInput,
     evaluate_generated_video_quality,
 )
+from app.h3_prompts import FORMATTER_VERSION, GenerationContext
 from app.internal_billing import (
     BillingInvariantError,
     InsufficientCreditsError,
@@ -245,6 +246,7 @@ class SavedPromptRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     prompt_text: str = Field(min_length=1, max_length=7_000)
     base_prompt_version_id: str | None = Field(default=None, min_length=1)
+    generation_context: GenerationContext | None = None
 
 
 class ApplySavedPromptRequest(BaseModel):
@@ -253,11 +255,24 @@ class ApplySavedPromptRequest(BaseModel):
     base_prompt_version_id: str = Field(min_length=1)
 
 
+class PromptContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["analysis", "manual", "ai", "imported"] = "manual"
+    analysis_version_id: str | None = None
+    shot_card_version_id: str | None = None
+    script_version_id: str | None = None
+    optimization_task_id: str | None = None
+    context_hash: str | None = None
+
+
 class GenerationBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     quantity: int = Field(ge=1)
-    prompt_version_id: str = Field(min_length=1)
+    prompt_version_id: str | None = Field(default=None, min_length=1)
+    prompt_text: str | None = Field(default=None, min_length=1, max_length=7000)
+    prompt_context: PromptContext | None = None
     first_frame_asset_id: str = Field(min_length=1)
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
@@ -265,6 +280,16 @@ class GenerationBatchRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     provider: Literal["fake_h3", "metaso"] = "fake_h3"
     fake_audio_quality: Literal["ok", "missing"] = "ok"
+
+    @model_validator(mode="after")
+    def require_one_prompt(self) -> GenerationBatchRequest:
+        if (self.prompt_version_id is None) == (self.prompt_text is None):
+            raise ValueError("provide exactly one of prompt_text and prompt_version_id")
+        if self.prompt_text is not None and not self.prompt_text.strip():
+            raise ValueError("prompt_text cannot be blank")
+        if self.prompt_version_id is not None and self.prompt_context is not None:
+            raise ValueError("prompt_context requires prompt_text")
+        return self
 
 
 class PaidRegenerationRequest(BaseModel):
@@ -1569,7 +1594,15 @@ def save_prompt_to_library(
         raise generation_error(422, "PROMPT_TEXT_REQUIRED", "Prompt text cannot be blank.")
     if not name:
         raise generation_error(422, "PROMPT_NAME_REQUIRED", "Prompt name cannot be blank.")
+    template_context = None
+    if request.generation_context is not None:
+        from app.prompt_context import resolve_context
+
+        target = request.generation_context.model_copy(update={"project_id": project_id})
+        template_context = resolve_context(conn, actor=actor, request=target)
+        template_context["formatter_version"] = FORMATTER_VERSION
     payload = {
+        "generation_context": template_context,
         "schema_version": GENERATION_SCHEMA_VERSION,
         "name": name,
         "prompt_text": prompt_text,
@@ -1993,12 +2026,77 @@ def create_generation_batch(
                     "Save a readable METASO API Key before queuing a real H3 task.",
                 ) from exc
 
-        prompt = require_version(
-            conn,
-            version_id=request.prompt_version_id,
-            project_id=project_id,
-            kind=H3_PROMPT_KIND,
-        )
+        if request.prompt_text is not None:
+            sources = confirmed_first_frame_sources(
+                conn, project_id=project_id, first_frame_asset_id=request.first_frame_asset_id
+            )
+            context = request.prompt_context or PromptContext()
+            from app.h3_prompts import prompt_issues
+
+            issues = prompt_issues(
+                request.prompt_text,
+                mode="I2VA",
+                duration=request.output_duration_seconds,
+                labels=["<Picture 1>"],
+                strict=False,
+            )
+            if issues:
+                raise generation_error(422, issues[0].code, issues[0].message)
+            if context.optimization_task_id:
+                task = conn.execute(
+                    "SELECT * FROM prompt_optimization_receipts WHERE id=%s AND owner_user_id=%s",
+                    (context.optimization_task_id, actor.id),
+                ).fetchone()
+                if task is None:
+                    raise generation_error(404, "PROMPT_TASK_NOT_FOUND", "优化任务不存在。")
+                snapshot = json.loads(str(task["request_json"]))["context"]
+                if (
+                    snapshot["project_id"] != project_id
+                    or snapshot["first_frame_asset_id"] != request.first_frame_asset_id
+                    or snapshot["duration_seconds"] != request.output_duration_seconds
+                    or snapshot["ratio"] != request.ratio
+                    or snapshot["context_hash"] != context.context_hash
+                ):
+                    raise generation_error(
+                        409, "PROMPT_CONTEXT_CHANGED", "素材或生成参数已改变，请核对提示词。"
+                    )
+
+            for version_id, kind in (
+                (context.analysis_version_id, "analysis"),
+                (context.shot_card_version_id, "shot_card"),
+                (context.script_version_id, SCRIPT_KIND),
+            ):
+                if version_id is not None:
+                    require_version(conn, version_id=version_id, project_id=project_id, kind=kind)
+            prompt = insert_version(
+                conn,
+                project_id=project_id,
+                asset_id=request.first_frame_asset_id,
+                kind=H3_PROMPT_KIND,
+                created_by_user_id=actor.id,
+                commit=False,
+                payload={
+                    **sources,
+                    "schema_version": GENERATION_SCHEMA_VERSION,
+                    "status": "LOCKED",
+                    "prompt_text": request.prompt_text,
+                    "content_hash": content_hash(request.prompt_text),
+                    "prompt_context": context.model_dump(mode="json"),
+                    "first_frame_asset_id": request.first_frame_asset_id,
+                    "output_duration_seconds": request.output_duration_seconds,
+                    "resolution": request.resolution,
+                    "ratio": request.ratio,
+                },
+            )
+        else:
+            assert request.prompt_version_id is not None
+            prompt = require_version(
+                conn,
+                version_id=request.prompt_version_id,
+                project_id=project_id,
+                kind=H3_PROMPT_KIND,
+            )
+        prompt_version_id = str(prompt["id"])
         if version_stale_reasons(conn, row=prompt):
             raise generation_error(
                 409,
@@ -2070,6 +2168,7 @@ def create_generation_batch(
             )
 
         request_snapshot = generation_request_snapshot(request, prompt_snapshot)
+        request_snapshot["prompt_version_id"] = prompt_version_id
         task_prompt_snapshot = {
             **prompt_snapshot,
             "output_duration_seconds": request.output_duration_seconds,
@@ -2086,7 +2185,7 @@ def create_generation_batch(
             """,
             (
                 json.dumps(used_prompt_snapshot, ensure_ascii=True, sort_keys=True),
-                request.prompt_version_id,
+                prompt_version_id,
                 str(prompt["payload_json"]),
             ),
         )
@@ -2152,7 +2251,7 @@ def create_generation_batch(
                     "PENDING",
                     "PENDING",
                     "PENDING",
-                    request.prompt_version_id,
+                    prompt_version_id,
                     json.dumps(task_prompt_snapshot, ensure_ascii=True, sort_keys=True),
                     request.output_duration_seconds,
                 ),
@@ -6571,29 +6670,9 @@ def build_h3_request(
                 }
             )
     else:
-        if not first_frame_url:
-            return {
-                "model": H3_MODEL,
-                "content": content,
-                "resolution": resolution,
-                "duration": duration_seconds,
-                "ratio": ratio,
-            }
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": first_frame_url},
-                "role": "first_frame",
-            }
-        )
-        if last_frame_url:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": last_frame_url},
-                    "role": "last_frame",
-                }
-            )
+        for role, frame_url in (("first_frame", first_frame_url), ("last_frame", last_frame_url)):
+            if frame_url:
+                content.append({"type": "image_url", "image_url": {"url": frame_url}, "role": role})
     return {
         "model": H3_MODEL,
         "content": content,
@@ -6617,6 +6696,9 @@ def validate_h3_request(request: dict[str, Any]) -> None:
         raise ValueError("H3 ratio is unsupported")
     if not roles:
         return  # T2V：仅文本。
+    if roles == ["last_frame"]:
+        _validate_h3_image_element(content[1], expected_role="last_frame")
+        return
     if roles == ["first_frame"]:
         _validate_h3_image_element(content[1], expected_role="first_frame")
         return
@@ -7173,6 +7255,9 @@ def generation_request_snapshot(
 
 def idempotency_request_hash(request: GenerationBatchRequest) -> str:
     payload = request.model_dump(mode="json", exclude={"idempotency_key"})
+    if request.prompt_version_id is not None:
+        for key in ("prompt_text", "prompt_context"):
+            payload.pop(key, None)
     return content_hash(json.dumps(payload, ensure_ascii=True, sort_keys=True))
 
 

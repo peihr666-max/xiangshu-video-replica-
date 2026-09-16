@@ -470,7 +470,7 @@ def test_dashboard_and_statistics_share_settled_financial_facts(
     assert payload["today"]["recharge_fen"] == 10000  # Never added to consumption income.
     assert payload["today"]["output_seconds"] == 15.08
     assert payload["today"]["margin_pct"] == 93
-    assert payload["todos"]["unconfigured_rates"] == 11  # Zero cost is configured, NULL is not.
+    assert payload["todos"]["unconfigured_rates"] == 12  # Zero cost is configured, NULL is not.
 
     with psycopg.connect(dashboard_pg_dsn) as raw:
         _billing_fact(raw, when=lower, revenue=None, costs=("1",))

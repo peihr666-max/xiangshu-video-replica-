@@ -1708,7 +1708,7 @@ describe("V1.4 workspace integration", () => {
         "project-1",
         "identity-1",
       );
-      expect(screen.getByText(/已保存到我的文案/)).toBeInTheDocument();
+      expect(await screen.findByText(/已保存到我的文案/)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeEnabled();
       expect(live.persistCloudDraft).toHaveBeenCalledWith(
         expect.objectContaining({

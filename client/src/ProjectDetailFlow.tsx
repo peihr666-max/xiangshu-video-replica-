@@ -3,9 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type AnalysisVersion,
   type CharacterReferenceSelection,
-  compileGenerationPrompt,
   createGenerationBatch,
-  createScriptVersion,
   defaultBatchProvider,
   type GenerationBatch,
   type GenerationBatchInput,
@@ -14,15 +12,13 @@ import {
   getGenerationPriceQuote,
   getLatestProjectAnalysis,
   getLatestProjectShotCards,
-  getLatestScriptVersion,
-  lockGenerationPrompt,
   type Project,
   type ProjectMainCharacter,
   type PromptPreviewResult,
   previewGenerationPrompt,
+  readAnalysisH3Prompt,
   readAnalysisPayload,
   readFirstFrameSelectionPayload,
-  reviseGenerationPrompt,
   saveGenerationPrompt,
   saveShotCards,
   selectCharacterReferences,
@@ -33,6 +29,7 @@ import { PromptMarkdown } from "./PromptMarkdown";
 import { SourceFrameSelection } from "./SourceFrameSelection";
 
 type ProjectDetailFlowProps = {
+  currentUserId?: string;
   onBack: () => void;
   onBatchCreated: (batch: GenerationBatch) => void;
   onBusyChange?: (isBusy: boolean) => void;
@@ -69,6 +66,7 @@ function newIdempotencyKey(): string {
 // stale 级联（角色/源画面变 → 清参考与首帧）、幂等建批、付费红线全部沿用
 // 快速生成动线的服务端语义。
 export function ProjectDetailFlow({
+  currentUserId,
   onBack,
   onBatchCreated,
   onBusyChange,
@@ -119,6 +117,10 @@ export function ProjectDetailFlow({
   const [revisedPromptText, setRevisedPromptText] = useState<string | null>(
     null,
   );
+  const finalPromptText =
+    revisedPromptText ??
+    (readAnalysisH3Prompt(analysisVersion) || preview?.prompt_text || "");
+
   const [referenceRetryCount, setReferenceRetryCount] = useState(0);
   const upstreamBusyRef = useRef<Set<string>>(new Set());
   const [, forceRender] = useState(0);
@@ -147,7 +149,7 @@ export function ProjectDetailFlow({
     generationQuantity,
     generationRatio,
     scriptText: scriptText.trim(),
-    revisedPromptText: revisedPromptText?.trim() ?? "",
+    revisedPromptText: finalPromptText,
   });
   const priceQuoteReady = Boolean(
     priceQuoteStatus === "ready" &&
@@ -421,36 +423,6 @@ export function ProjectDetailFlow({
     return saved.id;
   }
 
-  // 幂等复用条件在快速生成基础上加文本比较：同镜头卡版本且文案未变时
-  // 不重复建版本；文案与原文一致按 original 落库，任何修改按 custom 另存。
-  async function ensureScriptVersion(
-    shotCardVersionId: string,
-  ): Promise<string> {
-    const text = scriptText.trim();
-    if (!text) {
-      throw new Error("自定义文案为空，请填写文案后再提交生成。");
-    }
-    const source = text === originalScript.trim() ? "original" : "custom";
-    const latest = await getLatestScriptVersion(project.id);
-    const payload = latest.version?.payload as
-      | Record<string, unknown>
-      | undefined;
-    if (
-      latest.version &&
-      !latest.stale &&
-      payload?.shot_card_version_id === shotCardVersionId &&
-      payload?.full_text === text
-    ) {
-      return latest.version.id;
-    }
-    const saved = await createScriptVersion(project.id, {
-      source,
-      text,
-      shot_card_version_id: shotCardVersionId,
-    });
-    return saved.id;
-  }
-
   function defaultDurationSeconds(): number {
     const raw = sourceVideoDurationSeconds();
     const duration = typeof raw === "number" && raw > 0 ? Math.round(raw) : 10;
@@ -501,27 +473,9 @@ export function ProjectDetailFlow({
       }
       if (!envelope || envelope.sourceFingerprint !== sourceFingerprint) {
         const shotCardVersionId = await ensureShotCardVersion();
-        const scriptVersionId = await ensureScriptVersion(shotCardVersionId);
+        const finalText = finalPromptText;
+        if (!finalText.trim()) throw new Error("请先填写提示词。");
         const duration = generationDuration;
-        const compiled = await compileGenerationPrompt(project.id, {
-          script_version_id: scriptVersionId,
-          shot_card_version_id: shotCardVersionId,
-          first_frame_asset_id: firstFrameAssetId,
-          output_duration_seconds: duration,
-          resolution: "768P",
-          ratio: generationRatio,
-        });
-        // 只有文案未改时才复用第一段保存的完整 Prompt。自定义文案变化后，
-        // compiled 已包含新文本，不能再被此前保存的旧 Prompt 覆盖。
-        let promptVersionId = compiled.id;
-        if (revisedPromptText?.trim() && !scriptWasEdited) {
-          const revised = await reviseGenerationPrompt(project.id, {
-            base_prompt_version_id: compiled.id,
-            prompt_text: revisedPromptText,
-          });
-          promptVersionId = revised.id;
-        }
-        const locked = await lockGenerationPrompt(project.id, promptVersionId);
         if (!isCurrent()) {
           throw new Error("生成参数已变化，请按最新报价重新提交。");
         }
@@ -529,7 +483,11 @@ export function ProjectDetailFlow({
           sourceFingerprint,
           request: {
             quantity: generationQuantity,
-            prompt_version_id: locked.id,
+            prompt_text: finalText,
+            prompt_context: {
+              source: "manual",
+              shot_card_version_id: shotCardVersionId,
+            },
             first_frame_asset_id: firstFrameAssetId,
             output_duration_seconds: duration,
             resolution: "768P",
@@ -664,6 +622,15 @@ export function ProjectDetailFlow({
         {previewError ? <p className="status-note">{previewError}</p> : null}
         {preview ? (
           <PromptMarkdown
+            scope={`${currentUserId ?? project.owner_user_id}:${project.id}`}
+            onChange={setRevisedPromptText}
+            promptContext={{
+              route: "replica",
+              project_id: project.id,
+              first_frame_asset_id: firstFrameAssetId || undefined,
+              duration_seconds: generationDuration,
+              ratio: generationRatio,
+            }}
             meta={`成片 ${preview.output_duration_seconds} 秒 · ${preview.resolution} · 口播来源：${
               preview.script_source === "script_version"
                 ? "已保存口播稿"
@@ -674,7 +641,7 @@ export function ProjectDetailFlow({
                 ? undefined
                 : handleSavePrompt
             }
-            text={preview.prompt_text}
+            text={finalPromptText}
           />
         ) : null}
       </fieldset>

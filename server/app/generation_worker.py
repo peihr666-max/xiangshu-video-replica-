@@ -1189,6 +1189,13 @@ def run_pg_worker_once(
                 ).fetchone()[0]:
                     reconcile_operations(reconcile_conn)
         processed_round = False
+        from app.prompt_optimizer import run_prompt_task
+
+        if run_prompt_task(_pg_audio_connection, worker_id=worker_id, storage=storage):
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         with pg_transaction() as raw_conn:
             viral_import_lease = acquire_viral_import_task(
                 BusinessConnection.postgres(raw_conn), worker_id=worker_id

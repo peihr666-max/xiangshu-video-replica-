@@ -114,7 +114,7 @@ async function createAndPublishCharacter(page) {
 
 // P0-05-02：V1.4 单屏闭环一键动线——打开项目 → 预填确认（角色自动预选/
 // 源画面特征/人物参考/首帧/口播稿均为预填后一次确认）→ 一键生成
-//（编译→锁定→建批合并为一次点击，契约红线 4）→ N=3 预览下载。
+//（当前提示词直接建批，契约红线 4）→ N=3 预览下载。
 // 角色版本自动预选已合入（P0-03-01）：无快照进入自动落库最近发布
 // 版本，零点击；fake 分析 original_script 为空，原稿预填为空稿，
 // 仍需切自定义稿保存。用户确认类动作 = 4（源画面/参考/首帧对/生成）。
@@ -219,7 +219,13 @@ async function createProjectBatchViaOneClick(page) {
     toolbarWarning.getByText("将创建 3 个付费生成任务"),
   ).toBeVisible();
 
-  // 主按钮一键生成：编译→锁定→建批合并为一次点击（红线 4），
+  await page
+    .getByLabel("视频生成提示词内容")
+    .fill(
+      "夏日咖啡馆，人物面对镜头自然讲述：夏日咖啡馆的好项目，要从真实需求出发。",
+    );
+
+  // 主按钮一键生成：直接冻结当前编辑文字并建批（红线 4），
   // 成功后自动交接任务记录页（无需粘贴 Batch ID）。
   await page.getByRole("button", { name: "开始生成" }).click();
   await expect(
