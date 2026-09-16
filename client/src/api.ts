@@ -6980,8 +6980,9 @@ export function fetchViralVideoStatistics(
 }
 
 // ---------------------------------------------------------------------------
-// C5 发布模块第一阶段：平台发布账号（/api/studio/publish/accounts）
-// 发布记录（/records）属第二阶段，本轮不提供调用。
+// C5 发布模块第一阶段（legacy）：手工粘贴 Cookie 的平台发布账号
+// （/api/studio/publish/accounts）。第二阶段的正式投递以扫码账号
+// （/publish/browser/accounts）与发布记录（/publish/records，见下文）为准。
 // ---------------------------------------------------------------------------
 
 export type PublishAccountItem = {
@@ -7158,5 +7159,126 @@ export async function customerRevokeApiKey(
   await customerJson<undefined>(
     `/api/customer/api-keys/${encodeURIComponent(id)}`,
     { credential, method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PUBLISH-DELIVERY-20260917 第二阶段：发布记录（/api/studio/publish/records）
+// 立即/定时投递、状态机、汇总；账号引用扫码账号（publish_browser_accounts）。
+// ---------------------------------------------------------------------------
+
+export type PublishRecordStatus =
+  | "queued"
+  | "publishing"
+  | "published"
+  | "failed"
+  | "cancelled";
+
+export type PublishRecordItem = {
+  id: string;
+  platform: "douyin" | "wechat_channels" | "xiaohongshu";
+  account_id: string | null;
+  account_username: string | null;
+  video_asset_id: string;
+  cover_asset_id: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  scheduled_at: string | null;
+  status: PublishRecordStatus;
+  delivery_mode: "api" | "browser" | null;
+  platform_item_id: string | null;
+  platform_short_url: string | null;
+  platform_status: string | null;
+  stats: Record<string, unknown> | null;
+  stats_synced_at: string | null;
+  sync_requested: boolean;
+  error_message: string | null;
+  published_at: string | null;
+  attempt_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PublishSummary = {
+  published_total: number;
+  queued_total: number;
+  failed_total: number;
+  play_total: number;
+  like_total: number;
+};
+
+export type PublishRecordCreateInput = {
+  account_id: string;
+  video_material_id: string;
+  cover_material_id?: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  scheduled_at?: string | null;
+  options?: Record<string, unknown>;
+};
+
+const PUBLISH_RECORDS_BASE = "/api/studio/publish/records";
+
+export async function listPublishRecords(
+  filters: {
+    status?: PublishRecordStatus;
+    platform?: string;
+    limit?: number;
+  } = {},
+): Promise<PublishRecordItem[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.platform) params.set("platform", filters.platform);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  const query = params.toString();
+  return requestApiJson<{ records: PublishRecordItem[] }>(
+    query ? `${PUBLISH_RECORDS_BASE}?${query}` : PUBLISH_RECORDS_BASE,
+    "读取发布记录失败",
+  ).then((payload) => payload.records);
+}
+
+export async function createPublishRecord(
+  input: PublishRecordCreateInput,
+): Promise<PublishRecordItem> {
+  return requestApiJson<PublishRecordItem>(
+    PUBLISH_RECORDS_BASE,
+    "提交发布失败",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+async function publishRecordAction(
+  recordId: string,
+  action: "cancel" | "retry" | "sync",
+  errorPrefix: string,
+): Promise<PublishRecordItem> {
+  return requestApiJson<{ record: PublishRecordItem }>(
+    `${PUBLISH_RECORDS_BASE}/${encodeURIComponent(recordId)}/${action}`,
+    errorPrefix,
+    { method: "POST" },
+  ).then((payload) => payload.record);
+}
+
+export const cancelPublishRecord = (recordId: string) =>
+  publishRecordAction(recordId, "cancel", "取消发布失败");
+export const retryPublishRecord = (recordId: string) =>
+  publishRecordAction(recordId, "retry", "重试发布失败");
+export const syncPublishRecord = (recordId: string) =>
+  publishRecordAction(recordId, "sync", "发起数据同步失败");
+
+export async function deletePublishRecord(recordId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `${PUBLISH_RECORDS_BASE}/${encodeURIComponent(recordId)}`,
+    "删除发布记录失败",
+    { method: "DELETE" },
+  );
+}
+
+export async function getPublishSummary(): Promise<PublishSummary> {
+  return requestApiJson<PublishSummary>(
+    `${PUBLISH_RECORDS_BASE}/summary`,
+    "读取发布统计失败",
   );
 }

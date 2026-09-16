@@ -9,6 +9,15 @@ export type LocalPublishAccount = {
   username: string;
   verified_at: number;
 };
+export type CloudPublishAccount = LocalPublishAccount & {
+  status: "connected" | "invalid";
+  error_message: string | null;
+  source: "cloud" | "desktop";
+};
+export type PublishStorageState = {
+  cookies: Record<string, unknown>[];
+  origins: Record<string, unknown>[];
+};
 export type LocalPublishLoginStatus = {
   phase:
     | "loading"
@@ -21,8 +30,18 @@ export type LocalPublishLoginStatus = {
   image: string | null;
   account: LocalPublishAccount | null;
   message?: string;
+  /** Desktop only: one-shot login export to hand to the server-side worker. */
+  storage_state?: PublishStorageState | null;
 };
 export const canUseLocalPublishAccounts = () => isTauri();
+export const isPublishStorageState = (
+  value: unknown,
+): value is PublishStorageState =>
+  typeof value === "object" &&
+  value !== null &&
+  Array.isArray((value as PublishStorageState).cookies) &&
+  Array.isArray((value as PublishStorageState).origins) &&
+  (value as PublishStorageState).cookies.length > 0;
 async function command<T>(
   name: string,
   args: Record<string, unknown>,
@@ -72,6 +91,36 @@ export const removeLocalPublishAccount = (owner: string, accountId: string) =>
     : cloudDeleteAccount(accountId);
 export const openLocalPublishAccount = (owner: string, accountId: string) =>
   command<void>("open_local_publish_account", { owner, accountId });
+/** Re-export a connected desktop profile (hidden window) for the server-side worker. */
+export const exportLocalPublishAccountState = (
+  owner: string,
+  accountId: string,
+) =>
+  command<{
+    identity: { platform_user_id: string; username: string };
+    storage_state: PublishStorageState;
+  }>("export_local_publish_account_state", { owner, accountId });
+
+/** Server-side accounts (cloud QR logins and imported desktop logins) — the delivery source. */
+export const listCloudPublishAccounts = (): Promise<CloudPublishAccount[]> =>
+  cloudAccounts() as Promise<CloudPublishAccount[]>;
+export async function importCloudPublishAccount(
+  platform: PublishPlatform,
+  identity: { platform_user_id: string; username: string },
+  storageState: PublishStorageState,
+): Promise<CloudPublishAccount> {
+  const response = await publishBrowserRequest(`${cloudBase}/accounts/import`, {
+    method: "POST",
+    body: JSON.stringify({ platform, identity, storage_state: storageState }),
+    signal: AbortSignal.timeout(20000),
+  });
+  return (await response.json()) as CloudPublishAccount;
+}
+export async function deleteCloudPublishAccount(
+  accountId: string,
+): Promise<void> {
+  await cloudDeleteAccount(accountId);
+}
 
 type CloudLogin = {
   owner: string;
