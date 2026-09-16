@@ -28,6 +28,7 @@ const replicaApi = vi.hoisted(() => ({
   getLatestScriptRewriteTask: vi.fn<
     (...args: [string, string?, string?]) => Promise<unknown>
   >(async () => null),
+  getScriptRewriteTask: vi.fn(),
   rewriteProjectScript: vi.fn(),
   waitForScriptRewriteTask: vi.fn(),
   getLatestProjectFirstFrameSelection: vi.fn(),
@@ -309,6 +310,8 @@ describe("V1.4 创作页面", () => {
     replicaApi.selectCharacterReferences.mockReset();
     replicaApi.getLatestScriptRewriteTask.mockReset();
     replicaApi.getLatestScriptRewriteTask.mockResolvedValue(null);
+    sessionStorage.clear();
+    replicaApi.getScriptRewriteTask.mockReset();
     replicaApi.rewriteProjectScript.mockReset();
     replicaApi.waitForScriptRewriteTask.mockReset();
     replicaLive.uploadVideoMaterial.mockReset();
@@ -322,6 +325,243 @@ describe("V1.4 创作页面", () => {
     replicaApi.getAssetDownloadUrl.mockImplementation(async (assetId) => ({
       url: `https://signed.example/${assetId}.png`,
     }));
+  });
+
+  it("提取原文后不显示二创编辑框或终稿按钮", () => {
+    const value = studio();
+    value.state.draft.script = {
+      ...value.state.draft.script,
+      text: "原始文案",
+      confirmed: false,
+      resultKind: "extracted",
+    };
+    useStudio.mockReturnValue(value);
+    render(<CopyPage />);
+    expect(screen.getByLabelText("来源原文")).toHaveValue("原始文案");
+    expect(screen.queryByLabelText("二创文案")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "确认终稿" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("按要求二创无需人物，向同一个接口传原文和补充要求", async () => {
+    const value = studio({ review: false });
+    value.state.draft = {
+      ...value.state.draft,
+      ipId: undefined,
+      rewriteMethod: "custom",
+      rewriteInstructions: "更口语化",
+      rewriteLength: "200",
+    };
+    replicaApi.rewriteProjectScript.mockResolvedValue({
+      id: "custom-1",
+      project_id: "project-1",
+      identity_id: null,
+      source_asset_id: "source-1",
+      source_text: "原始文案",
+      instructions: "目标约 200 字。\n更口语化",
+      status: "SUCCEEDED",
+      result: { rewritten_text: "按要求生成的文案" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<CopyPage />);
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+    expect(replicaApi.rewriteProjectScript).toHaveBeenCalledWith(
+      "project-1",
+      "原始文案",
+      undefined,
+      "source-1",
+      expect.any(String),
+      "目标约 200 字。\n更口语化",
+    );
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith(
+        expect.objectContaining({
+          script: expect.objectContaining({
+            text: "按要求生成的文案",
+            resultKind: "rewritten",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it.each([450, 5000])(
+    "文案字数可选自定义，%s 字随改写要求提交",
+    async (wordCount) => {
+      const value = studio({ review: false });
+      value.state.draft.rewriteMethod = "custom";
+      value.state.draft.rewriteInstructions = "更口语化";
+      value.patchDraft = vi.fn((patch) => {
+        value.state.draft = { ...value.state.draft, ...patch };
+      });
+      replicaApi.rewriteProjectScript.mockReturnValue(new Promise(() => {}));
+      useStudio.mockReturnValue(value);
+      const view = render(<CopyPage />);
+      expect(screen.queryByText("目标长度")).not.toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText("文案字数"), {
+        target: { value: "custom" },
+      });
+      view.rerender(<CopyPage />);
+      expect(
+        screen.getByRole("button", { name: "生成二创文案" }),
+      ).toBeDisabled();
+      fireEvent.change(screen.getByLabelText("自定义文案字数"), {
+        target: { value: String(wordCount) },
+      });
+      view.rerender(<CopyPage />);
+      expect(screen.getByLabelText("自定义文案字数")).toHaveValue(wordCount);
+      fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+      expect(replicaApi.rewriteProjectScript).toHaveBeenCalledWith(
+        "project-1",
+        "原始文案",
+        undefined,
+        "source-1",
+        expect.any(String),
+        `目标约 ${wordCount} 字。\n更口语化`,
+      );
+    },
+  );
+
+  it.each([undefined, 0, -1, 1.5, 5001])(
+    "自定义字数 %s 不合法时禁止生成",
+    (wordCount) => {
+      const value = studio({ review: false });
+      value.state.draft.rewriteMethod = "custom";
+      value.state.draft.rewriteInstructions = "更口语化";
+      value.state.draft.rewriteLength = "custom";
+      value.state.draft.rewriteWordCount = wordCount;
+      useStudio.mockReturnValue(value);
+      render(<CopyPage />);
+      expect(screen.getByLabelText("自定义文案字数")).toHaveAttribute(
+        "aria-invalid",
+        "true",
+      );
+      expect(
+        screen.getByRole("button", { name: "生成二创文案" }),
+      ).toBeDisabled();
+      expect(replicaApi.rewriteProjectScript).not.toHaveBeenCalled();
+    },
+  );
+
+  it("已有结果重新生成后离开并返回可恢复，人工改稿转为候选", async () => {
+    const value = studio({ review: false });
+    value.state.draft.rewriteMethod = "custom";
+    value.state.draft.rewriteInstructions = "更口语化";
+    const task = {
+      id: "recover-new",
+      project_id: "project-1",
+      identity_id: null,
+      source_asset_id: "source-1",
+      source_text: "原始文案",
+      instructions: "更口语化",
+      status: "RUNNING",
+      result: null,
+    };
+    replicaApi.rewriteProjectScript.mockResolvedValue(task);
+    replicaApi.waitForScriptRewriteTask.mockReturnValueOnce(
+      new Promise(() => {}),
+    );
+    useStudio.mockReturnValue(value);
+    const view = render(<CopyPage />);
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+    await waitFor(() =>
+      expect(replicaApi.waitForScriptRewriteTask).toHaveBeenCalledWith(
+        "recover-new",
+      ),
+    );
+    view.unmount();
+    value.state.draft.script = {
+      ...value.state.draft.script,
+      text: "离开期间人工修改",
+    };
+    replicaApi.getScriptRewriteTask.mockResolvedValue({
+      ...task,
+      status: "SUCCEEDED",
+      result: { rewritten_text: "恢复的新结果" },
+    });
+    const restoredView = render(<CopyPage />);
+    await waitFor(() =>
+      expect(replicaApi.getScriptRewriteTask).toHaveBeenCalledWith(
+        "recover-new",
+      ),
+    );
+    expect(
+      await screen.findByRole("button", { name: "应用候选稿" }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("二创文案")).toHaveValue("离开期间人工修改");
+    value.state.draft.script = {
+      ...value.state.draft.script,
+      original: "新的来源原文",
+    };
+    restoredView.rerender(<CopyPage />);
+    expect(
+      screen.queryByRole("button", { name: "应用候选稿" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([402, 422])("明确提交失败 %s 时清除待恢复记录", async (status) => {
+    const value = studio({ review: false });
+    replicaApi.rewriteProjectScript.mockRejectedValue({
+      status,
+      message: "未受理",
+    });
+    useStudio.mockReturnValue(value);
+    render(<CopyPage />);
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        pendingRewrite: undefined,
+      }),
+    );
+    expect(sessionStorage.getItem("studio:pending-copy:customer-1")).toBeNull();
+  });
+
+  it("响应丢失的请求重进页面不误取历史任务，重试沿用幂等键", async () => {
+    const value = studio({ review: false });
+    replicaApi.rewriteProjectScript.mockRejectedValue(new Error("网络中断"));
+    useStudio.mockReturnValue(value);
+    const view = render(<CopyPage />);
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+    await waitFor(() => expect(value.notify).toHaveBeenCalledWith("网络中断"));
+    const key = replicaApi.rewriteProjectScript.mock.calls[0]?.[4];
+    view.unmount();
+    replicaApi.getLatestScriptRewriteTask.mockClear();
+    render(<CopyPage />);
+    expect(replicaApi.getLatestScriptRewriteTask).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+    await waitFor(() =>
+      expect(replicaApi.rewriteProjectScript).toHaveBeenCalledTimes(2),
+    );
+    expect(replicaApi.rewriteProjectScript.mock.calls[1]?.[4]).toBe(key);
+  });
+
+  it("旧 IP 档案任务不得作为当前人物资料的结果恢复", async () => {
+    const value = studio({ review: false });
+    value.state.draft.script = {
+      ...value.state.draft.script,
+      text: "",
+      confirmed: false,
+      resultKind: "extracted",
+    };
+    replicaApi.getLatestScriptRewriteTask.mockResolvedValue({
+      id: "old-profile",
+      project_id: "project-1",
+      identity_id: "person-1",
+      source_asset_id: "source-1",
+      source_text: "原始文案",
+      status: "SUCCEEDED",
+      ip_profile_snapshot: { display_name: "张工", role: "旧职业" },
+      result: { rewritten_text: "旧职业稿" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<CopyPage />);
+    await waitFor(() =>
+      expect(replicaApi.getLatestScriptRewriteTask).toHaveBeenCalled(),
+    );
+    await Promise.resolve();
+    expect(value.patchDraft).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("二创文案")).not.toBeInTheDocument();
   });
 
   it("文案终稿可带入数字人口播并保留同一草稿", () => {
@@ -483,7 +723,7 @@ describe("V1.4 创作页面", () => {
     expect(value.openPicker).toHaveBeenCalledWith("person");
   });
 
-  it("按当前项目、来源、已保存正文和人物IP发起异步二创", async () => {
+  it("按当前项目、来源原文和人物IP发起异步二创", async () => {
     const value = studio({ review: false });
     value.state = {
       ...value.state,
@@ -494,8 +734,15 @@ describe("V1.4 创作页面", () => {
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-1",
-      ip_profile_snapshot: { profile_version: 7 },
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "PENDING",
       result: null,
     });
@@ -504,25 +751,35 @@ describe("V1.4 创作页面", () => {
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-1",
-      ip_profile_snapshot: { profile_version: 7 },
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "SUCCEEDED",
       result: { rewritten_text: "张工定位的二创稿" },
     });
     useStudio.mockReturnValue(value);
     render(<CopyPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "按 IP 二创" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
 
     expect(replicaApi.rewriteProjectScript).toHaveBeenCalledWith(
       "project-1",
-      "已确认的乡墅口播终稿",
+      "原始文案",
       "person-1",
       "source-1",
       expect.any(String),
+      "",
     );
     await waitFor(() =>
       expect(value.patchDraft).toHaveBeenCalledWith({
+        pendingRewrite: undefined,
+        rewriteCandidate: undefined,
         script: expect.objectContaining({
           text: "张工定位的二创稿",
           confirmed: false,
@@ -538,10 +795,9 @@ describe("V1.4 创作页面", () => {
     ["缺少人物IP", { ipId: undefined }, /人物 IP/],
     [
       "正文为空",
-      { script: { ...studio().state.draft.script, text: "" } },
+      { script: { ...studio().state.draft.script, text: "", original: "" } },
       /待改写正文/,
     ],
-    ["正文尚未保存", { scriptEdited: true }, /先保存当前编辑/],
   ])("%s时禁用二创并显示原因", (_name, draftPatch, message) => {
     const value = studio({ review: false });
     value.state = {
@@ -551,7 +807,7 @@ describe("V1.4 创作页面", () => {
     useStudio.mockReturnValue(value);
     render(<CopyPage />);
 
-    expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成二创文案" })).toBeDisabled();
     expect(screen.getAllByText(message).length).toBeGreaterThan(0);
     expect(replicaApi.rewriteProjectScript).not.toHaveBeenCalled();
   });
@@ -569,17 +825,27 @@ describe("V1.4 创作页面", () => {
         project_id: "project-1",
         identity_id: "person-1",
         source_asset_id: "source-1",
-        source_text: "已确认的乡墅口播终稿",
+        source_text: "原始文案",
+        ip_profile_snapshot: {
+          display_name: "张工",
+          role: "乡墅设计师",
+          service_scope: "乡墅设计",
+          target_audience: "自建房家庭",
+          expression_style: "专业通俗",
+          profile_version: 7,
+        },
         status: "SUCCEEDED",
         result: { rewritten_text: "重试成功稿" },
       });
     useStudio.mockReturnValue(value);
     render(<CopyPage />);
-    const rewrite = screen.getByRole("button", { name: "按 IP 二创" });
+    const rewrite = screen.getByRole("button", { name: "生成二创文案" });
 
     fireEvent.click(rewrite);
     await waitFor(() => expect(value.notify).toHaveBeenCalledWith("临时失败"));
-    expect(value.patchDraft).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(value.patchDraft).mock.calls.some(([patch]) => patch.script),
+    ).toBe(false);
     expect(screen.getByLabelText("二创文案")).toHaveValue(
       "已确认的乡墅口播终稿",
     );
@@ -602,14 +868,26 @@ describe("V1.4 创作页面", () => {
     const value = studio({ review: false });
     value.state = {
       ...value.state,
-      draft: { ...value.state.draft, scriptEdited: false },
+      draft: {
+        ...value.state.draft,
+        scriptEdited: false,
+        script: { ...value.state.draft.script, text: "", confirmed: false },
+      },
     };
     replicaApi.getLatestScriptRewriteTask.mockResolvedValue({
       id: "rewrite-restored",
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-1",
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "RUNNING",
       result: null,
     });
@@ -618,7 +896,15 @@ describe("V1.4 创作页面", () => {
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-1",
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "SUCCEEDED",
       result: { rewritten_text: "恢复完成的同稿结果" },
     });
@@ -649,7 +935,15 @@ describe("V1.4 创作页面", () => {
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-1",
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "PENDING",
       result: null,
     });
@@ -662,7 +956,7 @@ describe("V1.4 创作页面", () => {
     let current = original;
     useStudio.mockImplementation(() => current);
     const view = render(<CopyPage />);
-    fireEvent.click(screen.getByRole("button", { name: "按 IP 二创" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
     await waitFor(() =>
       expect(replicaApi.waitForScriptRewriteTask).toHaveBeenCalled(),
     );
@@ -682,13 +976,23 @@ describe("V1.4 创作页面", () => {
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-1",
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "SUCCEEDED",
       result: { rewritten_text: "迟到的旧A稿" },
     });
 
     await Promise.resolve();
-    expect(original.patchDraft).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(original.patchDraft).mock.calls.some(([patch]) => patch.script),
+    ).toBe(false);
     expect(original.notify).not.toHaveBeenCalledWith(
       expect.stringContaining("完成"),
     );
@@ -732,7 +1036,15 @@ describe("V1.4 创作页面", () => {
       project_id: "project-1",
       identity_id: "person-1",
       source_asset_id: "source-a",
-      source_text: "已确认的乡墅口播终稿",
+      source_text: "原始文案",
+      ip_profile_snapshot: {
+        display_name: "张工",
+        role: "乡墅设计师",
+        service_scope: "乡墅设计",
+        target_audience: "自建房家庭",
+        expression_style: "专业通俗",
+        profile_version: 7,
+      },
       status: "RUNNING",
       result: null,
     });
@@ -746,7 +1058,7 @@ describe("V1.4 创作页面", () => {
     const reviewValue = studio({ review: true });
     useStudio.mockReturnValue(reviewValue);
     const view = render(<CopyPage />);
-    expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成二创文案" })).toBeDisabled();
     expect(screen.getByText(/审核示例/)).toBeInTheDocument();
     view.unmount();
 
@@ -765,7 +1077,7 @@ describe("V1.4 创作页面", () => {
     };
     useStudio.mockReturnValue(auditor);
     render(<CopyPage />);
-    expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "生成二创文案" })).toBeDisabled();
     expect(screen.getByText(/只读权限/)).toBeInTheDocument();
     expect(replicaApi.rewriteProjectScript).not.toHaveBeenCalled();
   });

@@ -17,7 +17,7 @@
 
 .admin-sessions__header p {
   color: var(--muted, #6b7280);
-  font-size: 13px;
+  font-size: var(--font-label);
   margin-top: 5px;
 }
 
@@ -26,7 +26,7 @@
   border-radius: 999px;
   color: #9bcf90;
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
   padding: 6px 10px;
 }
@@ -41,7 +41,7 @@
 .admin-sessions__toolbar label {
   display: grid;
   flex: 1 1 260px;
-  font-size: 12px;
+  font-size: var(--font-caption);
   gap: 6px;
 }
 
@@ -75,12 +75,12 @@
 
 .admin-sessions__identity strong {
   color: #e0bd6c;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .admin-sessions__identity span:not(.admin-sessions__avatar) {
   color: #aaa49a;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 
 .admin-sessions__avatar {
@@ -90,7 +90,7 @@
   color: #dfba68;
   display: inline-flex;
   flex: 0 0 34px;
-  font-size: 13px;
+  font-size: var(--font-label);
   font-weight: 700;
   height: 34px;
   justify-content: center;
@@ -100,7 +100,7 @@
   color: #b2aba1;
   display: flex;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: var(--font-caption);
   gap: 8px 18px;
 }
 

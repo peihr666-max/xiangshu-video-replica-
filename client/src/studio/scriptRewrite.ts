@@ -6,6 +6,9 @@ export type ScriptRewriteScope = {
   scriptId: string;
   scriptVersion: number;
   text: string;
+  instructions?: string;
+  resultText?: string;
+  profileFingerprint?: string;
 };
 
 type InMemoryKeyState = {
@@ -28,6 +31,8 @@ function scopeFingerprint(scope: ScriptRewriteScope) {
     scope.scriptId,
     scope.scriptVersion,
     scope.text,
+    scope.instructions ?? "",
+    scope.profileFingerprint ?? "",
   ]);
 }
 

@@ -24,7 +24,9 @@ const adminDevRewritePlugin: Plugin = {
     server.middlewares.use((req, _res, next) => {
       const url = req.url ?? "";
       // 精确 /admin 与 /admin/…；不匹配 /administrator 之类的其它路径。
-      if (url === "/admin" || url.startsWith("/admin/")) {
+      if (url === "/admin/favicon.png" || url === "/admin/favicon.ico") {
+        req.url = url.replace("/admin", "");
+      } else if (url === "/admin" || url.startsWith("/admin/")) {
         req.url = "/admin.html";
       }
       next();
@@ -46,6 +48,12 @@ export default defineConfig({
           resolve(scriptDir, "public/favicon.svg"),
           resolve(output, "favicon.svg"),
         );
+        for (const icon of ["favicon.png", "favicon.ico"]) {
+          copyFileSync(
+            resolve(scriptDir, "public", icon),
+            resolve(output, icon),
+          );
+        }
         cpSync(
           resolve(scriptDir, "public/platforms"),
           resolve(output, "platforms"),

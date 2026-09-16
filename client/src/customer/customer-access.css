@@ -1,3 +1,5 @@
+@import "../typography.css";
+
 /* 客户账户屏与共享基础样式（激活/登录/配对/设备/会话/个人中心/充值弹窗）。
  * 由 styles.css 拆出（前端分析报告 F-01/P0-1 修复）：客户构建制品不含 styles.css，
  * 本文件经 RootApp.tsx 引入，服务客户 lane；管理端样式仍在 styles.css（CW-019 两侧隔离）。
@@ -178,7 +180,7 @@ button.nav-button {
 }
 .eyebrow {
   color: #c9a35c;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 700;
   letter-spacing: 0.14em;
 }
@@ -229,13 +231,13 @@ button.nav-button {
   line-height: 1;
 }
 .customer-access-brand__name strong {
-  font-size: 28px;
+  font-size: var(--font-title);
   font-weight: 720;
   letter-spacing: -0.04em;
 }
 .customer-access-brand__name small {
   margin-top: 6px;
-  font-size: 20px;
+  font-size: var(--font-section);
   font-weight: 640;
   letter-spacing: 0.01em;
 }
@@ -245,7 +247,7 @@ button.nav-button {
 .customer-access-body h1 {
   margin: 0;
   color: #f7f5f1;
-  font-size: clamp(28px, 2.4vw, 34px);
+  font-size: clamp(24px, 2.4vw, 28px);
   line-height: 1.25;
   letter-spacing: -0.035em;
   text-align: center;
@@ -253,7 +255,7 @@ button.nav-button {
 .customer-access-lead {
   margin: 12px 0 24px;
   color: #aaa7a1;
-  font-size: 16px;
+  font-size: var(--font-body);
   line-height: 1.6;
   text-align: center;
 }
@@ -265,7 +267,7 @@ button.nav-button {
   display: grid;
   gap: 10px;
   color: #efede8;
-  font-size: 15px;
+  font-size: var(--font-body);
   font-weight: 620;
 }
 .customer-access-input {
@@ -295,7 +297,7 @@ button.nav-button {
   padding: 0 18px;
   color: #f5f2ec;
   background: #15171c;
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .customer-access-input--leading input {
   padding-left: 52px;
@@ -321,7 +323,7 @@ button.nav-button {
   color: #e8e4dc;
   background: transparent;
   box-shadow: none;
-  font-size: 15px;
+  font-size: var(--font-body);
 }
 .customer-access-form
   .customer-access-alternative
@@ -338,7 +340,7 @@ button.nav-button {
   padding: 12px 14px;
   color: #aaa69f;
   background: #15161a;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .customer-access-form button,
 .customer-access-card--login .customer-access-body > button {
@@ -349,7 +351,7 @@ button.nav-button {
   color: #171107;
   background: #e1ad49;
   box-shadow: 0 12px 30px rgba(206, 148, 49, 0.2);
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   font-weight: 760;
 }
 .customer-access-form button:not(:disabled):hover,
@@ -362,7 +364,7 @@ button.nav-button {
   border-top: 1px solid #292b31;
   padding: 22px 40px 24px;
   color: #c8943d;
-  font-size: 14px;
+  font-size: var(--font-body);
   text-align: center;
 }
 .customer-access-card--login {
@@ -429,16 +431,16 @@ button.nav-button {
     height: 58px;
   }
   .customer-access-brand__name strong {
-    font-size: 27px;
+    font-size: var(--font-title);
   }
   .customer-access-brand__name small {
-    font-size: 19px;
+    font-size: var(--font-section);
   }
   .customer-access-body {
     padding: 24px 28px 22px;
   }
   .customer-access-body h1 {
-    font-size: 27px;
+    font-size: var(--font-title);
   }
   .customer-access-lead {
     margin: 10px 0 20px;
@@ -459,12 +461,12 @@ button.nav-button {
 }
 .projects-upload-item__aside .secondary-button {
   padding: 7px 13px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .projects-list__actions .secondary-button,
 .projects-generate-button {
   padding: 7px 13px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .provider-card,
 .runtime-form,
@@ -481,7 +483,7 @@ button.nav-button {
   gap: 12px;
   flex-wrap: wrap;
   color: #79dda9;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .settings-error {
   margin-top: 32px;
@@ -522,17 +524,17 @@ button.danger-button:not(:disabled):hover {
 }
 .character-preview-card__actions .secondary-button {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .character-scene-card__body .secondary-button {
   justify-self: start;
   margin-top: 4px;
   padding: 6px 10px;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .character-preview-item .secondary-button {
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .status-badge {
   border: 1px solid #315d47;
@@ -540,7 +542,7 @@ button.danger-button:not(:disabled):hover {
   background: #162a21;
   padding: 3px 10px;
   color: #91deb4;
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 700;
 }
 .wallet-page {
@@ -570,14 +572,14 @@ button.danger-button:not(:disabled):hover {
 }
 .wallet-summary-card strong {
   color: #f1d39b;
-  font-size: clamp(24px, 4vw, 34px);
+  font-size: clamp(24px, 4vw, 28px);
 }
 .wallet-section {
   padding: 22px;
 }
 .wallet-section h2 {
   margin: 0 0 14px;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
 }
 .wallet-section__heading {
   display: flex;
@@ -600,7 +602,7 @@ button.danger-button:not(:disabled):hover {
 }
 .recharge-presets span {
   color: #e8decf;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .custom-recharge-form {
   display: grid;
@@ -613,7 +615,7 @@ button.danger-button:not(:disabled):hover {
   display: grid;
   gap: 7px;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .custom-recharge-form button {
   min-height: 44px;
@@ -652,7 +654,7 @@ button.danger-button:not(:disabled):hover {
 .recharge-dialog__header h2 {
   margin: 5px 0 0;
   color: #f3eee6;
-  font-size: 26px;
+  font-size: var(--font-title);
 }
 .recharge-dialog__chooser {
   display: grid;
@@ -678,7 +680,7 @@ button.danger-button:not(:disabled):hover {
   background: #dfaa43;
 }
 .recharge-dialog__presets button span {
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .recharge-dialog__chooser form {
   display: grid;
@@ -690,7 +692,7 @@ button.danger-button:not(:disabled):hover {
   display: grid;
   gap: 8px;
   color: #c9c2b8;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .recharge-dialog__chooser form button {
   min-height: 44px;
@@ -726,11 +728,11 @@ button.danger-button:not(:disabled):hover {
 }
 .recharge-dialog__summary > span:first-child {
   color: #aaa297;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .recharge-dialog__summary > strong {
   color: #efbd5f;
-  font-size: 36px;
+  font-size: var(--font-metric);
 }
 .recharge-dialog__summary p {
   margin: 0;
@@ -742,7 +744,7 @@ button.danger-button:not(:disabled):hover {
   padding: 6px 11px;
   color: #e4bd70;
   background: #251e14;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .recharge-dialog__success {
   display: grid;
@@ -756,7 +758,7 @@ button.danger-button:not(:disabled):hover {
 }
 .recharge-dialog__success strong {
   color: #91deb4;
-  font-size: 28px;
+  font-size: var(--font-title);
 }
 .recharge-dialog__success p,
 .recharge-dialog__panel footer {
@@ -781,7 +783,7 @@ button.danger-button:not(:disabled):hover {
 .customer-profile__hero h2 {
   margin: 6px 0 4px;
   color: #f4efe7;
-  font-size: 28px;
+  font-size: var(--font-title);
 }
 .customer-profile__hero p:last-child {
   margin: 0;
@@ -818,7 +820,7 @@ button.danger-button:not(:disabled):hover {
   padding: 1px 6px;
   color: #f8e3b8;
   background: #6c4b19;
-  font-size: 10px;
+  font-size: var(--font-caption);
 }
 .customer-profile__overview,
 .customer-profile__devices {
@@ -857,7 +859,7 @@ button.danger-button:not(:disabled):hover {
   display: grid;
   gap: 8px;
   color: #aaa297;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .customer-profile__account input {
   width: 100%;
@@ -881,7 +883,7 @@ button.danger-button:not(:disabled):hover {
 }
 .customer-profile__metrics strong {
   color: #f1d39b;
-  font-size: 27px;
+  font-size: var(--font-title);
 }
 .customer-profile__license {
   display: flex;
@@ -904,7 +906,7 @@ button.danger-button:not(:disabled):hover {
 .customer-profile__license strong {
   color: #f0e9df;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   letter-spacing: 0.04em;
 }
 .customer-profile__license-actions,
@@ -930,7 +932,7 @@ button.danger-button:not(:disabled):hover {
 }
 .customer-profile__replacement code {
   color: #f5d38b;
-  font-size: 16px;
+  font-size: var(--font-body);
   overflow-wrap: anywhere;
 }
 .customer-profile__replacement small {
@@ -987,7 +989,7 @@ button.danger-button:not(:disabled):hover {
 .device-session-expiry {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.84rem;
+  font-size: var(--font-label);
 }
 .device-slot-grid {
   display: grid;
@@ -1000,7 +1002,7 @@ button.danger-button:not(:disabled):hover {
   justify-content: space-between;
   gap: 10px;
   color: #aaa297;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .device-slot-card__heading strong {
   color: #dfbd79;
@@ -1010,7 +1012,7 @@ button.danger-button:not(:disabled):hover {
 .device-slot-card__empty p {
   margin: 0;
   color: #aaa297;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .device-slot-card__empty {
   display: grid;
@@ -1025,7 +1027,7 @@ button.danger-button:not(:disabled):hover {
   border: none;
   padding: 0;
   color: #e0b45e;
-  font-size: 14px;
+  font-size: var(--font-body);
   cursor: pointer;
   text-align: left;
 }
@@ -1040,7 +1042,7 @@ button.danger-button:not(:disabled):hover {
 .recharge-dialog__panel footer {
   border-top: 1px solid var(--line);
   padding-top: 16px;
-  font-size: 12px;
+  font-size: var(--font-caption);
   text-align: center;
 }
 .table-scroll {
@@ -1051,7 +1053,7 @@ button.danger-button:not(:disabled):hover {
   min-width: 620px;
   border-collapse: collapse;
   color: #e8e3db;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .internal-table th,
 .internal-table td {
@@ -1066,7 +1068,7 @@ button.danger-button:not(:disabled):hover {
 button.table-action-button {
   min-width: 112px;
   padding: 7px 10px;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 button.table-action-button--danger {
   border-color: #713944;
@@ -1155,7 +1157,7 @@ button.table-action-button--danger {
   border-radius: 10px;
   padding: 14px 16px;
   background: var(--panel);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .heartbeat-status .label,
 .lease-countdown .label {
@@ -1166,13 +1168,13 @@ button.table-action-button--danger {
 .lease-countdown .label time {
   color: var(--text);
   font-family: var(--mono);
-  font-size: 12.5px;
+  font-size: var(--font-label);
 }
 .heartbeat-status .interval-info,
 .heartbeat-status .help-text {
   margin: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .heartbeat-status .status-text,
 .lease-countdown .status-text {
@@ -1205,7 +1207,7 @@ button.table-action-button--danger {
 .lease-countdown .btn-renew {
   margin-top: 4px;
   padding: 7px 14px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .customer-session-notice {

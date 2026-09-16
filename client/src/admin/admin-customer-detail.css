@@ -39,7 +39,7 @@
   border-radius: 9px;
   color: var(--admin-gold);
   background: #24221e;
-  font-size: 32px;
+  font-size: var(--font-metric);
 }
 
 .customer-detail-title {
@@ -94,7 +94,7 @@
   display: block;
   margin-top: 8px;
   color: var(--admin-gold);
-  font-size: 30px;
+  font-size: var(--font-title);
 }
 
 .customer-detail-settings-grid {
@@ -113,7 +113,7 @@
 .customer-focused-detail .customer-detail-meta dt,
 .customer-focused-detail .customer-detail-meta dd,
 .customer-focused-detail .customer-detail-meta code {
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 
 .customer-360-panel {
@@ -132,7 +132,7 @@
   padding: 11px 14px;
   border-bottom: 1px solid var(--admin-line-soft);
   color: var(--admin-text);
-  font-size: 17px;
+  font-size: var(--font-subtitle);
 }
 
 .customer-360-row {
@@ -143,7 +143,7 @@
   padding: 13px 14px;
   border-bottom: 1px solid var(--admin-line-soft);
   color: var(--admin-text);
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 
 .customer-360-row:last-child {
@@ -151,7 +151,7 @@
 }
 
 .customer-360-row small {
-  font-size: 12px;
+  font-size: var(--font-caption);
   color: var(--admin-muted);
   text-align: right;
 }
@@ -261,19 +261,19 @@
   flex-shrink: 0;
   width: 60px;
   height: 60px;
-  font-size: 26px;
+  font-size: var(--font-title);
 }
 .customer-detail-kpis article {
   padding: 14px 18px;
 }
 .customer-detail-kpis strong {
-  font-size: 25px;
+  font-size: var(--font-title);
 }
 .customer-360-panel:last-child {
   grid-column: auto;
 }
 .customer-360-panel h3 {
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .customer-detail-settings-grid > :only-child {
   grid-column: 1 / -1;

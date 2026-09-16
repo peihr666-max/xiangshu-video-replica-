@@ -1,0 +1,330 @@
+Resolved 59 packages in 2ms
+Downloading playwright (45.5MiB)
+ Downloaded playwright
+Prepared 3 packages in 44.84s
+Uninstalled 1 package in 6ms
+Installed 3 packages in 31ms
+ + playwright==1.62.0
+ + pyee==13.0.1
+ + qrcode==8.2
+ - video-replica-api==0.1.16 (from file:///work/server)
+........................................................................ [  3%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 12%]
+........................................................................ [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 21%]
+......s................................................................. [ 24%]
+........................................................................ [ 27%]
+........................................................................ [ 30%]
+.......................................................................F [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+........................................................................ [ 42%]
+........................................................................ [ 45%]
+........................................................................ [ 48%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 57%]
+............................................................FFF......... [ 60%]
+........................................................................ [ 63%]
+........................................................................ [ 66%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 78%]
+........................................................................ [ 81%]
+..............................F......................................... [ 84%]
+........................................................................ [ 87%]
+........................................................................ [ 90%]
+........................................................................ [ 93%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+.....................                                                    [100%]
+=================================== FAILURES ===================================
+__________ test_pitr_shell_entry_points_are_committed_as_executables ___________
+
+    def test_pitr_shell_entry_points_are_committed_as_executables() -> None:
+        artifacts = (
+            "deploy/postgres/pitr-preflight.sh",
+            "deploy/postgres/pitr-backup.sh",
+            "deploy/postgres/pitr-fetch-wal.sh",
+            "deploy/postgres/pitr-restore-drill.sh",
+        )
+>       completed = subprocess.run(
+            ["git", "ls-files", "--stage", "--", *artifacts],
+            check=True,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+
+tests/test_customer_pitr.py:177:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+input = None, capture_output = True, timeout = None, check = True
+popenargs = (['git', 'ls-files', '--stage', '--', 'deploy/postgres/pitr-preflight.sh', 'deploy/postgres/pitr-backup.sh', ...],)
+kwargs = {'cwd': PosixPath('/task'), 'text': True, 'stdout': -1, 'stderr': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', 'ls-files', '--stage', '--', 'deploy/postgres/pitr-preflight.sh', 'deploy/postgres/pitr-backup.sh', 'deploy/postgres/pitr-fetch-wal.sh', 'deploy/postgres/pitr-restore-drill.sh']' returned non-zero exit status 128.
+
+/usr/local/lib/python3.12/subprocess.py:571: CalledProcessError
+____________________ test_operator_package_is_reproducible _____________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-4/test_operator_package_is_repro0')
+
+    def test_operator_package_is_reproducible(tmp_path: Path) -> None:
+        """Two builds from the same tree are byte-identical, manifest included."""
+
+>       first = _build_operator_package(tmp_path / "first")
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_cw060_operator_isolation.py:112:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+output = PosixPath('/tmp/pytest-of-root/pytest-4/test_operator_package_is_repro0/first')
+
+    def _build_operator_package(output: Path) -> Path:
+        """Build once into ``output``; return the manifest path."""
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(BUILDER),
+                "--repo-root",
+                str(REPO_ROOT),
+                "--output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+>       assert completed.returncode == 0, completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "/task/deploy/operator/build_operator_package.py", line 232, in <module>
+E             raise SystemExit(main())
+E                              ^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 223, in main
+E             manifest_path = build_package(args.repo_root.resolve(), args.output.resolve())
+E                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 151, in build_package
+E             commit_sha = _git(repo_root, "rev-parse", "HEAD")
+E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 62, in _git
+E             completed = subprocess.run(
+E                         ^^^^^^^^^^^^^^^
+E           File "/usr/local/lib/python3.12/subprocess.py", line 571, in run
+E             raise CalledProcessError(retcode, process.args,
+E         subprocess.CalledProcessError: Command '['git', 'rev-parse', 'HEAD']' returned non-zero exit status 128.
+E
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/work/server/.venv/bin/python', '/task/deploy/operator/build_operator_package.py', '--repo-roo...,\nsubprocess.CalledProcessError: Command \'[\'git\', \'rev-parse\', \'HEAD\']\' returned non-zero exit status 128.\n').returncode
+
+tests/test_cw060_operator_isolation.py:95: AssertionError
+_____________ test_operator_manifest_binds_commit_and_single_head ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-4/test_operator_manifest_binds_c0')
+
+    def test_operator_manifest_binds_commit_and_single_head(tmp_path: Path) -> None:
+>       manifest = json.loads(_build_operator_package(tmp_path / "pkg").read_text(encoding="utf-8"))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_cw060_operator_isolation.py:125:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+output = PosixPath('/tmp/pytest-of-root/pytest-4/test_operator_manifest_binds_c0/pkg')
+
+    def _build_operator_package(output: Path) -> Path:
+        """Build once into ``output``; return the manifest path."""
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(BUILDER),
+                "--repo-root",
+                str(REPO_ROOT),
+                "--output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+>       assert completed.returncode == 0, completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "/task/deploy/operator/build_operator_package.py", line 232, in <module>
+E             raise SystemExit(main())
+E                              ^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 223, in main
+E             manifest_path = build_package(args.repo_root.resolve(), args.output.resolve())
+E                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 151, in build_package
+E             commit_sha = _git(repo_root, "rev-parse", "HEAD")
+E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 62, in _git
+E             completed = subprocess.run(
+E                         ^^^^^^^^^^^^^^^
+E           File "/usr/local/lib/python3.12/subprocess.py", line 571, in run
+E             raise CalledProcessError(retcode, process.args,
+E         subprocess.CalledProcessError: Command '['git', 'rev-parse', 'HEAD']' returned non-zero exit status 128.
+E
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/work/server/.venv/bin/python', '/task/deploy/operator/build_operator_package.py', '--repo-roo...,\nsubprocess.CalledProcessError: Command \'[\'git\', \'rev-parse\', \'HEAD\']\' returned non-zero exit status 128.\n').returncode
+
+tests/test_cw060_operator_isolation.py:95: AssertionError
+______________ test_operator_package_contains_no_business_surface ______________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-4/test_operator_package_contains0')
+
+    def test_operator_package_contains_no_business_surface(tmp_path: Path) -> None:
+>       manifest = json.loads(_build_operator_package(tmp_path / "pkg").read_text(encoding="utf-8"))
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_cw060_operator_isolation.py:161:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+output = PosixPath('/tmp/pytest-of-root/pytest-4/test_operator_package_contains0/pkg')
+
+    def _build_operator_package(output: Path) -> Path:
+        """Build once into ``output``; return the manifest path."""
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(BUILDER),
+                "--repo-root",
+                str(REPO_ROOT),
+                "--output",
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+>       assert completed.returncode == 0, completed.stderr
+E       AssertionError: Traceback (most recent call last):
+E           File "/task/deploy/operator/build_operator_package.py", line 232, in <module>
+E             raise SystemExit(main())
+E                              ^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 223, in main
+E             manifest_path = build_package(args.repo_root.resolve(), args.output.resolve())
+E                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 151, in build_package
+E             commit_sha = _git(repo_root, "rev-parse", "HEAD")
+E                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/task/deploy/operator/build_operator_package.py", line 62, in _git
+E             completed = subprocess.run(
+E                         ^^^^^^^^^^^^^^^
+E           File "/usr/local/lib/python3.12/subprocess.py", line 571, in run
+E             raise CalledProcessError(retcode, process.args,
+E         subprocess.CalledProcessError: Command '['git', 'rev-parse', 'HEAD']' returned non-zero exit status 128.
+E
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/work/server/.venv/bin/python', '/task/deploy/operator/build_operator_package.py', '--repo-roo...,\nsubprocess.CalledProcessError: Command \'[\'git\', \'rev-parse\', \'HEAD\']\' returned non-zero exit status 128.\n').returncode
+
+tests/test_cw060_operator_isolation.py:95: AssertionError
+________ test_secret_scan_script_passes_on_repository_contract_surface _________
+
+    @pytest.mark.skipif(
+        not (REPO_ROOT / "scripts" / "verify_no_secrets.sh").exists() or BASH is None,
+        reason="secret scan script or a functional bash is not available",
+    )
+    def test_secret_scan_script_passes_on_repository_contract_surface() -> None:
+        assert BASH is not None
+        result = subprocess.run(
+            [BASH, "scripts/verify_no_secrets.sh"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+        )
+
+        # str() keeps the failure message renderable even when the shell emits
+        # bytes that the ambient Windows code page cannot decode.
+>       assert result.returncode == 0, str(result.stdout) + str(result.stderr)
+E       AssertionError: b''b'fatal: not a git repository: /task/E:/\xe4\xbc\x97\xe5\xa2\x85\xe4\xb9\x8b\xe5\xae\xb6\xe7\x88\x86\xe6\xac\xbe\xe7\x9f\xad\xe8\xa7\x86\xe9\xa2\x91\xe5\x88\x9b\xe4\xbd\x9c/xiangshu-video-replica-/.git/worktrees/UI-TYPOGRAPHY-BRAND-20260916\nSecret scan failed while evaluating pattern: (^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}\n'
+E       assert 2 == 0
+E        +  where 2 = CompletedProcess(args=['/usr/bin/bash', 'scripts/verify_no_secrets.sh'], returncode=2, stdout=b'', stderr=b'fatal: not.../UI-TYPOGRAPHY-BRAND-20260916\nSecret scan failed while evaluating pattern: (^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}\n').returncode
+
+tests/test_security_contracts.py:99: AssertionError
+=============================== warnings summary ===============================
+../../work/server/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /work/server/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_customer_pitr.py::test_pitr_shell_entry_points_are_committed_as_executables
+FAILED tests/test_cw060_operator_isolation.py::test_operator_package_is_reproducible
+FAILED tests/test_cw060_operator_isolation.py::test_operator_manifest_binds_commit_and_single_head
+FAILED tests/test_cw060_operator_isolation.py::test_operator_package_contains_no_business_surface
+FAILED tests/test_security_contracts.py::test_secret_scan_script_passes_on_repository_contract_surface
+5 failed, 2391 passed, 1 skipped, 1 warning in 1452.57s (0:24:12)

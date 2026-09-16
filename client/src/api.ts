@@ -3036,10 +3036,16 @@ export type ScriptRewriteTask = {
     service_scope: string;
     target_audience: string;
     expression_style: string;
+    audience_needs?: string;
+    factual_background?: string;
+    sample_script?: string;
+    forbidden_claims?: string;
+
     profile_version: number;
   } | null;
   source_asset_id: string | null;
   source_text: string;
+  instructions?: string;
   status:
     | "PENDING"
     | "RUNNING"
@@ -3065,6 +3071,7 @@ export async function rewriteProjectScript(
   identityId?: string,
   sourceAssetId?: string,
   idempotencyKey: string = newControlWriteIdempotencyKey(),
+  instructions = "",
 ): Promise<ScriptRewriteTask> {
   return requestApiJson<ScriptRewriteTask>(
     `/api/projects/${encodeURIComponent(projectId)}/script-rewrite`,
@@ -3074,6 +3081,7 @@ export async function rewriteProjectScript(
       body: JSON.stringify({
         text,
         ...(identityId ? { identity_id: identityId } : {}),
+        ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
         ...(sourceAssetId ? { source_asset_id: sourceAssetId } : {}),
         idempotency_key: idempotencyKey,
       }),
@@ -3196,6 +3204,10 @@ export interface SimpleLibraryEntry {
   service_scope: string;
   target_audience: string;
   expression_style: string;
+  audience_needs?: string;
+  factual_background?: string;
+  sample_script?: string;
+  forbidden_claims?: string;
   owner_user_id: string | null;
   status: string;
   contact_sheet_asset_id: string | null;
@@ -3327,6 +3339,10 @@ export async function updateSimpleCharacterProfile(
     service_scope: string;
     target_audience: string;
     expression_style: string;
+    audience_needs?: string;
+    factual_background?: string;
+    sample_script?: string;
+    forbidden_claims?: string;
   },
 ): Promise<SimpleLibraryEntry> {
   return requestApiJson<SimpleLibraryEntry>(

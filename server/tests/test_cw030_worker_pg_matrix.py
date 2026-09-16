@@ -2337,3 +2337,161 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
             conn, lease=lease, provider=ApilioImageProvider(api_key="test-key")
         )
     assert observed[-1] == "9:16"
+
+
+def test_rewrite_instructions_and_extended_profile_contract():
+    from app.script_rewrite import ScriptRewriteRequest, _validated_ip_profile_snapshot
+    from app.simple_character_routes import SimpleCharacterProfileRequest
+
+    request = ScriptRewriteRequest(text="来源原文", instructions="精简至 200 字")
+    assert request.instructions == "精简至 200 字"
+    profile = SimpleCharacterProfileRequest(
+        display_name="张工",
+        role="乡墅设计师",
+        service_scope="乡墅设计",
+        target_audience="回乡建房家庭",
+        expression_style="朴实",
+        audience_needs="预算与布局",
+        factual_background="已确认的项目资料",
+        sample_script="先规划预算。\n再考虑空间。",
+        forbidden_claims="不承诺最低价",
+    )
+    snapshot = _validated_ip_profile_snapshot(
+        {
+            "identity_id": "person-1",
+            "profile_version": 1,
+            **profile.model_dump(),
+        }
+    )
+    assert snapshot["sample_script"] == "先规划预算。\n再考虑空间。"
+
+
+@pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
+def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
+    import io
+
+    import app.script_rewrite as rewrite
+
+    requests = []
+
+    def respond(request, **_kwargs):
+        assert _kwargs["timeout"] == 240
+        requests.append(request)
+        return io.BytesIO(
+            json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
+            ).encode()
+        )
+
+    monkeypatch.setattr(rewrite, "urlopen", respond)
+    result = rewrite.request_deepseek_text(
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-chat",
+        source_text="来源文本",
+        instructions="简洁表达",
+        purpose=purpose,
+    )
+    assert result == "测试输出"
+    assert requests[0].full_url == "https://api.deepseek.com/chat/completions"
+    body = json.loads(requests[0].data)
+    assert body["model"] == "deepseek-chat"
+    assert body["max_tokens"] == 8192
+    assert "简洁表达" in body["messages"][-2]["content"]
+    assert "来源文本" in body["messages"][-1]["content"]
+
+
+def test_rewrite_instructions_persist_and_conflicting_retry_is_rejected(pg_state, monkeypatch):
+    import app.script_rewrite as rewrite
+    from app.auth import CurrentUser
+
+    _seed_base(pg_state)
+    _configure_deepseek(monkeypatch)
+    actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        row = rewrite.enqueue_script_rewrite_task(
+            conn,
+            actor=actor,
+            project_id="proj-1",
+            source_text="原文内容",
+            instructions="  约200字，不添加报价  ",
+            idempotency_key="custom-rewrite-test",
+        )
+        request = rewrite.validated_script_rewrite_request(row)
+        assert request.source_text == "原文内容"
+        assert request.instructions == "约200字，不添加报价"
+        assert request.ip_profile_snapshot is None
+    with pytest.raises(HTTPException) as conflict:
+        with pg_transaction() as raw:
+            rewrite.enqueue_script_rewrite_task(
+                BusinessConnection.postgres(raw),
+                actor=actor,
+                project_id="proj-1",
+                source_text="原文内容",
+                instructions="另一种要求",
+                idempotency_key="custom-rewrite-test",
+            )
+    assert conflict.value.status_code == 409
+    observed = []
+
+    def generate(**kwargs):
+        observed.append(kwargs)
+        return "完成的二创正文"
+
+    monkeypatch.setattr(rewrite, "_request_deepseek", generate)
+    assert _run_worker("ip-custom-worker") == 1
+    assert observed[0]["instructions"] == "约200字，不添加报价"
+    assert observed[0]["source_text"] == "原文内容"
+
+
+def test_ip_extended_profile_roundtrip_and_legacy_update_preserves_fields(pg_state):
+    from app.auth import CurrentUser
+    from app.script_rewrite import _load_owned_ip_profile_snapshot
+    from app.simple_character import update_simple_character_profile
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO character_personas (id, identity_id, name) "
+        "VALUES ('cp-owned', 'identity-owned', '张工')",
+    )
+    actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
+    kwargs = dict(
+        actor=actor,
+        identity_id="identity-owned",
+        display_name="张工",
+        role="设计师",
+        service_scope="乡墅",
+        target_audience="建房家庭",
+        expression_style="朴实",
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        entry = update_simple_character_profile(
+            conn,
+            **kwargs,
+            audience_needs="预算规划",
+            factual_background="经确认的项目资料",
+            sample_script="先规划。\n再动工。",
+            forbidden_claims="不保证最低价",
+        )
+        assert entry.sample_script == "先规划。\n再动工。"
+        entry = update_simple_character_profile(conn, **kwargs)
+        assert entry.forbidden_claims == "不保证最低价"
+        snapshot = _load_owned_ip_profile_snapshot(conn, actor=actor, identity_id="identity-owned")
+        assert snapshot["audience_needs"] == "预算规划"
+        assert snapshot["sample_script"] == "先规划。\n再动工。"
+    with pytest.raises(HTTPException) as denied:
+        with pg_transaction() as raw:
+            update_simple_character_profile(
+                BusinessConnection.postgres(raw),
+                **{
+                    **kwargs,
+                    "actor": CurrentUser(
+                        id="u2", username="u2", display_name="Other", role="employee"
+                    ),
+                },
+                factual_background="不能修改",
+            )
+    assert denied.value.status_code == 404
