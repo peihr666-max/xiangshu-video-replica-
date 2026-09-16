@@ -10,7 +10,9 @@ function environment(url: string, html: string, child = false) {
     element.getBoundingClientRect = () =>
       ({ width: 200, height: 200 }) as DOMRect;
     if (element.tagName === "IFRAME")
-      Object.defineProperty(element, "contentWindow", { value: {} });
+      Object.defineProperty(element, "contentWindow", {
+        value: { postMessage: vi.fn() },
+      });
   }
   const listeners = new Map<string, (event: unknown) => void>();
   const top = { postMessage: vi.fn() };
@@ -133,6 +135,58 @@ it("二维码过期后不再显示旧码", async () => {
   notice.getBoundingClientRect = () => ({ width: 200, height: 20 }) as DOMRect;
   env.doc.body.append(notice);
   expect(await env.tick()).toMatchObject({ phase: "expired", image: null });
+});
+
+it("后台窗口定时器暂停时，主动读取仍刷新二维码和过期状态", () => {
+  const env = environment(
+    "https://creator.douyin.com/",
+    `<div id="animate_qrcode_container"><img src="${qr}"></div>`,
+  );
+  const read = env.win.__xiangshuReadPublishLogin as () => unknown;
+  expect(read).toBeTypeOf("function");
+  expect(read()).toMatchObject({ phase: "qr_ready", image: qr });
+  const updated = "data:image/png;base64,bmV3";
+  env.doc.querySelector("img")?.setAttribute("src", updated);
+  expect(read()).toMatchObject({ phase: "qr_ready", image: updated });
+  const notice = env.doc.createElement("p");
+  notice.textContent = "二维码已过期";
+  notice.getBoundingClientRect = () => ({ width: 200, height: 20 }) as DOMRect;
+  env.doc.body.append(notice);
+  expect(read()).toMatchObject({ phase: "expired", image: null });
+});
+
+it("后台视频号只向官方二维码框架请求刷新，子框架只接受官方顶层请求", () => {
+  const parent = environment(
+    "https://channels.weixin.qq.com/",
+    '<iframe src="https://open.weixin.qq.com/connect/qrconnect"></iframe><iframe src="https://evil.test/connect/qrconnect"></iframe>',
+  );
+  (parent.win.__xiangshuReadPublishLogin as () => unknown)();
+  const frames = parent.doc.querySelectorAll("iframe");
+  expect(frames[0].contentWindow?.postMessage).toHaveBeenCalledWith(
+    { type: "xiangshu-read-publish-qr" },
+    "https://open.weixin.qq.com",
+  );
+  expect(frames[1].contentWindow?.postMessage).not.toHaveBeenCalled();
+  const child = environment(
+    "https://open.weixin.qq.com/connect/qrconnect",
+    `<img class="qrcode" src="${qr}">`,
+    true,
+  );
+  child.top.postMessage.mockClear();
+  const receive = child.listeners.get("message");
+  const data = { type: "xiangshu-read-publish-qr" };
+  receive?.({ origin: "https://evil.test", source: child.top, data });
+  receive?.({ origin: "https://channels.weixin.qq.com", source: {}, data });
+  expect(child.top.postMessage).not.toHaveBeenCalled();
+  receive?.({
+    origin: "https://channels.weixin.qq.com",
+    source: child.top,
+    data,
+  });
+  expect(child.top.postMessage).toHaveBeenCalledWith(
+    expect.objectContaining({ phase: "qr_ready", image: qr }),
+    "https://channels.weixin.qq.com",
+  );
 });
 
 it("非官方域名不注入，SVG 和远程地址不作为二维码回传", async () => {
