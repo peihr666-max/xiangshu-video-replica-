@@ -241,10 +241,11 @@ A5 要算 sha256 并落成 `character_source_image`。命中登记表也**不能
       `vitest run` = 100 个测试文件 / 1528 个用例通过（node ≥ 24）
 - [ ] 观察 A3/A4/A5 命中时的 **pending 孤儿**是否被 `upload_cleanup` 正常回收
       （客户端必须真传一次，命中后那份字节靠回收器带走；否则"省存储"收益被 pending 副本吃掉）
-- [x] 处理双 head：~~`20260916T1400_content_objects` 与 `20260915T1600_viral_copy_cache`
-      同父~~ → **已解决**。已 rebase 到合入 PR #120 后的 main，迁移 `down_revision`
-      重挂为 `20260915T1600_viral_copy_cache`，manifest 重录、冻结字面量在干净库重测
-      （`--check` / `--check-schema` 均 OK，迁移链测试 37 passed）
+- [x] 处理双 head：→ **已解决（两次）**。main 作业期间前进两次、各新增一条迁移，
+      故 `content_objects` 的 `down_revision` 重挂两次：
+      `#120 viral_copy_cache` → `#117 browser_accounts`（现链尾）。
+      每次都 manifest 重录 + 冻结字面量干净库重测（`--check` / `--check-schema` OK，
+      迁移链测试 37 passed，98 revision 单 head）
 - [ ] β 计费语义（决策 1）与 L3 一起单独评审
 - [ ] C1/C2 若要做，需先定"复用帧是否计费"
 - [ ] 建议补测试固化 B2 的缓存对象生命周期约定（P5）

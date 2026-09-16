@@ -228,8 +228,11 @@ sweeper 锁内重读计数后才动字节，`pinned=True` 永不入选。
   否则"省存储"的收益会被 pending 副本吃掉。
 - [x] ~~**双 head 冲突**~~ **已解决**：`VIRAL-COPY-CACHE-20260915` 的
   `20260915T1600_viral_copy_cache` 已随 PR #120 合入 main（该分支实现 ASR/文稿复用
-  `viral_script_cache`，本轮未重复实现）。本分支已 rebase 到该 main，迁移父级
-  **重挂**为 `20260915T1600_viral_copy_cache`；`manifest.json` 用 `--record` 重录，
+  `viral_script_cache`，本轮未重复实现）。**随后 main 又前进一次**：PR #117 再新增
+  `20260915T1200_browser_accounts`，故迁移父级**共重挂两次**：
+  `20260914T0000_local_joint_merge` → `#120 20260915T1600_viral_copy_cache`
+  → `#117 20260915T1200_browser_accounts`（最终链尾，98 revision 单 head）。
+  每次重挂都配套同一套动作：`manifest.json` 用 `--record` 重录，
   `test_cw056_supported_head_matrix.py` 的冻结字面量在**新建的干净库**
   （`dedup_head_probe`，空库 → head）上重测：`--check` 与 `--check-schema` 均 OK，
   迁移链测试 **37 passed**。
