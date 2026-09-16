@@ -2297,6 +2297,7 @@ describe("发布账号官方扫码", () => {
     Object.values(nativeAccounts).forEach((mock) => {
       mock.mockReset();
     });
+    getStudioNotificationPreferences.mockResolvedValue({ enabled: true });
     nativeAccounts.canUseLocalPublishAccounts.mockReturnValue(true);
     nativeAccounts.listLocalPublishAccounts.mockResolvedValue([]);
     nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
@@ -2309,6 +2310,11 @@ describe("发布账号官方扫码", () => {
   it("只从本机加载账号并显示官方用户名，不提供 Cookie 输入框", async () => {
     nativeAccounts.listLocalPublishAccounts.mockResolvedValue([account]);
     const { value } = open();
+    await waitFor(() =>
+      expect(nativeAccounts.listLocalPublishAccounts).toHaveBeenCalled(),
+    );
+    expect(screen.queryByText("小红书 · 平台真实昵称")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "小红书" }));
     await screen.findByText("小红书 · 平台真实昵称");
     expect(nativeAccounts.listLocalPublishAccounts).toHaveBeenCalledWith(
       value.user.id,
@@ -2334,7 +2340,6 @@ describe("发布账号官方扫码", () => {
       ).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: "小红书" }));
-    fireEvent.click(screen.getByRole("button", { name: "扫码添加账号" }));
     await screen.findByRole("button", { name: "取消扫码" });
     expect(value.notify).not.toHaveBeenCalledWith(
       expect.stringContaining("已连接"),
@@ -2371,6 +2376,10 @@ describe("发布账号官方扫码", () => {
       new Error("请先关闭官方窗口"),
     );
     const { value } = open();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "小红书" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "小红书" }));
     await screen.findByText("小红书 · 平台真实昵称");
     fireEvent.click(screen.getByRole("button", { name: "解绑" }));
     expect(nativeAccounts.removeLocalPublishAccount).not.toHaveBeenCalled();
@@ -2430,6 +2439,89 @@ describe("发布账号官方扫码", () => {
     expect(nativeAccounts.cancelLocalPublishLogin).toHaveBeenCalledWith(
       value.user.id,
       "qr-1",
+    );
+  });
+  it.each([
+    ["douyin", "抖音"],
+    ["wechat_channels", "视频号"],
+    ["xiaohongshu", "小红书"],
+  ])(
+    "点击 %s 直接内嵌二维码，确认后在同一标签显示账号",
+    async (platform, name) => {
+      const connected = { ...account, platform, username: `${name}测试账号` };
+      nativeAccounts.startLocalPublishLogin.mockResolvedValue("inline-login");
+      nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+        phase: "qr_ready",
+        image: "data:image/png;base64,cXI=",
+        account: null,
+      });
+      const { value } = open();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name })).toBeEnabled(),
+      );
+      fireEvent.click(screen.getByRole("button", { name }));
+      await screen.findByAltText(`${name}登录二维码`, {}, { timeout: 2500 });
+      expect(
+        nativeAccounts.startLocalPublishLogin,
+      ).toHaveBeenCalledExactlyOnceWith(value.user.id, platform, undefined);
+      expect(nativeAccounts.focusLocalPublishLogin).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "打开官方窗口" })).toBeNull();
+      // A list refresh may lag or fail: the verified account returned by login is authoritative.
+      nativeAccounts.listLocalPublishAccounts.mockRejectedValue(
+        new Error("列表暂不可用"),
+      );
+      nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+        phase: "connected",
+        image: null,
+        account: connected,
+      });
+      await screen.findByText(
+        `${name} · ${name}测试账号`,
+        {},
+        { timeout: 2500 },
+      );
+      expect(screen.queryByAltText(`${name}登录二维码`)).toBeNull();
+      const otherName = name === "抖音" ? "小红书" : "抖音";
+      fireEvent.click(screen.getByRole("button", { name: otherName }));
+      expect(screen.queryByText(`${name} · ${name}测试账号`)).toBeNull();
+    },
+  );
+  it("已有账号的平台仅切换列表，添加更多账号仍可主动扫码", async () => {
+    nativeAccounts.listLocalPublishAccounts.mockResolvedValue([account]);
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("second-login");
+    open();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "小红书" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "小红书" }));
+    await screen.findByText("小红书 · 平台真实昵称");
+    expect(nativeAccounts.startLocalPublishLogin).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "扫码添加账号" }));
+    await screen.findByRole("button", { name: "取消扫码" });
+    expect(nativeAccounts.startLocalPublishLogin).toHaveBeenCalledOnce();
+  });
+  it("额外验证时才提供官方窗口入口", async () => {
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("verify-login");
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "action_required",
+      image: null,
+      account: null,
+    });
+    const { value } = open();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "抖音" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "抖音" }));
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: "打开官方窗口" },
+        { timeout: 2500 },
+      ),
+    );
+    expect(nativeAccounts.focusLocalPublishLogin).toHaveBeenCalledWith(
+      value.user.id,
+      "verify-login",
     );
   });
 });
