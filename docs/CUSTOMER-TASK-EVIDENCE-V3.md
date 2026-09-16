@@ -1478,3 +1478,7 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 ## 2026-09-16 PROMPT-OPTIMIZE-20260916 · 证据登记
 
 用户已授权 Codex 接手 Claude 会话 fbeae78e 的既有独立 worktree/分支，原进程已停止且成果已备份；不重复开发。H01—H14 实现与代码自检完成；本地静态门和后端全量后的全部失败项/新增专项通过，H15 已提交 [PR #125](https://github.com/peihr666-max/xiangshu-video-replica-/pull/125) 并触发 CI，当前为 REVIEW 交付状态。改动范围、规格映射、评审与测试见 [H3 实施证据](evidence/PROMPT-OPTIMIZE-20260916-EVIDENCE.md)。AUTOMATED_VERIFIED（本地）；远程三门禁以 PR 当前 head 的 Checks 为准，未宣称独立评审、真实链路、合并或部署完成。
+
+## 2026-09-16 ORAL-VIDEO-TTS-20260916
+
+视频口播流程与独立声音档案改造；局部 AUTOMATED_VERIFIED，未调用付费飞影链路、未合并部署。前端 1565 passed，口播/素材专项 205 passed，设计 QA passed；全量 PG 及远程提交状态见 [任务证据](evidence/ORAL-VIDEO-TTS-20260916.md)。基线 f0b45b2、分支 feat/oral-video-tts-20260916。仅本任务增量登记，不核销其他业务工作包。

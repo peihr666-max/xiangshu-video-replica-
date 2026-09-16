@@ -988,3 +988,106 @@ def test_authorization_upload_never_reuses_another_owners_bytes(pg_state: str) -
         assert [int(row["ref_count"]) for row in owners] == [1, 1]
 
     _with_conn(pg_state, run)
+
+
+@pytest.mark.parametrize("source_purpose", ["voice_clone", "oral_audio"])
+def test_reused_voice_sample_preserves_probed_duration(pg_state: str, source_purpose: str) -> None:
+    import hashlib
+    import json
+
+    def run(conn: BusinessConnection) -> None:
+        storage = FakeStorageAdapter(provider="fake", bucket="cas")
+        payload = b"ID3-test-voice-sample"
+        digest = hashlib.sha256(payload).hexdigest()
+        request = MaterialUploadIntentRequest(
+            filename="voice.mp3",
+            content_type="audio/mpeg",
+            size_bytes=len(payload),
+            sha256=digest,
+            audio_purpose=source_purpose,
+            duration_seconds=30,
+        )
+        first = create_material_upload_intent(
+            conn, actor=_actor("owner_a"), storage=storage, request=request
+        )
+        storage.put_object(first.storage_key, payload, content_type="audio/mpeg")
+        prepared = prepare_material_upload(conn, actor=_actor("owner_a"), asset_id=first.asset_id)
+        persist_material_upload(
+            conn,
+            actor=_actor("owner_a"),
+            storage=storage,
+            probed=ProbedMaterialUpload(
+                prepared=prepared,
+                storage_uri=prepared.storage_uri,
+                sha256=digest,
+                size_bytes=len(payload),
+                duration_seconds=30.2,
+            ),
+        )
+        # Even a plausible client duration is not the trusted duration.
+        reused = create_material_upload_intent(
+            conn,
+            actor=_actor("owner_a"),
+            storage=storage,
+            request=request.model_copy(
+                update={"audio_purpose": "voice_clone", "duration_seconds": 30.8}
+            ),
+        )
+        assert reused.upload_required is False
+        row = conn.execute(
+            "SELECT metadata_json FROM assets WHERE id = %s", (reused.asset_id,)
+        ).fetchone()
+        metadata = json.loads(row["metadata_json"])
+        assert metadata["audio_duration_verified"] is True
+        assert metadata["duration_seconds"] == 30.2
+        assert metadata["audio_purpose"] == "voice_clone"
+
+    _with_conn(pg_state, run)
+
+
+def test_reuse_cannot_relabel_long_audio_as_voice_sample(pg_state: str) -> None:
+    import hashlib
+
+    from fastapi import HTTPException
+
+    def run(conn: BusinessConnection) -> None:
+        storage = FakeStorageAdapter(provider="fake", bucket="cas")
+        payload = b"ID3-test-long-speech"
+        digest = hashlib.sha256(payload).hexdigest()
+        request = MaterialUploadIntentRequest(
+            filename="speech.mp3",
+            content_type="audio/mpeg",
+            size_bytes=len(payload),
+            sha256=digest,
+            audio_purpose="oral_audio",
+            duration_seconds=300,
+        )
+        first = create_material_upload_intent(
+            conn, actor=_actor("owner_a"), storage=storage, request=request
+        )
+        storage.put_object(first.storage_key, payload, content_type="audio/mpeg")
+        prepared = prepare_material_upload(conn, actor=_actor("owner_a"), asset_id=first.asset_id)
+        persist_material_upload(
+            conn,
+            actor=_actor("owner_a"),
+            storage=storage,
+            probed=ProbedMaterialUpload(
+                prepared=prepared,
+                storage_uri=prepared.storage_uri,
+                sha256=digest,
+                size_bytes=len(payload),
+                duration_seconds=300,
+            ),
+        )
+        with pytest.raises(HTTPException):
+            create_material_upload_intent(
+                conn,
+                actor=_actor("owner_a"),
+                storage=storage,
+                request=request.model_copy(
+                    update={"audio_purpose": "voice_clone", "duration_seconds": 30}
+                ),
+            )
+        assert conn.execute("SELECT ref_count FROM content_objects").fetchone()["ref_count"] == 1
+
+    _with_conn(pg_state, run)

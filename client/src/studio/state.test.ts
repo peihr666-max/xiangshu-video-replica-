@@ -291,7 +291,7 @@ describe("V1.4 交接合同", () => {
   it("首页默认工作台，旧路由有确定映射", () => {
     expect(routeFromHash("")).toBe("workbench");
     expect(routeFromHash("#projects")).toBe("replica");
-    expect(routeFromHash("#studio/oral-audio")).toBe("oral-audio");
+    expect(routeFromHash("#studio/oral-audio")).toBe("oral");
     expect(routeFromHash("#settings")).toBe("settings");
     expect(routeFromHash("#admin")).toBe("workbench");
   });

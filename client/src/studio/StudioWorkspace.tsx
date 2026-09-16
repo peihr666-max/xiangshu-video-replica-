@@ -695,11 +695,7 @@ export function StudioWorkspace({
     setOralPriceFen(null);
     setOralQuoteStatus("loading");
     setOralQuoteError("");
-    void getOralPrice(
-      state.page === "oral-audio"
-        ? { audio_asset_id: state.draft.audioId || undefined }
-        : { script_text: state.draft.script.text },
-    )
+    void getOralPrice({ script_text: state.draft.script.text })
       .then((price) => {
         if (active) {
           setOralPriceFen(price.unit_price_fen);
@@ -728,14 +724,7 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [
-    review,
-    generation,
-    oralQuoteRevision,
-    state.page,
-    state.draft.audioId,
-    state.draft.script.text,
-  ]);
+  }, [review, generation, oralQuoteRevision, state.draft.script.text]);
 
   const retryOralQuote = useCallback(
     () => setOralQuoteRevision((value) => value + 1),
@@ -874,13 +863,13 @@ export function StudioWorkspace({
     oralSubmittingRef.current = true;
     setOralSubmitting(true);
     try {
-      const mode = state.page === "oral-audio" ? "audio" : "text";
+      const mode = "text";
       const input = buildOralInput(draft, mode);
       const request = {
         identityId: input.ipId,
         avatarId: input.avatarId,
         voiceId: input.voiceId,
-        mode: mode === "audio" ? ("AUDIO" as const) : ("TTS" as const),
+        mode: "TTS" as const,
         title: draft.script.title || "未命名口播",
         scriptText: draft.script.text,
         audioAssetId: input.audioAssetId,
@@ -1262,7 +1251,10 @@ export function StudioWorkspace({
         if (
           patch.avatarId &&
           owner?.avatars.some(
-            (avatar) => avatar.id === patch.avatarId && avatar.ready,
+            (avatar) =>
+              avatar.id === patch.avatarId &&
+              avatar.ready &&
+              avatar.origin === "视频制作",
           )
         )
           next.avatarId = patch.avatarId;
@@ -1430,14 +1422,14 @@ export function StudioWorkspace({
     }
     try {
       if (kind === "数字人口播") {
-        const input = buildOralInput(
-          state.draft,
-          state.page === "oral-audio" ? "audio" : "text",
-        );
+        const input = buildOralInput(state.draft, "text");
         const person = data.people.find((item) => item.id === input.ipId);
         if (
           !person?.avatars.some(
-            (avatar) => avatar.id === input.avatarId && avatar.ready,
+            (avatar) =>
+              avatar.id === input.avatarId &&
+              avatar.ready &&
+              avatar.origin === "视频制作",
           )
         )
           throw new Error("请选择当前人物已就绪的口播分身");
@@ -2612,7 +2604,9 @@ function StudioPicker({
                 ))
             : kind === "avatar"
               ? person?.avatars
-                  .filter((avatar) => avatar.ready)
+                  .filter(
+                    (avatar) => avatar.ready && avatar.origin === "视频制作",
+                  )
                   .map((avatar) => (
                     <button
                       type="button"
@@ -2752,7 +2746,9 @@ function StudioPicker({
       {((kind === "voice" &&
         !person?.voices.some((voice) => voice.confirmed)) ||
         (kind === "avatar" &&
-          !person?.avatars.some((avatar) => avatar.ready)) ||
+          !person?.avatars.some(
+            (avatar) => avatar.ready && avatar.origin === "视频制作",
+          )) ||
         (kind === "person" && !data.people.length)) && (
         <Empty
           title="没有可选的已就绪资产"

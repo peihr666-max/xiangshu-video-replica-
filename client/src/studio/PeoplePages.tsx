@@ -1,16 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  completeMaterialUpload,
   confirmOralVoice,
   createMaterialUploadIntent,
   createOralAvatarClone,
   createOralConsent,
   createOralVoiceClone,
   customerVisibleErrorMessage,
+  putMaterial,
   refreshOralAvatar,
   refreshOralVoice,
   updateSimpleCharacterProfile,
-  uploadMaterial,
 } from "../api";
 import { CharacterScenePanel } from "../CharacterScenePanel";
 import { useStudio } from "./context";
@@ -27,12 +26,14 @@ import {
   Empty,
   Field,
   Hint,
+  Icon,
   Media,
   Panel,
   StudioDialog,
   Tabs,
 } from "./ui";
 import "./people.css";
+import "./oral.css";
 
 const personTabs: Array<{ id: StudioPage; label: string }> = [
   { id: "person-ip", label: "IP 定位" },
@@ -51,18 +52,6 @@ type CloneSubmission = {
   idempotencyKey: string;
   consentId?: string;
 };
-
-const MISSING_ORAL_SOURCE_CODES = new Set([
-  "ASSET_NOT_FOUND",
-  "MATERIAL_NOT_FOUND",
-  "SOURCE_ASSET_NOT_FOUND",
-]);
-
-function isMissingOralSource(cause: unknown): boolean {
-  if (!cause || typeof cause !== "object") return false;
-  const code = (cause as { code?: string }).code?.trim().toUpperCase();
-  return MISSING_ORAL_SOURCE_CODES.has(code ?? "");
-}
 
 function createCloneIdempotencyKey(kind: "avatar" | "voice") {
   const suffix =
@@ -86,13 +75,13 @@ async function uploadOralSource(
   file: File,
   group: string,
   onProgress: (progress: number) => void,
+  signal?: AbortSignal,
 ): Promise<UploadedOralSource> {
   const intent = await createMaterialUploadIntent(file, {
     title: file.name,
     group,
   });
-  await uploadMaterial(intent, file, onProgress);
-  const material = await completeMaterialUpload(intent.asset_id);
+  const material = await putMaterial(intent, file, onProgress, signal);
   const assetId = material.asset_id ?? intent.asset_id;
   return { assetId, fileName: file.name };
 }
@@ -264,7 +253,7 @@ export function PeoplePage() {
         </div>
       ) : null}
       <Hint>
-        普通照片用于画面创作；口播需要可用分身，文案模式还需要已确认声音。
+        形象照片用于画面创作；数字人口播使用视频分身、已确认的克隆声音和文案。
       </Hint>
     </section>
   );
@@ -368,8 +357,12 @@ export function PersonPage() {
         {tab === "person-photos" ? (
           <PhotosPanel key={person.id} person={person} />
         ) : null}
-        {tab === "person-avatars" ? <AvatarPanel person={person} /> : null}
-        {tab === "person-voices" ? <VoicePanel person={person} /> : null}
+        {tab === "person-avatars" ? (
+          <AvatarPanel key={person.id} person={person} />
+        ) : null}
+        {tab === "person-voices" ? (
+          <VoicePanel key={person.id} person={person} />
+        ) : null}
       </div>
     </section>
   );
@@ -850,23 +843,6 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
                     readOnly ||
                     asset.allowedUses?.includes("first_frame") === false
                   }
-                  variant="outline"
-                  onClick={() => {
-                    if (readOnly) return;
-                    patchDraft({ ipId: person.id, imageId: asset.id });
-                    navigate("person-avatars", {
-                      selectedPersonId: person.id,
-                      selectedAssetId: asset.id,
-                    });
-                  }}
-                >
-                  制作口播分身
-                </Button>
-                <Button
-                  disabled={
-                    readOnly ||
-                    asset.allowedUses?.includes("first_frame") === false
-                  }
                   variant="primary"
                   onClick={() => {
                     if (readOnly) return;
@@ -936,54 +912,35 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
 }
 
 function AvatarPanel({ person }: { person: StudioPerson }) {
-  const {
-    state,
-    data,
-    review,
-    openPicker,
-    navigate,
-    patchDraft,
-    notify,
-    refresh,
-    user,
-  } = useStudio();
+  const { data, review, navigate, patchDraft, notify, refresh, user } =
+    useStudio();
   const readOnly = user.role === "auditor";
-  const [title, setTitle] = useState(`${person.name}照片分身`);
+  const [title, setTitle] = useState(`${person.name}视频分身`);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [consentedSourceId, setConsentedSourceId] = useState<string>();
   const [error, setError] = useState<string>();
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [uploadedVideo, setUploadedVideo] = useState<UploadedOralSource>();
-  const [invalidPhotoSourceKey, setInvalidPhotoSourceKey] = useState<string>();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const uploadAbortRef = useRef<AbortController | undefined>(undefined);
+  const operationRef = useRef(0);
+  const mountedRef = useRef(true);
   const cloneSubmissionRef = useRef<CloneSubmission | undefined>(undefined);
-  const ready = person.avatars.filter((avatar) => avatar.ready);
+  const ready = person.avatars.filter(
+    (avatar) => avatar.ready && avatar.origin === "视频制作",
+  );
   const pending = person.avatars.filter((avatar) => !avatar.ready);
-  const selectedPhotoAsset = data.assets.find(
-    (asset) =>
-      asset.id === state.draft.imageId &&
-      asset.kind === "image" &&
-      asset.personId === person.id &&
-      !asset.composite,
-  );
-  const selectedPhotoSourceKey = selectedPhotoAsset
-    ? `${person.id}:IMAGE:${selectedPhotoAsset.id}`
-    : undefined;
-  const sourceAsset =
-    invalidPhotoSourceKey === selectedPhotoSourceKey
-      ? undefined
-      : selectedPhotoAsset;
-  const photoSelectionInvalid = Boolean(
-    state.draft.imageId && (!selectedPhotoAsset || !sourceAsset),
-  );
-  const selectedSourceAssetId = sourceAsset?.id;
-  const previousSourceAssetId = useRef(selectedSourceAssetId);
-  useEffect(() => {
-    if (previousSourceAssetId.current === selectedSourceAssetId) return;
-    previousSourceAssetId.current = selectedSourceAssetId;
-    setUploadedVideo(undefined);
-    setConsentedSourceId(undefined);
-    cloneSubmissionRef.current = undefined;
-  }, [selectedSourceAssetId]);
+  const isCurrent = (operation: number) =>
+    mountedRef.current && operation === operationRef.current;
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      operationRef.current += 1;
+      uploadAbortRef.current?.abort();
+    };
+  }, []);
   useOralStatusPolling(
     !review,
     pending
@@ -998,51 +955,17 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
     setError,
     "分身状态自动刷新失败",
   );
-  const source = uploadedVideo
-    ? {
-        id: uploadedVideo.assetId,
-        name: uploadedVideo.fileName,
-        kind: "VIDEO" as const,
-      }
-    : sourceAsset
-      ? { id: sourceAsset.id, name: sourceAsset.name, kind: "IMAGE" as const }
-      : undefined;
-  const sourceKey = source
-    ? `${person.id}:${source.kind}:${source.id}`
-    : undefined;
-  const selectionLifecycleKey = uploadedVideo
-    ? `${person.id}:VIDEO:${uploadedVideo.assetId}`
-    : `${person.id}:IMAGE:${state.draft.imageId ?? ""}`;
-  const selectionLifecycleRef = useRef(selectionLifecycleKey);
-  const contextVersionRef = useRef(0);
-  const mountedRef = useRef(true);
-  const activeOperationRef = useRef<
-    { contextVersion: number; id: number; selectionKey: string } | undefined
-  >(undefined);
-  const operationSequenceRef = useRef(0);
-  const isCurrentOperation = (
-    operation: NonNullable<typeof activeOperationRef.current>,
-  ) =>
-    mountedRef.current &&
-    operation.contextVersion === contextVersionRef.current &&
-    operation.selectionKey === selectionLifecycleRef.current &&
-    activeOperationRef.current === operation;
-  // Invalidate before a parent layout effect can settle an earlier request.
-  useLayoutEffect(() => {
-    selectionLifecycleRef.current = selectionLifecycleKey;
-    contextVersionRef.current += 1;
-    activeOperationRef.current = undefined;
+  const consented = Boolean(
+    uploadedVideo && consentedSourceId === uploadedVideo.assetId,
+  );
+  const cancelUpload = () => {
+    operationRef.current += 1;
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = undefined;
     setBusy(false);
-  }, [selectionLifecycleKey]);
-  useLayoutEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      contextVersionRef.current += 1;
-      activeOperationRef.current = undefined;
-    };
-  }, []);
-  const consented = Boolean(source && consentedSourceId === source.id);
+    setUploadProgress(undefined);
+    if (inputRef.current) inputRef.current.value = "";
+  };
   const handleVideoUpload = async (file: File) => {
     if (review || readOnly || busy) return;
     const validationError = validateOralSource(file, "video");
@@ -1050,44 +973,48 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
       setError(validationError);
       return;
     }
+    const operation = ++operationRef.current;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
     setBusy(true);
     setError(undefined);
+    setUploadedVideo(undefined);
     setConsentedSourceId(undefined);
     cloneSubmissionRef.current = undefined;
-    setTitle((current) =>
-      current === `${person.name}照片分身` ? `${person.name}视频分身` : current,
-    );
     setUploadProgress(0);
     try {
-      setUploadedVideo(
-        await uploadOralSource(file, "口播分身素材", setUploadProgress),
+      const uploaded = await uploadOralSource(
+        file,
+        "口播分身素材",
+        (progress) => {
+          if (isCurrent(operation)) setUploadProgress(progress);
+        },
+        controller.signal,
       );
+      if (isCurrent(operation)) setUploadedVideo(uploaded);
     } catch (cause) {
-      setError(customerVisibleErrorMessage(cause, "人物视频上传失败"));
+      if (isCurrent(operation))
+        setError(customerVisibleErrorMessage(cause, "人物视频上传失败"));
     } finally {
-      setBusy(false);
-      setUploadProgress(undefined);
+      if (isCurrent(operation)) {
+        setBusy(false);
+        setUploadProgress(undefined);
+        uploadAbortRef.current = undefined;
+        if (inputRef.current) inputRef.current.value = "";
+      }
     }
   };
   const startClone = async () => {
-    if (review || readOnly || busy || !source || !consented) return;
-    const operation = {
-      contextVersion: contextVersionRef.current,
-      id: operationSequenceRef.current + 1,
-      selectionKey: selectionLifecycleRef.current,
-    };
-    operationSequenceRef.current = operation.id;
-    activeOperationRef.current = operation;
+    if (review || readOnly || busy || !uploadedVideo || !consented) return;
+    const operation = ++operationRef.current;
     setBusy(true);
     setError(undefined);
     try {
-      const cloneTitle =
-        title.trim() ||
-        `${person.name}${source.kind === "VIDEO" ? "视频" : "照片"}分身`;
+      const cloneTitle = title.trim() || `${person.name}视频分身`;
       const fingerprint = JSON.stringify([
         person.id,
-        source.id,
-        source.kind,
+        uploadedVideo.assetId,
+        "VIDEO",
         cloneTitle,
       ]);
       let submission = cloneSubmissionRef.current;
@@ -1101,204 +1028,345 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
       if (!submission.consentId) {
         const consent = await createOralConsent({
           identityId: person.id,
-          sourceAssetId: source.id,
+          sourceAssetId: uploadedVideo.assetId,
           purpose: "AVATAR",
         });
-        if (!isCurrentOperation(operation)) return;
+        if (!isCurrent(operation)) return;
         submission.consentId = consent.id;
       }
       await createOralAvatarClone({
         identityId: person.id,
         title: cloneTitle,
-        sourceAssetId: source.id,
-        sourceKind: source.kind,
+        sourceAssetId: uploadedVideo.assetId,
+        sourceKind: "VIDEO",
         consentId: submission.consentId,
         idempotencyKey: submission.idempotencyKey,
       });
-      if (!isCurrentOperation(operation)) return;
-      notify(
-        `${source.kind === "VIDEO" ? "视频" : "照片"}分身已提交，可在本页刷新制作状态。`,
-      );
+      if (!isCurrent(operation)) return;
+      notify("视频分身已提交，可在本页查看制作状态。");
+      setCreating(false);
+      setUploadedVideo(undefined);
+      setConsentedSourceId(undefined);
+      cloneSubmissionRef.current = undefined;
       refresh();
     } catch (cause) {
-      if (!isCurrentOperation(operation)) return;
-      if (source.kind === "IMAGE" && isMissingOralSource(cause)) {
-        setInvalidPhotoSourceKey(sourceKey);
-        setConsentedSourceId(undefined);
-        cloneSubmissionRef.current = undefined;
-        setError(undefined);
-        return;
-      }
+      if (!isCurrent(operation)) return;
       const message = customerVisibleErrorMessage(cause, "口播分身制作失败");
       setError(message);
       notify(message);
     } finally {
-      if (isCurrentOperation(operation)) {
-        activeOperationRef.current = undefined;
-        setBusy(false);
-      }
+      if (isCurrent(operation)) setBusy(false);
     }
   };
   const refreshClone = async (avatarId: string) => {
     if (busy) return;
+    const operation = ++operationRef.current;
     setBusy(true);
     try {
       await refreshOralAvatar(avatarId);
-      refresh();
+      if (isCurrent(operation)) refresh();
     } catch (cause) {
-      notify(customerVisibleErrorMessage(cause, "口播分身状态刷新失败"));
+      if (isCurrent(operation))
+        setError(customerVisibleErrorMessage(cause, "口播分身状态刷新失败"));
     } finally {
-      setBusy(false);
+      if (isCurrent(operation)) setBusy(false);
     }
   };
+  const openCreate = () => {
+    if (!readOnly) {
+      setError(undefined);
+      setCreating(true);
+    }
+  };
+  const manageVoice = () =>
+    navigate("person-voices", {
+      selectedPersonId: person.id,
+      returnTo: "oral",
+    });
+  const confirmedVoice = person.voices.find((voice) => voice.confirmed);
   return (
-    <div className="avatar-layout">
-      <Panel>
-        <h2>可用于数字人口播的分身</h2>
-        <div className="avatar-grid">
+    <div className="oral-library-page">
+      <div className="oral-library-main">
+        <header className="oral-library-heading">
+          <div>
+            <h2>
+              我的口播分身 <span>{person.name}</span>
+            </h2>
+            <p>上传真人视频创建分身，搭配克隆声音和文案生成口播。</p>
+          </div>
+        </header>
+        <div className="oral-library-cards">
           {ready.map((avatar) => (
-            <article className="avatar-card" key={avatar.id}>
-              <Media
-                asset={data.assets.find((asset) => asset.id === avatar.imageId)}
-                alt={avatar.name}
-              />
-              <h3>{avatar.name}</h3>
-              <p>
-                {avatar.origin} · {avatar.duration}
-              </p>
-              <Button
-                disabled={readOnly}
-                variant="outline"
-                onClick={() => {
-                  if (readOnly) return;
-                  patchDraft({ ipId: person.id, avatarId: avatar.id });
-                  navigate(state.returnTo ?? "oral", {
-                    selectedPersonId: person.id,
-                  });
-                }}
-              >
-                用于数字人口播
-              </Button>
+            <article className="oral-library-card" key={avatar.id}>
+              <div className="oral-library-preview">
+                <Media
+                  asset={data.assets.find(
+                    (asset) => asset.id === avatar.imageId,
+                  )}
+                  alt={avatar.name}
+                  presentation="video"
+                />
+                {review ? <span className="oral-demo-badge">示例</span> : null}
+                <span className="oral-video-badge">
+                  <Icon name="video" size={14} />
+                  视频分身
+                </span>
+              </div>
+              <div className="oral-library-card-body">
+                <h3>{avatar.name}</h3>
+                <div>
+                  <span className="oral-ready">
+                    <Icon name="check" size={14} />
+                    可用于口播
+                  </span>
+                  <Button
+                    disabled={readOnly}
+                    variant="outline"
+                    onClick={() => {
+                      patchDraft({ ipId: person.id, avatarId: avatar.id });
+                      navigate("oral", {
+                        selectedPersonId: person.id,
+                        returnTo: undefined,
+                      });
+                    }}
+                  >
+                    使用此分身
+                  </Button>
+                </div>
+              </div>
             </article>
           ))}
+          <button
+            className="oral-create-tile"
+            disabled={readOnly}
+            type="button"
+            onClick={openCreate}
+          >
+            <Icon name="plus" size={40} />
+            <strong>
+              {ready.length ? "创建新的分身" : "创建你的第一个分身"}
+            </strong>
+            <span>MP4 / MOV · 最大 50 MB</span>
+          </button>
         </div>
-        {ready.length === 0 ? (
-          <Empty
-            title="暂无可用分身"
-            description="请从当前人物的实拍视频或场景形象照制作。"
-          />
+        {pending.length ? (
+          <div className="oral-pending-list">
+            {pending.map((avatar) => (
+              <article className="oral-pending-card" key={avatar.id}>
+                <Icon name="clock" size={20} />
+                <div>
+                  <h3>{avatar.name}</h3>
+                  <p>
+                    {avatar.submissionState === "SUBMISSION_UNKNOWN"
+                      ? "提交结果待人工核对，禁止重复提交"
+                      : avatar.error || avatar.duration}
+                  </p>
+                  {avatar.submissionState !== "SUBMISSION_UNKNOWN" &&
+                  (avatar.status === "PENDING" ||
+                    avatar.status === "RUNNING") ? (
+                    <Button
+                      variant="quiet"
+                      disabled={busy}
+                      onClick={() => void refreshClone(avatar.id)}
+                    >
+                      刷新制作状态
+                    </Button>
+                  ) : null}
+                </div>
+              </article>
+            ))}
+          </div>
         ) : null}
-        {pending.map((avatar) => (
-          <article className="avatar-card" key={avatar.id}>
-            <Media
-              asset={data.assets.find((asset) => asset.id === avatar.imageId)}
-              alt={avatar.name}
-            />
-            <h3>{avatar.name}</h3>
+        {!creating && error ? (
+          <p className="oral-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <footer className="oral-library-footer">
+          <Icon name="video" size={20} />
+          <div>
+            <p>视频分身 + 克隆声音 + 文案 → 数字人口播</p>
+            <span>一次创建，可在后续口播中重复使用。</span>
+          </div>
+        </footer>
+      </div>
+      <aside className="oral-library-guide">
+        <div className="oral-library-actions">
+          <Button variant="quiet" onClick={manageVoice}>
+            声音档案
+            <Icon name="chevron" size={16} />
+          </Button>
+          <Button variant="primary" disabled={readOnly} onClick={openCreate}>
+            <Icon name="upload" size={18} />
+            上传视频创建分身
+          </Button>
+        </div>
+        <h3>创建分身，只需一段视频</h3>
+        <p>按照以下建议拍摄，帮助生成更自然的数字人口播效果。</p>
+        <ul className="oral-shooting-guide">
+          {[
+            ["person", "单人正面出镜", "请保持本人出镜，面部清晰可见。"],
+            ["audio", "嘴部清晰无遮挡", "说话时避免手部或其他物体遮挡嘴部。"],
+            [
+              "video",
+              "画面稳定、光线均匀",
+              "建议在光线充足、稳定的环境下拍摄。",
+            ],
+          ].map(([icon, title, description]) => (
+            <li key={title}>
+              <span>
+                <Icon name={icon} size={24} />
+              </span>
+              <div>
+                <h4>{title}</h4>
+                <p>{description}</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <h3>创建流程</h3>
+        <ol className="oral-create-steps">
+          {[
+            ["upload", "上传视频", "上传一段真人出镜的视频"],
+            ["pen", "命名并确认授权", "为分身命名并确认使用授权"],
+            ["check", "等待分身完成", "系统处理中，完成即可使用"],
+          ].map(([icon, title, description]) => (
+            <li key={title}>
+              <span>
+                <Icon name={icon} size={22} />
+              </span>
+              <strong>{title}</strong>
+              <small>{description}</small>
+            </li>
+          ))}
+        </ol>
+        <section className="oral-library-voice">
+          <h3>我的声音</h3>
+          <div>
+            <Icon name="audio" size={24} />
             <p>
-              {avatar.submissionState === "SUBMISSION_UNKNOWN"
-                ? "提交结果待人工核对，禁止重复提交"
-                : avatar.error || avatar.duration}
+              <strong>{confirmedVoice?.name ?? "尚未配置克隆声音"}</strong>
+              <span>
+                {confirmedVoice
+                  ? "已试听确认，可用于口播"
+                  : "配置后生成与你声音一致的口播内容。"}
+              </span>
             </p>
-            {avatar.submissionState !== "SUBMISSION_UNKNOWN" &&
-            (avatar.status === "PENDING" || avatar.status === "RUNNING") ? (
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() => void refreshClone(avatar.id)}
-              >
-                刷新制作状态
-              </Button>
-            ) : null}
-          </article>
-        ))}
-      </Panel>
-      <Panel>
-        <h2>制作口播分身</h2>
-        <p>只使用当前人物的素材，不会新建人物。完成后可直接用于数字人口播。</p>
-        <Button
-          disabled={readOnly}
-          variant="outline"
-          onClick={() => {
-            if (readOnly) return;
-            patchDraft({
-              ipId: person.id,
-              ...(photoSelectionInvalid ? { imageId: undefined } : {}),
-            });
-            setInvalidPhotoSourceKey(undefined);
-            openPicker("avatar-photo");
+            <Button variant="quiet" onClick={manageVoice}>
+              {confirmedVoice ? "管理声音" : "去克隆声音"}
+              <Icon name="chevron" size={16} />
+            </Button>
+          </div>
+        </section>
+      </aside>
+      {creating ? (
+        <StudioDialog
+          title="创建视频分身"
+          onClose={() => {
+            if (uploadProgress !== undefined) cancelUpload();
+            setCreating(false);
           }}
         >
-          {photoSelectionInvalid ? "重新选择形象照片" : "用形象照片制作"}
-        </Button>
-        {review ? (
-          <Button
-            variant="outline"
-            onClick={() => notify("审核模式保留示例素材，不执行真实上传")}
-          >
-            上传人物视频制作
-          </Button>
-        ) : (
-          <Field label="上传人物视频">
+          <div className="oral-upload-panel">
+            <p className="oral-dialog-intro">
+              为{person.name}上传真人出镜视频，创建可重复使用的口播分身。
+            </p>
             <input
+              ref={inputRef}
               accept=".mp4,.mov,video/mp4,video/quicktime"
               aria-label="选择人物视频"
-              disabled={readOnly || busy}
+              disabled={readOnly || busy || review}
+              hidden
               type="file"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) void handleVideoUpload(file);
               }}
             />
-          </Field>
-        )}
-        <Field label="分身名称">
-          <input
-            disabled={readOnly}
-            value={title}
-            onChange={(event) => {
-              setTitle(event.target.value);
-              cloneSubmissionRef.current = undefined;
-            }}
-          />
-        </Field>
-        <p>
-          {uploadedVideo
-            ? `已上传：${uploadedVideo.fileName}`
-            : sourceAsset
-              ? `已选：${sourceAsset.name}`
-              : photoSelectionInvalid
-                ? "所选照片已失效或不属于当前人物，请重新选择。"
-                : "请先选择当前人物的一张场景形象照。"}
-        </p>
-        {uploadProgress !== undefined ? <p>上传中 {uploadProgress}%</p> : null}
-        {error ? <p role="alert">{error}</p> : null}
-        <label>
-          <input
-            aria-label="确认分身克隆授权"
-            checked={consented}
-            disabled={review || readOnly || busy || !source}
-            type="checkbox"
-            onChange={(event) => {
-              cloneSubmissionRef.current = undefined;
-              setConsentedSourceId(
-                event.target.checked ? source?.id : undefined,
-              );
-            }}
-          />
-          我确认这是本人素材，或已获得用于数字人分身的明确授权。
-        </label>
-        <Hint>支持 MP4/MOV，上限 50 MB；分身制作为异步任务。</Hint>
-        <Button
-          variant="primary"
-          disabled={review || readOnly || busy || !source || !consented}
-          onClick={() => void startClone()}
-        >
-          {busy
-            ? "处理中…"
-            : `开始制作${source?.kind === "VIDEO" ? "视频" : "照片"}分身`}
-        </Button>
-      </Panel>
+            <button
+              className={`oral-upload-zone${uploadedVideo ? " is-uploaded" : ""}`}
+              type="button"
+              disabled={readOnly || busy}
+              onClick={() =>
+                review
+                  ? notify("审核模式保留示例素材，不执行真实上传")
+                  : inputRef.current?.click()
+              }
+            >
+              <span className="oral-upload-icon">
+                <Icon name={uploadedVideo ? "check" : "upload"} size={28} />
+              </span>
+              <strong>
+                {uploadedVideo ? "视频已上传，准备创建" : "上传你的真人视频"}
+              </strong>
+              <span>
+                {uploadedVideo
+                  ? `已上传：${uploadedVideo.fileName}`
+                  : "选择电脑中的 MP4 / MOV 视频"}
+              </span>
+              <small>
+                {uploadedVideo ? "点击更换视频" : "单个文件不超过 50 MB"}
+              </small>
+            </button>
+            {uploadProgress !== undefined ? (
+              <div className="oral-upload-progress" role="status">
+                <span>上传中 {uploadProgress}%</span>
+                <progress value={uploadProgress} max={100} />
+                <Button variant="quiet" onClick={cancelUpload}>
+                  取消上传
+                </Button>
+              </div>
+            ) : null}
+            <Field label="分身名称">
+              <input
+                disabled={readOnly || busy}
+                value={title}
+                maxLength={60}
+                onChange={(event) => {
+                  setTitle(event.target.value);
+                  cloneSubmissionRef.current = undefined;
+                }}
+                placeholder="例如：张工 · 设计室讲解"
+              />
+            </Field>
+            <label className="oral-consent">
+              <input
+                aria-label="确认分身克隆授权"
+                checked={consented}
+                disabled={review || readOnly || busy || !uploadedVideo}
+                type="checkbox"
+                onChange={(event) => {
+                  cloneSubmissionRef.current = undefined;
+                  setConsentedSourceId(
+                    event.target.checked ? uploadedVideo?.assetId : undefined,
+                  );
+                }}
+              />
+              <span>
+                我确认这是本人素材，或已获得用于数字人分身的明确授权。
+              </span>
+            </label>
+            {error ? (
+              <p className="oral-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <Button
+              className="oral-submit"
+              variant="primary"
+              disabled={
+                review || readOnly || busy || !uploadedVideo || !consented
+              }
+              onClick={() => void startClone()}
+            >
+              {busy ? "处理中…" : "开始制作视频分身"}
+            </Button>
+            <p className="oral-footnote">
+              提交后自动更新制作状态，完成的分身可重复使用。
+            </p>
+          </div>
+        </StudioDialog>
+      ) : null}
     </div>
   );
 }
@@ -1319,6 +1387,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
   const readOnly = user.role === "auditor";
   const [title, setTitle] = useState(`${person.name}本人音色`);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
   const [consentedSourceId, setConsentedSourceId] = useState<string>();
   const [error, setError] = useState<string>();
   const [uploadProgress, setUploadProgress] = useState<number>();
@@ -1329,11 +1398,12 @@ function VoicePanel({ person }: { person: StudioPerson }) {
   const personContextRef = useRef(person.id);
   const mountedRef = useRef(true);
   const cloneSubmissionRef = useRef<CloneSubmission | undefined>(undefined);
+  const cloneContextRef = useRef(0);
   const sourceAsset = data.assets.find(
     (asset) =>
       asset.id === state.draft.audioId &&
       asset.kind === "audio" &&
-      (!asset.allowedUses || asset.allowedUses.includes("voice_clone")),
+      asset.allowedUses?.includes("voice_clone"),
   );
   const selectedSourceAssetId = sourceAsset?.id;
   const previousSourceAssetId = useRef(selectedSourceAssetId);
@@ -1387,6 +1457,12 @@ function VoicePanel({ person }: { person: StudioPerson }) {
       ? { id: sourceAsset.id, name: sourceAsset.name }
       : undefined;
   const consented = Boolean(source && consentedSourceId === source.id);
+  const voiceSourceId = source?.id;
+  useLayoutEffect(() => {
+    void voiceSourceId;
+    cloneContextRef.current += 1;
+    setBusy(false);
+  }, [voiceSourceId]);
   const cancelAudioUpload = () => {
     uploadOperationRef.current += 1;
     uploadAbortRef.current?.abort();
@@ -1471,6 +1547,9 @@ function VoicePanel({ person }: { person: StudioPerson }) {
   };
   const startClone = async () => {
     if (review || readOnly || busy || !source || !consented) return;
+    const context = cloneContextRef.current;
+    const isCurrent = () =>
+      mountedRef.current && context === cloneContextRef.current;
     setBusy(true);
     setError(undefined);
     try {
@@ -1490,6 +1569,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
           sourceAssetId: source.id,
           purpose: "VOICE",
         });
+        if (!isCurrent()) return;
         submission.consentId = consent.id;
       }
       await createOralVoiceClone({
@@ -1499,14 +1579,19 @@ function VoicePanel({ person }: { person: StudioPerson }) {
         consentId: submission.consentId,
         idempotencyKey: submission.idempotencyKey,
       });
+      if (!isCurrent()) return;
+      setCreating(false);
+      setUploadedAudio(undefined);
+      setConsentedSourceId(undefined);
       notify("声音克隆已提交，通常在 10 分钟内完成。");
       refresh();
     } catch (cause) {
+      if (!isCurrent()) return;
       const message = customerVisibleErrorMessage(cause, "声音克隆失败");
       setError(message);
       notify(message);
     } finally {
-      setBusy(false);
+      if (isCurrent()) setBusy(false);
     }
   };
   const refreshClone = async (voiceId: string) => {
@@ -1514,11 +1599,13 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     setBusy(true);
     try {
       await refreshOralVoice(voiceId);
+      if (!mountedRef.current) return;
       refresh();
     } catch (cause) {
+      if (!mountedRef.current) return;
       notify(customerVisibleErrorMessage(cause, "声音克隆状态刷新失败"));
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
   const confirmVoice = async (voiceId: string) => {
@@ -1527,6 +1614,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     setError(undefined);
     try {
       if (!review) await confirmOralVoice(voiceId);
+      if (!mountedRef.current) return;
       if (review) {
         updateData((data) => ({
           ...data,
@@ -1552,187 +1640,286 @@ function VoicePanel({ person }: { person: StudioPerson }) {
         returnTo: undefined,
       });
     } catch (cause) {
+      if (!mountedRef.current) return;
       const message = customerVisibleErrorMessage(cause, "声音确认失败");
       setError(message);
       notify(message);
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
   return (
-    <div className="voice-layout">
-      <Panel>
-        <h2>我的声音</h2>
-        {person.voices.map((voice) => (
-          <article
-            className={
-              voice.confirmed ? "voice-card is-confirmed" : "voice-card"
-            }
-            key={voice.id}
-          >
-            <div>
-              <h3>{voice.name}</h3>
-              <p>
-                {voice.confirmed
-                  ? "已确认，可用于文案口播"
-                  : voice.submissionState === "SUBMISSION_UNKNOWN"
-                    ? "提交结果待人工核对，禁止重复提交"
-                    : voice.status === "FAILED"
-                      ? voice.error || "克隆失败，请更换样本重试"
-                      : voice.status === "PENDING" || voice.status === "RUNNING"
-                        ? "声音克隆中，暂不可选用"
-                        : voice.status === "READY" && !voice.url
-                          ? "试听样例归档中"
-                          : "待试听确认，暂不可选用"}
-              </p>
-            </div>
-            <div>
-              {voice.url && (voice.confirmed || voice.status === "READY") ? (
-                <audio
-                  controls
-                  preload="none"
-                  src={voice.url}
-                  aria-label={`${voice.name}试听`}
-                >
-                  <track kind="captions" label="声音样本" />
-                </audio>
-              ) : voice.status === "READY" ? null : (
-                <Button
-                  variant="outline"
-                  onClick={() => notify("该声音暂无可播放样本")}
-                >
-                  试听
-                </Button>
-              )}
-              {voice.confirmed ? (
-                <Button
-                  disabled={readOnly}
-                  variant="primary"
-                  onClick={() => {
-                    if (readOnly) return;
-                    patchDraft({ ipId: person.id, voiceId: voice.id });
-                    navigate(state.returnTo ?? "oral", {
-                      selectedPersonId: person.id,
-                      returnTo: undefined,
-                    });
-                  }}
-                >
-                  使用此声音
-                </Button>
-              ) : null}
-              {!voice.confirmed ? (
-                voice.submissionState ===
-                "SUBMISSION_UNKNOWN" ? null : voice.status === "PENDING" ||
-                  voice.status === "RUNNING" ? (
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void refreshClone(voice.id)}
-                  >
-                    刷新克隆状态
-                  </Button>
-                ) : (voice.status === "READY" && Boolean(voice.url)) ||
-                  (review && !voice.status) ? (
-                  <Button
-                    variant="primary"
-                    disabled={readOnly || busy}
-                    onClick={() => void confirmVoice(voice.id)}
-                  >
-                    确认使用此声音
-                  </Button>
-                ) : null
-              ) : null}
-            </div>
-          </article>
-        ))}
-        {person.voices.length === 0 ? (
-          <Empty
-            title="暂无声音档案"
-            description="上传本人或已授权的声音样本创建声音版本。"
-          />
-        ) : null}
-      </Panel>
-      <Panel>
-        <h2>克隆声音</h2>
-        <p>仅使用本人或已获授权的声音样本，建议 5–180 秒（3 分钟）清晰干声。</p>
-        <Button
-          disabled={readOnly}
-          variant="outline"
-          onClick={() => {
-            if (readOnly) return;
-            patchDraft({ ipId: person.id });
-            openPicker("voice-audio");
-          }}
-        >
-          从素材选择声音样本
-        </Button>
-        {review ? null : (
-          <Field label="上传声音样本">
-            <input
-              ref={uploadInputRef}
-              accept=".mp3,audio/mpeg"
-              aria-label="选择声音样本"
-              disabled={readOnly || busy}
-              type="file"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleAudioUpload(file);
-              }}
-            />
-          </Field>
-        )}
-        <Field label="声音名称">
-          <input
-            disabled={readOnly}
-            value={title}
-            onChange={(event) => {
-              setTitle(event.target.value);
-              cloneSubmissionRef.current = undefined;
-            }}
-            placeholder="例如：张工本人音色 V2"
-          />
-        </Field>
-        <p>
-          {uploadedAudio
-            ? `已上传：${uploadedAudio.fileName}`
-            : sourceAsset
-              ? `已选：${sourceAsset.name}`
-              : "请先选择声音样本。"}
-        </p>
-        {uploadProgress !== undefined ? <p>上传中 {uploadProgress}%</p> : null}
-        {uploadProgress !== undefined ? (
-          <Button variant="outline" onClick={cancelAudioUpload}>
-            取消上传
-          </Button>
-        ) : null}
-        {error ? <p role="alert">{error}</p> : null}
-        <label>
-          <input
-            aria-label="确认声音克隆授权"
-            checked={consented}
-            disabled={review || readOnly || busy}
-            type="checkbox"
-            onChange={(event) => {
-              cloneSubmissionRef.current = undefined;
-              setConsentedSourceId(
-                event.target.checked ? source?.id : undefined,
-              );
-            }}
-          />
-          我确认这是本人声音，或已获得用于声音克隆的明确授权。
-        </label>
+    <div className="oral-voice-page">
+      <header className="oral-voice-heading">
+        <div>
+          <h2>
+            我的声音 <span>{person.name}</span>
+          </h2>
+          <p>克隆你的专属音色，试听确认后用于数字人口播。</p>
+        </div>
         <Button
           variant="primary"
-          disabled={review || readOnly || busy || !source || !consented}
-          onClick={() => void startClone()}
+          disabled={readOnly}
+          onClick={() => setCreating(true)}
         >
-          {busy ? "提交中…" : "开始克隆声音"}
+          <Icon name="plus" size={18} />
+          创建克隆声音
         </Button>
-        <Hint>
-          仅支持 MP3，时长 5–180 秒（3 分钟），上限 20
-          MB；克隆任务是异步的，只有已就绪且确认的声音可用于口播。
-        </Hint>
-      </Panel>
+      </header>
+      <div className="oral-voice-grid">
+        <section className="oral-voice-list">
+          {person.voices.map((voice) => (
+            <article
+              className={
+                voice.confirmed ? "voice-card is-confirmed" : "voice-card"
+              }
+              key={voice.id}
+            >
+              <div>
+                <h3>{voice.name}</h3>
+                <p>
+                  {voice.confirmed
+                    ? "已确认，可用于文案口播"
+                    : voice.submissionState === "SUBMISSION_UNKNOWN"
+                      ? "提交结果待人工核对，禁止重复提交"
+                      : voice.status === "FAILED"
+                        ? voice.error || "克隆失败，请更换样本重试"
+                        : voice.status === "PENDING" ||
+                            voice.status === "RUNNING"
+                          ? "声音克隆中，暂不可选用"
+                          : voice.status === "READY" && !voice.url
+                            ? "试听样例归档中"
+                            : "待试听确认，暂不可选用"}
+                </p>
+              </div>
+              <div>
+                {voice.url && (voice.confirmed || voice.status === "READY") ? (
+                  <audio
+                    controls
+                    preload="none"
+                    src={voice.url}
+                    aria-label={`${voice.name}试听`}
+                  >
+                    <track kind="captions" label="声音样本" />
+                  </audio>
+                ) : voice.status === "READY" ? null : (
+                  <Button
+                    variant="outline"
+                    onClick={() => notify("该声音暂无可播放样本")}
+                  >
+                    试听
+                  </Button>
+                )}
+                {voice.confirmed ? (
+                  <Button
+                    disabled={readOnly}
+                    variant="primary"
+                    onClick={() => {
+                      if (readOnly) return;
+                      patchDraft({ ipId: person.id, voiceId: voice.id });
+                      navigate(state.returnTo ?? "oral", {
+                        selectedPersonId: person.id,
+                        returnTo: undefined,
+                      });
+                    }}
+                  >
+                    使用此声音
+                  </Button>
+                ) : null}
+                {!voice.confirmed ? (
+                  voice.submissionState ===
+                  "SUBMISSION_UNKNOWN" ? null : voice.status === "PENDING" ||
+                    voice.status === "RUNNING" ? (
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void refreshClone(voice.id)}
+                    >
+                      刷新克隆状态
+                    </Button>
+                  ) : (voice.status === "READY" && Boolean(voice.url)) ||
+                    (review && !voice.status) ? (
+                    <Button
+                      variant="primary"
+                      disabled={readOnly || busy}
+                      onClick={() => void confirmVoice(voice.id)}
+                    >
+                      确认使用此声音
+                    </Button>
+                  ) : null
+                ) : null}
+              </div>
+            </article>
+          ))}
+          {person.voices.length === 0 ? (
+            <Empty
+              title="暂无声音档案"
+              description="上传本人或已授权的声音样本创建声音版本。"
+            />
+          ) : null}
+        </section>
+        <aside className="oral-voice-guide">
+          <h3>好的音色，来自清晰的样本</h3>
+          <ul className="oral-shooting-guide">
+            <li>
+              <span>
+                <Icon name="audio" />
+              </span>
+              <div>
+                <h4>清晰干声</h4>
+                <p>保持安静，避免背景音乐和其他人说话。</p>
+              </div>
+            </li>
+            <li>
+              <span>
+                <Icon name="clock" />
+              </span>
+              <div>
+                <h4>5–180 秒声音样本</h4>
+                <p>使用 MP3 格式，单个文件不超过 20 MB。</p>
+              </div>
+            </li>
+            <li>
+              <span>
+                <Icon name="check" />
+              </span>
+              <div>
+                <h4>试听后确认</h4>
+                <p>确认克隆效果符合预期，再用于口播。</p>
+              </div>
+            </li>
+          </ul>
+          <Button
+            variant="outline"
+            onClick={() =>
+              navigate("person-avatars", {
+                selectedPersonId: person.id,
+                returnTo: "oral",
+              })
+            }
+          >
+            前往口播分身
+            <Icon name="arrow" size={16} />
+          </Button>
+        </aside>
+      </div>
+      {!creating && error ? (
+        <p className="oral-error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {creating ? (
+        <StudioDialog
+          title="克隆声音"
+          onClose={() => {
+            if (uploadProgress !== undefined) cancelAudioUpload();
+            setCreating(false);
+          }}
+        >
+          <div className="oral-upload-panel">
+            <p>
+              仅使用本人或已获授权的声音样本，建议 5–180 秒（3 分钟）清晰干声。
+            </p>
+            <Button
+              disabled={readOnly}
+              variant="outline"
+              onClick={() => {
+                if (readOnly) return;
+                patchDraft({ ipId: person.id });
+                openPicker("voice-audio");
+              }}
+            >
+              从素材选择声音样本
+            </Button>
+            {review ? null : (
+              <Field label="上传声音样本">
+                <input
+                  ref={uploadInputRef}
+                  accept=".mp3,audio/mpeg"
+                  aria-label="选择声音样本"
+                  disabled={readOnly || busy}
+                  hidden
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void handleAudioUpload(file);
+                  }}
+                />
+              </Field>
+            )}
+            <button
+              type="button"
+              className="oral-upload-zone"
+              disabled={readOnly || busy}
+              onClick={() =>
+                review
+                  ? notify("审核模式不执行真实上传")
+                  : uploadInputRef.current?.click()
+              }
+            >
+              <span className="oral-upload-icon">
+                <Icon name="upload" size={28} />
+              </span>
+              <strong>上传声音样本</strong>
+              <span>MP3 · 5–180 秒 · 最大 20 MB</span>
+            </button>
+            <Field label="声音名称">
+              <input
+                disabled={readOnly || busy}
+                maxLength={60}
+                value={title}
+                onChange={(event) => {
+                  setTitle(event.target.value);
+                  cloneSubmissionRef.current = undefined;
+                }}
+                placeholder="例如：张工本人音色 V2"
+              />
+            </Field>
+            <p>
+              {uploadedAudio
+                ? `已上传：${uploadedAudio.fileName}`
+                : sourceAsset
+                  ? `已选：${sourceAsset.name}`
+                  : "请先选择声音样本。"}
+            </p>
+            {uploadProgress !== undefined ? (
+              <p>上传中 {uploadProgress}%</p>
+            ) : null}
+            {uploadProgress !== undefined ? (
+              <Button variant="outline" onClick={cancelAudioUpload}>
+                取消上传
+              </Button>
+            ) : null}
+            {error ? <p role="alert">{error}</p> : null}
+            <label className="oral-consent">
+              <input
+                aria-label="确认声音克隆授权"
+                checked={consented}
+                disabled={review || readOnly || busy}
+                type="checkbox"
+                onChange={(event) => {
+                  cloneSubmissionRef.current = undefined;
+                  setConsentedSourceId(
+                    event.target.checked ? source?.id : undefined,
+                  );
+                }}
+              />
+              我确认这是本人声音，或已获得用于声音克隆的明确授权。
+            </label>
+            <Button
+              variant="primary"
+              disabled={review || readOnly || busy || !source || !consented}
+              onClick={() => void startClone()}
+            >
+              {busy ? "提交中…" : "开始克隆声音"}
+            </Button>
+            <Hint>
+              仅支持 MP3，时长 5–180 秒（3 分钟），上限 20
+              MB；克隆任务是异步的，只有已就绪且确认的声音可用于口播。
+            </Hint>
+          </div>
+        </StudioDialog>
+      ) : null}
     </div>
   );
 }

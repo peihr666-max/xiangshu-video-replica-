@@ -3304,3 +3304,20 @@ def test_oral_task_serialization_reports_billing_status_and_available_actions(
         app.dependency_overrides.clear()
 
     assert _wallet("employee_1") == (19, 0)
+
+
+def test_new_avatar_request_accepts_video_only() -> None:
+    from pydantic import ValidationError
+
+    from app.oral_routes import AvatarCloneRequest
+
+    fields = dict(
+        identity_id="ident-1",
+        title="视频分身",
+        source_asset_id="asset-src",
+        consent_id="consent-1",
+        idempotency_key="video-only-key",
+    )
+    assert AvatarCloneRequest(**fields, source_kind="VIDEO").source_kind == "VIDEO"
+    with pytest.raises(ValidationError):
+        AvatarCloneRequest(**fields, source_kind="IMAGE")

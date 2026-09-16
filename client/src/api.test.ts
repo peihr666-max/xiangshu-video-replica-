@@ -78,6 +78,7 @@ import {
   listViralVideos,
   lockGenerationPrompt,
   publishBrowserRequest,
+  putMaterial,
   readAnalysisPayload,
   readFirstFrameCandidates,
   reconcileUncertainTask,
@@ -1194,7 +1195,7 @@ describe("人物 IP 口播资产 API", () => {
       identityId: "person-1",
       title: "庭院讲解分身",
       sourceAssetId: "scene-1",
-      sourceKind: "IMAGE",
+      sourceKind: "VIDEO",
       consentId: avatarConsent.id,
       idempotencyKey: "avatar-clone-key",
     });
@@ -1226,7 +1227,7 @@ describe("人物 IP 口播资产 API", () => {
       identity_id: "person-1",
       title: "庭院讲解分身",
       source_asset_id: "scene-1",
-      source_kind: "IMAGE",
+      source_kind: "VIDEO",
       consent_id: "consent-avatar",
       idempotency_key: "avatar-clone-key",
     });
@@ -3508,4 +3509,44 @@ describe("uploadReferenceVideo", () => {
     expect(onSessionExpired).toHaveBeenCalledOnce();
     window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   });
+});
+
+describe("deduplicated oral materials", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+  it.each(["video/mp4", "audio/mpeg"])(
+    "resolves %s without an empty-method upload or duplicate completion",
+    async (type) => {
+      const item = { id: "asset:reused", asset_id: "reused", status: "ready" };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, json: async () => ({ items: [item] }) });
+      const xhr = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      vi.stubGlobal("XMLHttpRequest", xhr);
+      const intent = {
+        material_id: "asset:reused",
+        asset_id: "reused",
+        storage_key: "reused",
+        method: "",
+        url: "",
+        headers: {},
+        expires_at: "",
+        upload_required: false,
+      };
+      expect(
+        await putMaterial(
+          intent,
+          new File(["source"], "source", { type }),
+          vi.fn(),
+        ),
+      ).toEqual(item);
+      expect(xhr).not.toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0][0])).toContain(
+        "/materials/resolve",
+      );
+    },
+  );
 });
