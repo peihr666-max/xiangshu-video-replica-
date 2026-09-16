@@ -1,6 +1,49 @@
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+// @vitest-environment node
+import { copyFileSync, readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import viteConfig from "../vite.config";
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+  copyFileSync: vi.fn(),
+  cpSync: vi.fn(),
+  mkdirSync: vi.fn(),
+}));
+
+it("客户正式构建复制侧栏图形与浏览器图标", () => {
+  const plugin = viteConfig.plugins
+    ?.flat()
+    .find(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        "name" in item &&
+        item.name === "customer-public-assets",
+    );
+  if (
+    !plugin ||
+    typeof plugin !== "object" ||
+    !("writeBundle" in plugin) ||
+    typeof plugin.writeBundle !== "function"
+  ) {
+    throw new Error("customer-public-assets must expose writeBundle");
+  }
+  Reflect.apply(plugin.writeBundle, {}, [{}, {}]);
+  const destinations = vi
+    .mocked(copyFileSync)
+    .mock.calls.map(([, target]) => String(target).replaceAll("\\", "/"));
+  for (const asset of [
+    "studio/logo-mark.svg",
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+  ]) {
+    expect(destinations.some((path) => path.endsWith(`/dist/${asset}`))).toBe(
+      true,
+    );
+  }
+});
 
 /**
  * CW-019 客户/管理独立构建制品 · 源码级入口合同测试

@@ -1286,7 +1286,7 @@ def test_script_rewrite_worker_settles_on_pg(
 
 
 def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_state, monkeypatch):
-    import io
+    from types import SimpleNamespace
 
     from app.usage_billing import accept_operation
 
@@ -1312,9 +1312,10 @@ def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_stat
             units=1,
         )
     monkeypatch.setattr(
-        "app.script_rewrite.urlopen",
-        lambda *args, **kwargs: io.BytesIO(
-            b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}'
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200,
+            content=b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
         ),
     )
     assert _run_worker("truncated-cost") == 1
@@ -2368,22 +2369,25 @@ def test_rewrite_instructions_and_extended_profile_contract():
 
 @pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
 def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
-    import io
+    from types import SimpleNamespace
 
     import app.script_rewrite as rewrite
 
     requests = []
 
-    def respond(request, **_kwargs):
+    def respond(url, **_kwargs):
         assert _kwargs["timeout"] == 240
-        requests.append(request)
-        return io.BytesIO(
-            json.dumps(
+        assert _kwargs["stream"] is False
+        assert _kwargs["allow_redirects"] is False
+        requests.append((url, _kwargs["data"]))
+        return SimpleNamespace(
+            status_code=200,
+            content=json.dumps(
                 {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
-            ).encode()
+            ).encode(),
         )
 
-    monkeypatch.setattr(rewrite, "urlopen", respond)
+    monkeypatch.setattr("curl_cffi.requests.post", respond)
     result = rewrite.request_deepseek_text(
         base_url="https://api.deepseek.com",
         api_key="test-key",
@@ -2393,12 +2397,240 @@ def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
         purpose=purpose,
     )
     assert result == "测试输出"
-    assert requests[0].full_url == "https://api.deepseek.com/chat/completions"
-    body = json.loads(requests[0].data)
+    assert requests[0][0] == "https://api.deepseek.com/chat/completions"
+    body = json.loads(requests[0][1])
     assert body["model"] == "deepseek-chat"
     assert body["max_tokens"] == 8192
     assert "简洁表达" in body["messages"][-2]["content"]
     assert "来源文本" in body["messages"][-1]["content"]
+
+
+def test_deepseek_total_deadline_stops_continuous_keep_alive(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    from time import monotonic
+
+    import app.script_rewrite as rewrite
+
+    stop = Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            try:
+                while not stop.wait(0.02):
+                    self.wfile.write(b"\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setattr(rewrite, "DEEPSEEK_TIMEOUT_SECONDS", 0.2)
+    started = monotonic()
+    try:
+        with pytest.raises(HTTPException) as failure:
+            rewrite.request_deepseek_text(
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                api_key="test-key",
+                model="test-model",
+                source_text="原文",
+            )
+        assert failure.value.status_code == 504
+        assert monotonic() - started < 2
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_rewrite_submission_refreshes_valid_lease_and_rejects_expired(pg_state):
+    _seed_base(pg_state)
+    _seed_script_rewrite_task(pg_state, task_id="sr-deadline")
+    lease = _rewrite_lease(pg_state, "deadline-worker")
+    assert lease is not None
+    _exec(
+        pg_state,
+        "UPDATE script_rewrite_tasks SET locked_until=now()+interval '5 seconds' "
+        "WHERE id='sr-deadline'",
+    )
+    with pg_transaction() as raw:
+        mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+    assert _one(
+        pg_state,
+        "SELECT locked_until::timestamptz > now()+interval '250 seconds' "
+        "FROM script_rewrite_tasks WHERE id='sr-deadline'",
+    )
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        with pg_transaction() as raw:
+            mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+    _exec(
+        pg_state,
+        "UPDATE script_rewrite_tasks SET locked_until=now()-interval '1 second', "
+        "provider_started_at=NULL "
+        "WHERE id='sr-deadline'",
+    )
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        with pg_transaction() as raw:
+            mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+
+
+def _analysis_with_deepseek(monkeypatch):
+    from unittest.mock import Mock
+
+    from app import analysis_routes
+
+    configs = {
+        "apilio": {"api_key": "vision-test-key"},
+        "deepseek": {"api_key": "text-test-key", "model": "deepseek-chat"},
+    }
+    repository = Mock()
+    repository.load_provider_config.side_effect = lambda provider: configs[provider]
+    monkeypatch.setattr(analysis_routes, "SettingsRepository", lambda conn: repository)
+    monkeypatch.setattr("app.script_rewrite.SettingsRepository", lambda conn: repository)
+    return analysis_routes.get_video_analysis_provider(Mock()), configs
+
+
+def test_analysis_factory_repairs_text_with_deepseek_and_preserves_visual_provider(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app.analysis import FakeGemini, analyze_video
+
+    provider, _ = _analysis_with_deepseek(monkeypatch)
+    valid = FakeGemini().analyze(video_uri="test", duration_seconds=10).text
+    provider.transport = Mock()
+    provider.transport.post.return_value = (
+        b'{"choices":[{"message":{"content":"broken JSON"}}]}',
+        {},
+    )
+    requests = []
+
+    def respond(url, **kwargs):
+        requests.append((url, kwargs))
+        return SimpleNamespace(
+            status_code=200,
+            content=json.dumps(
+                {"choices": [{"message": {"content": valid}, "finish_reason": "stop"}]}
+            ).encode(),
+        )
+
+    monkeypatch.setattr("curl_cffi.requests.post", respond)
+    result = analyze_video(
+        video_uri="https://example.com/source.mp4", video_duration_seconds=10, provider=provider
+    )
+    assert result.analysis.duration_seconds == 10
+    assert len(requests) == 1
+    assert requests[0][0] == "https://api.deepseek.com/chat/completions"
+    assert requests[0][1]["headers"]["Authorization"] == "Bearer text-test-key"
+    payload = json.loads(requests[0][1]["data"])
+    assert payload["model"] == "deepseek-chat"
+    assert payload["temperature"] == 0
+    assert payload["response_format"] == {"type": "json_object"}
+    assert "broken JSON" in payload["messages"][-1]["content"]
+    assert "duration_seconds=10" in payload["messages"][-2]["content"]
+    assert provider.transport.post.call_count == 1
+    assert (
+        provider.transport.post.call_args.kwargs["headers"]["Authorization"]
+        == "Bearer vision-test-key"
+    )
+    assert "gemini" in json.loads(provider.transport.post.call_args.kwargs["body"])["model"]
+
+
+@pytest.mark.parametrize(
+    "status,retryable", [(401, False), (403, False), (429, True), (503, True), (302, False)]
+)
+def test_deepseek_repair_http_errors_are_redacted_and_do_not_fall_back(
+    monkeypatch, status, retryable
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    provider, _ = _analysis_with_deepseek(monkeypatch)
+    provider.transport = Mock()
+    monkeypatch.setattr(
+        "curl_cffi.requests.post",
+        lambda *a, **k: SimpleNamespace(status_code=status, content=b"secret"),
+    )
+    with pytest.raises(HTTPException) as failure:
+        provider.repair_json(invalid_json="broken", error="invalid")
+    assert failure.value.detail["http_status"] == status
+    assert failure.value.detail["retryable"] is retryable
+    assert "secret" not in str(failure.value.detail)
+    assert "text-test-key" not in str(failure.value.detail)
+    provider.transport.post.assert_not_called()
+
+
+def test_analysis_factory_requires_text_ai_configuration_before_paid_analysis(monkeypatch):
+    from unittest.mock import Mock
+
+    from app import analysis_routes
+
+    _, configs = _analysis_with_deepseek(monkeypatch)
+    configs["deepseek"] = {}
+    with pytest.raises(HTTPException) as failure:
+        analysis_routes.get_video_analysis_provider(Mock())
+    assert failure.value.detail["code"] == "DEEPSEEK_NOT_CONFIGURED"
+    assert failure.value.detail["retryable"] is False
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}',
+        b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
+        b"not json",
+    ],
+)
+def test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge(
+    pg_state, monkeypatch, content
+):
+    from types import SimpleNamespace
+
+    from app.billing_catalog import SERVICES
+    from app.billing_meter import billing_context
+    from app.usage_billing import accept_operation
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+        "VALUES('analysis',true,0,1),('analysis_repair',false,NULL,99)",
+    )
+    with pg_transaction() as raw:
+        accept_operation(
+            BusinessConnection.postgres(raw),
+            user_id="u1",
+            service="analysis",
+            source_id="repair-cost",
+            units=1,
+        )
+    provider, _ = _analysis_with_deepseek(monkeypatch)
+    monkeypatch.setattr(
+        "curl_cffi.requests.post", lambda *a, **k: SimpleNamespace(status_code=200, content=content)
+    )
+    with billing_context("repair-cost"):
+        if b'"stop"' in content:
+            provider.repair_json(invalid_json="invalid", error="invalid")
+        else:
+            with pytest.raises(HTTPException):
+                provider.repair_json(invalid_json="invalid", error="invalid")
+    row = _rows(
+        pg_state,
+        "SELECT provider,usage,cost_fen FROM billing_attempts "
+        "WHERE service='analysis_repair_deepseek'",
+    )[0]
+    assert row["provider"] == "deepseek"
+    assert float(row["usage"]) == 1
+    assert row["cost_fen"] is None, "do not reuse legacy Apilio tariff"
+    assert not SERVICES["analysis_repair_deepseek"].customer_charge_allowed
 
 
 def test_rewrite_instructions_persist_and_conflicting_retry_is_rejected(pg_state, monkeypatch):

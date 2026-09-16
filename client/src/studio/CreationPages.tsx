@@ -56,6 +56,7 @@ import {
 } from "./live";
 import {
   clearScriptRewriteIdempotencyKey,
+  resolvePendingRewrite,
   type ScriptRewriteScope,
   scriptRewriteIdempotencyKey,
   shouldClearScriptRewriteIdempotencyKey,
@@ -373,6 +374,13 @@ export function CopyPage() {
       } catch (cause) {
         if (shouldClearScriptRewriteIdempotencyKey(cause)) {
           clearScriptRewriteIdempotencyKey(requestScope, idempotencyKey);
+          if (
+            rewriteOperationRef.current === operation &&
+            activeScopeRef.current === expectedScope
+          ) {
+            storePendingRewrite(requestScope.accountId, undefined);
+            currentRef.current.patchDraft({ pendingRewrite: undefined });
+          }
         }
         if (
           rewriteOperationRef.current === operation &&
@@ -409,11 +417,14 @@ export function CopyPage() {
         : undefined,
     );
     setRewriteError("");
-    const pending = draft.pendingRewrite ?? readPendingRewrite(user.id);
-    if (pending && pending.scopeKey !== activeScope.key)
+    const localPending = readPendingRewrite(user.id);
+    const recoverPending = resolvePendingRewrite(
+      activeScope.key,
+      draft.pendingRewrite,
+      localPending,
+    );
+    if (localPending && localPending.scopeKey !== activeScope.key)
       storePendingRewrite(user.id, undefined);
-    const recoverPending =
-      pending?.scopeKey === activeScope.key ? pending : undefined;
     if (
       !review &&
       user.role !== "auditor" &&
@@ -556,6 +567,11 @@ export function CopyPage() {
     if (!projectId || !sourceAssetId) return;
     const operation = ++rewriteOperationRef.current;
     const expectedScope = activeScopeRef.current;
+    const retryPending = resolvePendingRewrite(
+      expectedScope.key,
+      draft.pendingRewrite,
+      readPendingRewrite(user.id),
+    );
     const requestScope: ScriptRewriteScope = {
       accountId: user.id,
       projectId,
@@ -565,13 +581,16 @@ export function CopyPage() {
       scriptVersion: draft.script.version,
       text: copySource(draft),
       instructions: copyInstructions(draft),
-      resultText: draft.script.text,
+      resultText: retryPending?.resultText ?? draft.script.text,
       profileFingerprint,
     };
-    const idempotencyKey = scriptRewriteIdempotencyKey(requestScope);
+    const idempotencyKey =
+      retryPending?.requestKey ?? scriptRewriteIdempotencyKey(requestScope);
     const pending = {
       scopeKey: expectedScope.key,
-      resultText: draft.script.text,
+      resultText: requestScope.resultText ?? draft.script.text,
+      requestKey: idempotencyKey,
+      startedAt: retryPending?.startedAt ?? Date.now(),
     };
     storePendingRewrite(user.id, pending);
     patchDraft({ pendingRewrite: pending, rewriteCandidate: undefined });

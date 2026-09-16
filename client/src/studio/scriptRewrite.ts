@@ -1,3 +1,24 @@
+import type { StudioDraft } from "./types";
+
+export function resolvePendingRewrite(
+  scopeKey: string,
+  cloud: StudioDraft["pendingRewrite"],
+  local: StudioDraft["pendingRewrite"],
+): StudioDraft["pendingRewrite"] {
+  const matching = [cloud, local].filter(
+    (value): value is NonNullable<typeof value> => value?.scopeKey === scopeKey,
+  );
+  return matching.sort((a, b) => {
+    // A distinct newer request must not be replaced by an older accepted task.
+    // For the same request, acceptance is monotonic even if the cloud save lags.
+    if (!a.requestKey || a.requestKey !== b.requestKey) {
+      const order = (b.startedAt ?? 0) - (a.startedAt ?? 0);
+      if (order) return order;
+    }
+    return Number(Boolean(b.taskId)) - Number(Boolean(a.taskId));
+  })[0];
+}
+
 export type ScriptRewriteScope = {
   accountId: string;
   projectId: string;

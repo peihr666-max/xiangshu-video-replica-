@@ -212,7 +212,13 @@ export type StudioScript = {
   sourceKind?: "viral" | "project" | "link" | "upload";
 };
 export type StudioDraft = {
-  pendingRewrite?: { scopeKey: string; resultText: string; taskId?: string };
+  pendingRewrite?: {
+    scopeKey: string;
+    resultText: string;
+    taskId?: string;
+    requestKey?: string;
+    startedAt?: number;
+  };
   rewriteCandidate?: { scopeKey: string; text: string };
   rewriteMethod?: "ip" | "custom";
   rewriteInstructions?: string;

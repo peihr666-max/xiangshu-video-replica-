@@ -1,0 +1,386 @@
+
+> @video-replica/client@2.0.0 test
+> vitest run src/studio/CreationPages.test.tsx -t REVIEW stale cloud
+
+
+ RUN  v4.1.10 E:/众墅之家爆款短视频创作/.worktrees/UI-TYPOGRAPHY-BRAND-20260916/client
+
+ ❯ src/studio/CreationPages.test.tsx (104 tests | 1 failed | 103 skipped) 10193ms
+     × REVIEW stale cloud pending must not hide accepted session task 10192ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/studio/CreationPages.test.tsx > V1.4 创作页面 > REVIEW stale cloud pending must not hide accepted session task
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'review-accepted-task' ]
+
+Number of calls: 0
+
+
+Ignored nodes: comments, script, style
+<html>
+  <head />
+  <body>
+    <div />
+    <div>
+      <section
+        class="creation-page creation-copy"
+      >
+        <header
+          class="creation-heading"
+        >
+          <h1>
+            文案工坊
+          </h1>
+          <p>
+            核对视频原文，设置二创要求，生成后编辑定稿
+          </p>
+        </header>
+        <div
+          aria-label="页面选项"
+          class="studio-tabs"
+          role="tablist"
+        >
+          <button
+            aria-selected="true"
+            class="is-active"
+            id="_r_1_-rewrite"
+            role="tab"
+            type="button"
+          >
+            文案改写
+          </button>
+          <button
+            aria-selected="false"
+            class=""
+            id="_r_1_-saved"
+            role="tab"
+            type="button"
+          >
+            我的文案
+          </button>
+        </div>
+        <div
+          class="creation-source-strip"
+        >
+          <span
+            class="creation-status-dot"
+          />
+          <span>
+            来源：
+            尚未选择来源视频
+          </span>
+        </div>
+        <p
+          class="creation-resize-hint"
+          id="copy-resize-hint"
+        >
+          拖动文本框右下角可调整高度
+        </p>
+        <div
+          class="creation-copy-grid"
+        >
+          <section
+            class="studio-panel creation-copy-source"
+          >
+            <h2
+              class="creation-panel-title"
+            >
+              <span
+                class="creation-step-number"
+              >
+                01
+              </span>
+              原文（提取自来源）
+            </h2>
+            <textarea
+              aria-describedby="copy-resize-hint"
+              aria-label="来源原文"
+              class="creation-textarea creation-source-textarea"
+              readonly=""
+            >
+              原始文案
+            </textarea>
+          </section>
+          <section
+            class="studio-panel creation-copy-settings"
+          >
+            <h2
+              class="creation-panel-title"
+            >
+              <span
+                class="creation-step-number"
+              >
+                02
+              </span>
+              设置二创
+            </h2>
+            <fieldset
+              class="copy-methods"
+            >
+              <legend>
+                选择二创方式
+              </legend>
+              <label>
+                <input
+                  name="copy-method"
+                  type="radio"
+                />
+                <strong>
+                  按人物 IP
+                </strong>
+                <small>
+                  带入人物定位、受众和表达风格
+                </small>
+              </label>
+              <label>
+                <input
+                  checked=""
+                  name="copy-method"
+                  type="radio"
+                />
+                <strong>
+                  按要求二创
+                </strong>
+                <small>
+                  直接描述这次想怎么改
+                </small>
+              </label>
+            </fieldset>
+            <div
+              class="copy-requirements"
+            >
+              <label>
+                文案字数
+                <select
+                  aria-label="文案字数"
+                >
+                  <option
+                    value="original"
+                  >
+                    接近原文
+                  </option>
+                  <option
+                    value="100"
+                  >
+                    约100字
+                  </option>
+                  <option
+                    value="200"
+                  >
+                    约200字
+                  </option>
+                  <option
+                    value="300"
+                  >
+                    约300字
+                  </option>
+                  <option
+                    value="custom"
+                  >
+                    自定义字数
+                  </option>
+                </select>
+                <small>
+                  生成字数为近似值，可在结果中调整。
+                </small>
+              </label>
+              <label>
+                本次改写要求
+                <textarea
+                  aria-label="本次改写要求"
+                  class="creation-textarea copy-instructions"
+                  maxlength="1900"
+                  placeholder="例如：面向准备回乡建房的家庭，语气朴实，先讲问题再给建议，不添加报价。"
+                >
+                  更口语化
+                </textarea>
+              </label>
+            </div>
+            <div
+              class="copy-quick-actions"
+            >
+              <button
+                class="studio-button studio-button--outline "
+                type="button"
+              >
+                更口语化
+              </button>
+              <button
+                class="studio-button studio-button--outline "
+                type="button"
+              >
+                精简内容
+              </button>
+              <button
+                class="studio-button studio-button--outline "
+                type="button"
+              >
+                知识讲解
+              </button>
+              <button
+                class="studio-button studio-button--outline "
+                type="button"
+              >
+                调整开头
+              </button>
+            </div>
+            <div
+              class="copy-generate-row"
+            >
+              <div
+                class="studio-hint"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="studio-icon"
+                  fill="none"
+                  height="18"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="1.5"
+                  viewBox="0 0 24 24"
+                  width="18"
+                >
+                  <path
+                    d="M12 10v7M12 6v1M2 12a10 10 0 1 0 20 0 10 10 0 0 0-20 0"
+                  />
+                </svg>
+                <span>
+                  保留原文信息，生成后可继续编辑；发布前请核对事实、案例与承诺。
+                </span>
+              </div>
+              <button
+                class="studio-button studio-button--primary "
+                type="button"
+              >
+                生成二创文案
+              </button>
+            </div>
+          </section>
+          <section
+            class="studio-panel creation-copy-editor"
+          >
+            <div
+              class="creation-panel-title-row"
+            >
+              <h2
+                class="creation-panel-title"
+              >
+                <span
+                  class="creation-step-number"
+                >
+                  03
+                </span>
+                二创结果
+              </h2>
+              <small>
+                终稿
+                 V
+                3
+              </small>
+            </div>
+            <input
+              aria-label="作品名称"
+              class="creation-input"
+              placeholder="作品名称"
+              value="建房预算"
+            />
+            <textarea
+              aria-describedby="copy-resize-hint"
+              aria-label="二创文案"
+              class="creation-textarea creation-copy-textarea"
+              placeholder="在这里编辑乡墅口播文案"
+            >
+              已确认的乡墅口播终稿
+            </textarea>
+            <div
+              aria-live="polite"
+              class="creation-saved-state"
+            >
+              内容变动后需重新确认终稿
+            </div>
+            <div
+              class="studio-hint"
+            >
+              <svg
+                aria-hidden="true"
+                class="studio-icon"
+                fill="none"
+                height="18"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.5"
+                viewBox="0 0 24 24"
+                width="18"
+              >
+                <path
+                  d="M12 10v7M12 6v1M2 12a10 10 0 1 0 20 0 10 10 0 0 0-20 0"
+                />
+              </svg>
+              <span>
+                实际字数：
+                10
+                ；
+                10
+                 / 10000 字符（数字人口播上限）；标题
+                 
+                4
+                 / 120 字符。AI 改写最多 20000 字符。
+              </span>
+            </div>
+          </section>
+        </div>
+        <footer
+          class="creation-action-bar"
+        >
+          <button
+            class="studio-button studio-button--primary "
+            type="button"
+          >
+            确认终稿
+          </button>
+          <button
+            class="studio-button studio-button--outline "
+            type="button"
+          >
+            保存版本
+          </button>
+          <button
+            class="studio-button studio-button--primary "
+            type="button"
+          >
+            用于数字人口播
+          </button>
+        </footer>
+      </section>
+    </div>
+  </body>
+</html>
+ ❯ src/studio/CreationPages.test.tsx:355:65
+    353|     });
+    354|     render(<CopyPage />);
+    355|     await waitFor(() => expect(replicaApi.getScriptRewriteTask).toHave…
+       |                                                                 ^
+    356|   });
+    357|   it("提取原文后不显示二创编辑框或终稿按钮", () => {
+ ❯ runWithExpensiveErrorDiagnosticsDisabled ../../../xiangshu-video-replica-/node_modules/@testing-library/dom/dist/config.js:47:12
+ ❯ checkCallback ../../../xiangshu-video-replica-/node_modules/@testing-library/dom/dist/wait-for.js:124:77
+ ❯ Timeout.checkRealTimersCallback ../../../xiangshu-video-replica-/node_modules/@testing-library/dom/dist/wait-for.js:118:16
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 103 skipped (104)
+   Start at  20:41:08
+   Duration  11.19s (transform 294ms, setup 101ms, import 329ms, tests 10.19s, environment 464ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path E:\众墅之家爆款短视频创作\.worktrees\UI-TYPOGRAPHY-BRAND-20260916\client
+npm error workspace @video-replica/client@2.0.0
+npm error location E:\众墅之家爆款短视频创作\.worktrees\UI-TYPOGRAPHY-BRAND-20260916\client
+npm error command failed
+npm error command C:\windows\system32\cmd.exe /d /s /c vitest run src/studio/CreationPages.test.tsx -t ^^^"REVIEW^^^ stale^^^ cloud^^^"

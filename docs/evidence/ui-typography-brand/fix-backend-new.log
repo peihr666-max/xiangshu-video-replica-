@@ -1,0 +1,300 @@
+...............FFF                                                       [100%]
+=================================== FAILURES ===================================
+_ test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge[{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}] _
+
+pg_state = 'postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_test'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74aa449d00b0>
+content = b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}'
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}',
+            b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
+            b"not json",
+        ],
+    )
+    def test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge(
+        pg_state, monkeypatch, content
+    ):
+        from types import SimpleNamespace
+    
+        from app.billing_catalog import SERVICES
+        from app.billing_meter import billing_context
+        from app.usage_billing import accept_operation
+    
+        _seed_base(pg_state)
+        _exec(
+            pg_state,
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('analysis',true,0,1),('analysis_repair',false,NULL,99)",
+        )
+        with pg_transaction() as raw:
+            accept_operation(
+                BusinessConnection.postgres(raw),
+                user_id="u1",
+                service="analysis",
+                source_id="repair-cost",
+                units=1,
+            )
+        provider, _ = _analysis_with_deepseek(monkeypatch)
+        monkeypatch.setattr(
+            "curl_cffi.requests.post", lambda *a, **k: SimpleNamespace(status_code=200, content=content)
+        )
+        with billing_context("repair-cost"):
+            if b'"stop"' in content:
+                provider.repair_json(invalid_json="invalid", error="invalid")
+            else:
+                with pytest.raises(HTTPException):
+                    provider.repair_json(invalid_json="invalid", error="invalid")
+>       row = _rows(
+            pg_state,
+            "SELECT provider,usage_amount,cost_fen FROM billing_attempts "
+            "WHERE service='analysis_repair_deepseek'",
+        )[0]
+
+tests/test_cw030_worker_pg_matrix.py:2621: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:185: in _rows
+    found = pg.execute(sql, params).fetchall()
+            ^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <psycopg.Connection [BAD] at 0x74aa44b56900>
+query = "SELECT provider,usage_amount,cost_fen FROM billing_attempts WHERE service='analysis_repair_deepseek'"
+params = (), prepare = None, binary = False
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> Cursor[Row]:
+        """Execute a query and return a cursor to read its results."""
+        try:
+            cur = self.cursor()
+            if binary:
+                cur.format = BINARY
+    
+            if isinstance(query, Template):
+                if params is not None:
+                    raise TypeError(
+                        "'execute()' with string template query doesn't support parameters"
+                    )
+                return cur.execute(query, prepare=prepare)
+            else:
+                return cur.execute(query, params, prepare=prepare)
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.UndefinedColumn: column "usage_amount" does not exist
+E           LINE 1: SELECT provider,usage_amount,cost_fen FROM billing_attempts ...
+E                                   ^
+
+/work/server/.venv/lib/python3.12/site-packages/psycopg/connection.py:300: UndefinedColumn
+_ test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge[{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}] _
+
+pg_state = 'postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_test'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74aa4727c440>
+content = b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}'
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}',
+            b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
+            b"not json",
+        ],
+    )
+    def test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge(
+        pg_state, monkeypatch, content
+    ):
+        from types import SimpleNamespace
+    
+        from app.billing_catalog import SERVICES
+        from app.billing_meter import billing_context
+        from app.usage_billing import accept_operation
+    
+        _seed_base(pg_state)
+        _exec(
+            pg_state,
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('analysis',true,0,1),('analysis_repair',false,NULL,99)",
+        )
+        with pg_transaction() as raw:
+            accept_operation(
+                BusinessConnection.postgres(raw),
+                user_id="u1",
+                service="analysis",
+                source_id="repair-cost",
+                units=1,
+            )
+        provider, _ = _analysis_with_deepseek(monkeypatch)
+        monkeypatch.setattr(
+            "curl_cffi.requests.post", lambda *a, **k: SimpleNamespace(status_code=200, content=content)
+        )
+        with billing_context("repair-cost"):
+            if b'"stop"' in content:
+                provider.repair_json(invalid_json="invalid", error="invalid")
+            else:
+                with pytest.raises(HTTPException):
+                    provider.repair_json(invalid_json="invalid", error="invalid")
+>       row = _rows(
+            pg_state,
+            "SELECT provider,usage_amount,cost_fen FROM billing_attempts "
+            "WHERE service='analysis_repair_deepseek'",
+        )[0]
+
+tests/test_cw030_worker_pg_matrix.py:2621: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:185: in _rows
+    found = pg.execute(sql, params).fetchall()
+            ^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <psycopg.Connection [BAD] at 0x74aa449d0230>
+query = "SELECT provider,usage_amount,cost_fen FROM billing_attempts WHERE service='analysis_repair_deepseek'"
+params = (), prepare = None, binary = False
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> Cursor[Row]:
+        """Execute a query and return a cursor to read its results."""
+        try:
+            cur = self.cursor()
+            if binary:
+                cur.format = BINARY
+    
+            if isinstance(query, Template):
+                if params is not None:
+                    raise TypeError(
+                        "'execute()' with string template query doesn't support parameters"
+                    )
+                return cur.execute(query, prepare=prepare)
+            else:
+                return cur.execute(query, params, prepare=prepare)
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.UndefinedColumn: column "usage_amount" does not exist
+E           LINE 1: SELECT provider,usage_amount,cost_fen FROM billing_attempts ...
+E                                   ^
+
+/work/server/.venv/lib/python3.12/site-packages/psycopg/connection.py:300: UndefinedColumn
+----------------------------- Captured stderr call -----------------------------
+WARNI [app.script_rewrite] DeepSeek rewrite reached the output limit
+------------------------------ Captured log call -------------------------------
+WARNING  app.script_rewrite:script_rewrite.py:1091 DeepSeek rewrite reached the output limit
+_ test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge[not json] _
+
+pg_state = 'postgresql://testuser:testpass@127.0.0.1:5432/cw030_worker_matrix_test'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x74aa449d2690>
+content = b'not json'
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b'{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}',
+            b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
+            b"not json",
+        ],
+    )
+    def test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge(
+        pg_state, monkeypatch, content
+    ):
+        from types import SimpleNamespace
+    
+        from app.billing_catalog import SERVICES
+        from app.billing_meter import billing_context
+        from app.usage_billing import accept_operation
+    
+        _seed_base(pg_state)
+        _exec(
+            pg_state,
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('analysis',true,0,1),('analysis_repair',false,NULL,99)",
+        )
+        with pg_transaction() as raw:
+            accept_operation(
+                BusinessConnection.postgres(raw),
+                user_id="u1",
+                service="analysis",
+                source_id="repair-cost",
+                units=1,
+            )
+        provider, _ = _analysis_with_deepseek(monkeypatch)
+        monkeypatch.setattr(
+            "curl_cffi.requests.post", lambda *a, **k: SimpleNamespace(status_code=200, content=content)
+        )
+        with billing_context("repair-cost"):
+            if b'"stop"' in content:
+                provider.repair_json(invalid_json="invalid", error="invalid")
+            else:
+                with pytest.raises(HTTPException):
+                    provider.repair_json(invalid_json="invalid", error="invalid")
+>       row = _rows(
+            pg_state,
+            "SELECT provider,usage_amount,cost_fen FROM billing_attempts "
+            "WHERE service='analysis_repair_deepseek'",
+        )[0]
+
+tests/test_cw030_worker_pg_matrix.py:2621: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_cw030_worker_pg_matrix.py:185: in _rows
+    found = pg.execute(sql, params).fetchall()
+            ^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <psycopg.Connection [BAD] at 0x74aa449d30e0>
+query = "SELECT provider,usage_amount,cost_fen FROM billing_attempts WHERE service='analysis_repair_deepseek'"
+params = (), prepare = None, binary = False
+
+    def execute(
+        self,
+        query: Query,
+        params: Params | None = None,
+        *,
+        prepare: bool | None = None,
+        binary: bool = False,
+    ) -> Cursor[Row]:
+        """Execute a query and return a cursor to read its results."""
+        try:
+            cur = self.cursor()
+            if binary:
+                cur.format = BINARY
+    
+            if isinstance(query, Template):
+                if params is not None:
+                    raise TypeError(
+                        "'execute()' with string template query doesn't support parameters"
+                    )
+                return cur.execute(query, prepare=prepare)
+            else:
+                return cur.execute(query, params, prepare=prepare)
+        except e._NO_TRACEBACK as ex:
+>           raise ex.with_traceback(None)
+E           psycopg.errors.UndefinedColumn: column "usage_amount" does not exist
+E           LINE 1: SELECT provider,usage_amount,cost_fen FROM billing_attempts ...
+E                                   ^
+
+/work/server/.venv/lib/python3.12/site-packages/psycopg/connection.py:300: UndefinedColumn
+----------------------------- Captured stderr call -----------------------------
+WARNI [app.script_rewrite] DeepSeek rewrite returned an unreadable payload
+------------------------------ Captured log call -------------------------------
+WARNING  app.script_rewrite:script_rewrite.py:1076 DeepSeek rewrite returned an unreadable payload
+=============================== warnings summary ===============================
+../../work/server/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /work/server/.venv/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_cw030_worker_pg_matrix.py::test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge[{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}]
+FAILED tests/test_cw030_worker_pg_matrix.py::test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge[{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}]
+FAILED tests/test_cw030_worker_pg_matrix.py::test_deepseek_repair_cost_is_separate_from_legacy_and_never_customer_charge[not json]
+3 failed, 15 passed, 70 deselected, 1 warning in 24.68s

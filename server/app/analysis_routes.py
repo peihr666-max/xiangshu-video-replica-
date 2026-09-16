@@ -47,6 +47,7 @@ from app.permissions import (
     require_project_access,
     write_audit,
 )
+from app.script_rewrite import load_script_rewrite_configuration
 from app.settings import SettingsRepository, SettingsUnavailableError
 from app.storage import (
     StorageAdapter,
@@ -105,6 +106,7 @@ def get_video_analysis_provider(conn: Database) -> VideoAnalysisProvider:
         # Keeping the origin fixed prevents an imported legacy base_url from
         # receiving the configured bearer token.
         base_url=APILIO_DEFAULT_BASE_URL,
+        text_ai_config=load_script_rewrite_configuration(conn),
     )
 
 
@@ -863,6 +865,7 @@ def fail_analysis_task(
         code = str(cause.detail.get("code") or code)
         message = str(cause.detail.get("message") or message)
         retryable = bool(cause.detail.get("retryable", True))
+        failure_phase = cause.detail.get("failure_phase")
     now_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     updated = conn.execute(
         """

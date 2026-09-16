@@ -471,6 +471,15 @@ describe("V1.4 创作页面", () => {
       ),
     );
     view.unmount();
+    // 云端仍是提交前草稿，而本地已收到服务端 taskId。
+    const acceptedPending = JSON.parse(
+      sessionStorage.getItem("studio:pending-copy:customer-1") ?? "null",
+    );
+    expect(acceptedPending.taskId).toBe("recover-new");
+    value.state.draft.pendingRewrite = {
+      ...acceptedPending,
+      taskId: undefined,
+    };
     value.state.draft.script = {
       ...value.state.draft.script,
       text: "离开期间人工修改",
@@ -517,6 +526,56 @@ describe("V1.4 创作页面", () => {
     expect(sessionStorage.getItem("studio:pending-copy:customer-1")).toBeNull();
   });
 
+  it.each([false, true])(
+    "已受理任务失败后根据 retryable=%s 决定复用请求编号",
+    async (retryable) => {
+      const value = studio({ review: false });
+      value.state.draft.rewriteMethod = "custom";
+      value.state.draft.rewriteInstructions = "简洁表达";
+      vi.mocked(value.patchDraft).mockImplementation(
+        (patch: Partial<typeof value.state.draft>) => {
+          Object.assign(value.state.draft, patch);
+        },
+      );
+      const task = {
+        id: "failed-task",
+        project_id: "project-1",
+        identity_id: null,
+        source_asset_id: "source-1",
+        source_text: "原始文案",
+        instructions: "简洁表达",
+        status: "FAILED",
+        result: null,
+        retryable,
+        error_code: "DEEPSEEK_REQUEST_FAILED",
+        error_message: "配置需要检查",
+      };
+      replicaApi.rewriteProjectScript.mockResolvedValue(task);
+      useStudio.mockReturnValue(value);
+      render(<CopyPage />);
+      fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+      await waitFor(() =>
+        expect(value.notify).toHaveBeenCalledWith(
+          "文案优化服务暂时不可用，请稍后重试；如持续失败，请联系客服。",
+        ),
+      );
+      const key = replicaApi.rewriteProjectScript.mock.calls[0]?.[4];
+      if (!retryable) {
+        expect(value.state.draft.pendingRewrite).toBeUndefined();
+        expect(
+          sessionStorage.getItem("studio:pending-copy:customer-1"),
+        ).toBeNull();
+      }
+      fireEvent.click(screen.getByRole("button", { name: "生成二创文案" }));
+      await waitFor(() =>
+        expect(replicaApi.rewriteProjectScript).toHaveBeenCalledTimes(2),
+      );
+      const retriedKey = replicaApi.rewriteProjectScript.mock.calls[1]?.[4];
+      if (retryable) expect(retriedKey).toBe(key);
+      else expect(retriedKey).not.toBe(key);
+    },
+  );
+
   it("响应丢失的请求重进页面不误取历史任务，重试沿用幂等键", async () => {
     const value = studio({ review: false });
     replicaApi.rewriteProjectScript.mockRejectedValue(new Error("网络中断"));
@@ -526,6 +585,17 @@ describe("V1.4 创作页面", () => {
     await waitFor(() => expect(value.notify).toHaveBeenCalledWith("网络中断"));
     const key = replicaApi.rewriteProjectScript.mock.calls[0]?.[4];
     view.unmount();
+    // A new device/session restores the cloud pending record, without the
+    // original browser's idempotency-key map.
+    value.state.draft.pendingRewrite = JSON.parse(
+      sessionStorage.getItem("studio:pending-copy:customer-1") ?? "null",
+    );
+    expect(value.state.draft.pendingRewrite?.requestKey).toBe(key);
+    sessionStorage.clear();
+    value.state.draft.script = {
+      ...value.state.draft.script,
+      version: value.state.draft.script.version + 1,
+    };
     replicaApi.getLatestScriptRewriteTask.mockClear();
     render(<CopyPage />);
     expect(replicaApi.getLatestScriptRewriteTask).not.toHaveBeenCalled();

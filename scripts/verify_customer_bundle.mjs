@@ -383,6 +383,11 @@ function printManifest(entries, label) {
 function assertCustomerArtifactShape(manifest) {
   const problems = [];
   const indexEntry = manifest.find((entry) => entry.rel === "index.html");
+  for (const asset of ["studio/logo-mark.svg", "favicon.svg", "favicon.png", "favicon.ico"]) {
+    if (!manifest.some((entry) => entry.rel === asset && entry.bytes > 0)) {
+      problems.push(`品牌资源缺失或为空：${asset}`);
+    }
+  }
   if (!indexEntry) {
     problems.push("index.html 缺失（客户 SPA 入口不存在）");
   } else if (indexEntry.bytes === 0) {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearScriptRewriteIdempotencyKey,
+  resolvePendingRewrite,
   type ScriptRewriteScope,
   scriptRewriteIdempotencyKey,
   shouldClearScriptRewriteIdempotencyKey,
@@ -15,6 +16,39 @@ const scope: ScriptRewriteScope = {
   scriptVersion: 3,
   text: "已保存正文",
 };
+
+describe("云端与本地二创任务恢复", () => {
+  const pending = { scopeKey: "scope", resultText: "原有结果" };
+  it("旧云端记录不能遮蔽本地已受理任务", () => {
+    const accepted = { ...pending, taskId: "task-new" };
+    expect(resolvePendingRewrite("scope", pending, accepted)).toBe(accepted);
+    expect(resolvePendingRewrite("scope", accepted, pending)).toBe(accepted);
+  });
+  it("新的请求不能被旧的已受理任务覆盖", () => {
+    const old = { ...pending, taskId: "old", requestKey: "a", startedAt: 1 };
+    const newer = { ...pending, requestKey: "b", startedAt: 2 };
+    expect(resolvePendingRewrite("scope", newer, old)).toBe(newer);
+    expect(resolvePendingRewrite("scope", old, newer)).toBe(newer);
+  });
+  it("同一请求优先受理状态，过滤其他来源或账号的scope", () => {
+    const accepted = {
+      ...pending,
+      taskId: "task",
+      requestKey: "a",
+      startedAt: 1,
+    };
+    const retry = { ...pending, requestKey: "a", startedAt: 2 };
+    expect(resolvePendingRewrite("scope", retry, accepted)).toBe(accepted);
+    expect(resolvePendingRewrite("other", retry, accepted)).toBeUndefined();
+    expect(
+      resolvePendingRewrite(
+        "scope",
+        { ...pending, scopeKey: "other" },
+        accepted,
+      ),
+    ).toBe(accepted);
+  });
+});
 
 describe("文案改写幂等键生命周期", () => {
   beforeEach(() => window.sessionStorage.clear());

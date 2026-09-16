@@ -1,0 +1,189 @@
+
+> @video-replica/client@2.0.0 check
+> biome check . && tsc -b && vitest run
+
+src\admin\admin-customer-detail.css:216:1 lint/style/noDescendingSpecificity ━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Descending specificity selector found. This selector specificity is (0, 1, 1)
+  
+    214 │   user-select: text;
+    215 │ }
+  > 216 │ .customer-id-copy__value code {
+        │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    217 │   overflow-wrap: anywhere;
+    218 │ }
+  
+  i This selector specificity is (0, 2, 1)
+  
+    113 │ .customer-focused-detail .customer-detail-meta dt,
+    114 │ .customer-focused-detail .customer-detail-meta dd,
+  > 115 │ .customer-focused-detail .customer-detail-meta code {
+        │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    116 │   font-size: var(--font-body);
+    117 │ }
+  
+  i Descending specificity selector may not be applied. Consider rearranging the order of the selectors. See MDN web docs for more details.
+  
+
+src\studio\studio.css:854:1 lint/style/noDescendingSpecificity ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Descending specificity selector found. This selector specificity is (0, 1, 1)
+  
+    852 │   color: #e4b73c;
+    853 │ }
+  > 854 │ .studio-home-metrics strong {
+        │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    855 │   display: block;
+    856 │   width: 100%;
+  
+  i This selector specificity is (0, 1, 2)
+  
+    723 │   line-height: 1.65;
+    724 │ }
+  > 725 │ .studio-hero h1 strong {
+        │ ^^^^^^^^^^^^^^^^^^^^^^
+    726 │   color: #e9a82d;
+    727 │   font-weight: 600;
+  
+  i Descending specificity selector may not be applied. Consider rearranging the order of the selectors. See MDN web docs for more details.
+  
+
+src\studio\studio.css:1549:1 lint/style/noDescendingSpecificity ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Descending specificity selector found. This selector specificity is (0, 1, 1)
+  
+    1547 │   border-radius: 7px;
+    1548 │ }
+  > 1549 │ .studio-picker-grid strong,
+         │ ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    1550 │ .studio-picker-grid small {
+    1551 │   display: block;
+  
+  i This selector specificity is (0, 1, 2)
+  
+    723 │   line-height: 1.65;
+    724 │ }
+  > 725 │ .studio-hero h1 strong {
+        │ ^^^^^^^^^^^^^^^^^^^^^^
+    726 │   color: #e9a82d;
+    727 │   font-weight: 600;
+  
+  i Descending specificity selector may not be applied. Consider rearranging the order of the selectors. See MDN web docs for more details.
+  
+
+src\studio\studio.css:1835:3 lint/style/noDescendingSpecificity ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ! Descending specificity selector found. This selector specificity is (0, 1, 1)
+  
+    1833 │     width: 17px;
+    1834 │   }
+  > 1835 │   .studio-home-metrics strong {
+         │   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    1836 │     font-size: var(--font-metric);
+    1837 │   }
+  
+  i This selector specificity is (0, 1, 2)
+  
+    723 │   line-height: 1.65;
+    724 │ }
+  > 725 │ .studio-hero h1 strong {
+        │ ^^^^^^^^^^^^^^^^^^^^^^
+    726 │   color: #e9a82d;
+    727 │   font-weight: 600;
+  
+  i Descending specificity selector may not be applied. Consider rearranging the order of the selectors. See MDN web docs for more details.
+  
+
+Checked 260 files in 309ms. No fixes applied.
+Found 4 warnings.
+
+ RUN  v4.1.10 E:/众墅之家爆款短视频创作/.worktrees/UI-TYPOGRAPHY-BRAND-20260916/client
+
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+Not implemented: Window's scrollTo() method
+
+ Test Files  103 passed (103)
+      Tests  1598 passed (1598)
+   Start at  21:08:46
+   Duration  27.59s (transform 20.17s, setup 27.97s, import 28.21s, tests 143.73s, environment 140.72s)
+
