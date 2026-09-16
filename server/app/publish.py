@@ -11,10 +11,11 @@ that unlocks it — account authorization only:
   connected/invalid status without ever exposing the cookie, claimed with a
   CAS lease (``FOR UPDATE SKIP LOCKED`` plus a fenced write-back).
 
-The formal delivery path (``publish_records`` drafts/queue/cover/schedule and
-the worker publish round) is phase 2 per docs/evidence/CW002-SCOPE-DECISIONS.md
-§8 and is deliberately absent here: no ``publish_records`` table, no publish
-claim, no ``published_total``.
+The formal delivery path lives in ``app.publish_records`` (PUBLISH-DELIVERY-
+20260917): the ``publish_records`` queue, the worker publish claim and
+``published_total`` are deliberately kept out of this module so the verify half
+keeps working on an accounts-only schema (test A12). This cookie-paste account
+table is legacy — deliveries read the browser-login accounts instead.
 """
 
 from __future__ import annotations
@@ -253,10 +254,10 @@ class PublishLease:
 def _quarantine_expired_verifies(conn: BusinessConnection, now_text: str) -> None:
     """Reset account-verify leases whose probe died mid-flight.
 
-    Scoped to ``publish_accounts`` on purpose: this phase owns no
-    ``publish_records`` table, so claiming a verify must never touch one. That
-    separation is what lets ``claim_account_verify_work`` run against an
-    accounts-only schema; phase 2 gives the publish round its own quarantine.
+    Scoped to ``publish_accounts`` on purpose: claiming a verify must never touch
+    ``publish_records``. That separation is what lets ``claim_account_verify_work``
+    run against an accounts-only schema; the publish round has its own quarantine
+    in ``app.publish_records``.
     """
     conn.execute(
         """

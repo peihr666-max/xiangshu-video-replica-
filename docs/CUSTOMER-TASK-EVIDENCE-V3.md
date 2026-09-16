@@ -1482,3 +1482,7 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 ## 2026-09-16 ORAL-VIDEO-TTS-20260916
 
 视频口播流程与独立声音档案改造；局部 AUTOMATED_VERIFIED，未调用付费飞影链路、未合并部署。前端 1565 passed，口播/素材专项 205 passed，设计 QA passed；全量 PG 及远程提交状态见 [任务证据](evidence/ORAL-VIDEO-TTS-20260916.md)。基线 f0b45b2、分支 feat/oral-video-tts-20260916。仅本任务增量登记，不核销其他业务工作包。
+
+## 2026-09-17 PUBLISH-DELIVERY-20260917
+
+发布链路第二阶段 PR-A。新增迁移 `20260917T1000_publish_records`（`publish_records` 表 + `publish_browser_accounts.status/error_message/source`）、`app/publish_records.py` / `publish_record_routes.py` / `publish_credentials.py` / `publish_delivery.py`，`publish_worker` 每轮追加一条发布投递；桌面 `publish_accounts.rs` connected 时导出 storage_state 并由前端 `POST /publish/browser/accounts/import` 加密入库；发布页立即/定时发布、`PublishRecordsPanel`、首页真实 `published_total`；compose/systemd/基础镜像（Node.js）接入 `worker-publish`。本地 ruff/format/mypy、cargo test 27、client check 105 文件 1617 passed，专项与迁移矩阵见证据；全量四分片结果回填于证据末段。AUTOMATED_VERIFIED；全部用例合成凭据与假投递器，未触网、未真实发布、未合并部署。详见[独立证据](evidence/PUBLISH-DELIVERY-20260917.md)。

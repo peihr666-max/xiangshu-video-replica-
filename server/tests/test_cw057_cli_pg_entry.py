@@ -198,6 +198,8 @@ CURRENT_PG_UNITS = (
     "video-replica-api@.service",
     "video-replica-worker.service",
     "video-replica-worker@.service",
+    # PUBLISH-DELIVERY-20260917: platform deliveries + account probes (PG only).
+    "video-replica-publish-worker.service",
     "video-replica-maintenance.service",
     "video-replica-maintenance.timer",
     "video-replica-maintenance-alert.service",
