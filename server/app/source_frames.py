@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -40,6 +41,8 @@ SOURCE_FRAME_SELECTION_KIND = "source_frame_selection"
 SOURCE_FRAME_SCHEMA_VERSION = "b4.source-frame.v2"
 SOURCE_FRAME_TIMESTAMPS_SECONDS = (0.5, 1.5, 2.5)
 FFMPEG_TIMEOUT_SECONDS = 15
+SCENE_BOUNDARY_THRESHOLD = 0.35
+MAX_SCENE_BOUNDARY_CANDIDATES = 24
 SOURCE_FRAME_TASK_LEASE_MINUTES = 5
 
 logger = logging.getLogger(__name__)
@@ -142,6 +145,68 @@ class SourceFrameExtractorUnavailable(RuntimeError):
 
 class SourceFrameExtractionFailed(RuntimeError):
     pass
+
+
+class SceneBoundaryDetectionFailed(RuntimeError):
+    pass
+
+
+class FFmpegSceneBoundaryDetector:
+    """Return bounded FFmpeg scene-change candidates for model review."""
+
+    def detect(
+        self,
+        content: bytes,
+        *,
+        filename: str,
+        duration_seconds: float,
+    ) -> tuple[float, ...]:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise SourceFrameExtractorUnavailable("ffmpeg is required for scene detection")
+
+        suffix = Path(filename).suffix.lower()
+        with tempfile.TemporaryDirectory(prefix="video-replica-scene-boundary-") as directory:
+            video_path = Path(directory) / f"reference{suffix}"
+            with video_path.open("wb") as video_file:
+                video_file.write(content)
+            try:
+                result = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-v",
+                        "info",
+                        "-i",
+                        str(video_path),
+                        "-vf",
+                        f"select=gt(scene\\,{SCENE_BOUNDARY_THRESHOLD}),showinfo",
+                        "-an",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=FFMPEG_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise SceneBoundaryDetectionFailed("ffmpeg scene detection timed out") from exc
+            if result.returncode != 0:
+                raise SceneBoundaryDetectionFailed("ffmpeg could not detect scene boundaries")
+
+        candidates = [
+            round(float(value), 3)
+            for value in re.findall(rb"pts_time:([0-9]+(?:\.[0-9]+)?)", result.stderr)
+            if 0.05 < float(value) < duration_seconds - 0.05
+        ]
+        unique_candidates = tuple(dict.fromkeys(candidates))
+        if len(unique_candidates) <= MAX_SCENE_BOUNDARY_CANDIDATES:
+            return unique_candidates
+        last_index = len(unique_candidates) - 1
+        return tuple(
+            unique_candidates[round(index * last_index / (MAX_SCENE_BOUNDARY_CANDIDATES - 1))]
+            for index in range(MAX_SCENE_BOUNDARY_CANDIDATES)
+        )
 
 
 class FFmpegSourceFrameExtractor:

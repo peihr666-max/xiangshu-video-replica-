@@ -3,6 +3,8 @@ server/tests/test_admin_auth.py
 server/tests/test_admin_customer_routes.py
 server/tests/test_admin_h3_extended_modes.py
 server/tests/test_admin_session_routes.py
+server/tests/test_analysis_scene_boundaries.py
+server/tests/test_batch_titles.py
 server/tests/test_business_preflight.py
 server/tests/test_customer_pricing.py
 server/tests/test_cw027_admin_permission_matrix.py

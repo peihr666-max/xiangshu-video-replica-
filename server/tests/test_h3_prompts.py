@@ -26,7 +26,12 @@ def test_replica_final_prompt_uses_confirmed_script_frame_and_real_cuts() -> Non
                 "relative_motion": "主体占比保持不变",
             },
         },
-        {"start_time": 2, "end_time": 4, "segment_kind": "ACTION_BEAT", "action": "指向庭院"},
+        {
+            "start_time": 2,
+            "end_time": 4,
+            "segment_kind": "SHOT_CUT",
+            "action": "指向庭院",
+        },
     ]
     text = compile_replica_final_text(
         shot_payload={"shots": shots},
@@ -38,9 +43,88 @@ def test_replica_final_prompt_uses_confirmed_script_frame_and_real_cuts() -> Non
     )
     assert dialogue(text) == "今天带你看庭院"
     assert "欢迎看房" not in text and "红衣" not in text
-    assert text.count("[Shot ") == 1
+    assert "目标成片时长：4 秒" in text
+    assert "生成数量" not in text and "生成 1 条" not in text
+    assert text.startswith(
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced.\n\n"
+        "integrated_multimodal_description: [Shot 1]"
+    )
+    assert "[Shot 2] At 00:02.000" in text
+    assert "At 00:02.000 [Shot 2]" not in text
+    assert text.count("[Shot ") == 3  # first-frame instruction plus two shot markers
+    assert "(S1) says: <d>[Chinese] 今天带你看庭院</d>" in text
+    assert text.count("今天带你看庭院") == 1
     assert "PULL_BACK" in text and "toward_camera" in text and "左侧柔光" in text
     assert not prompt_issues(text, mode="I2VA", duration=4, labels=["<Picture 1>"])
+
+
+def test_replaced_scene_prompt_uses_confirmed_first_frame_environment() -> None:
+    from app.h3_prompts import compile_replica_final_text
+
+    text = compile_replica_final_text(
+        shot_payload={
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 4,
+                    "shot_type": "中景",
+                    "composition": "人物居中",
+                    "scene": "源视频售楼部",
+                    "scene_dressing": "源视频沙盘",
+                    "scene_lighting": "源视频冷光",
+                    "camera_motion": "缓慢推进",
+                    "action": "人物抬手指向源视频售楼部沙盘",
+                    "ambient_sound": "源售楼部广播",
+                    "motion": {
+                        "subject_motion_state": "WALKING",
+                        "relative_motion": "人物绕过源沙盘后靠近镜头",
+                    },
+                }
+            ]
+        },
+        script_text="带你看看",
+        duration=4,
+        source_duration=4,
+        timeline_policy="preserve",
+        source_frame_time=0,
+        replace_scene=True,
+    )
+
+    assert "全片场景以已确认首帧为准" in text
+    assert "scene: 源视频售楼部" not in text
+    assert "scene_dressing: 源视频沙盘" not in text
+    assert "scene_lighting: 源视频冷光" not in text
+    assert "中景" in text and "人物居中" in text and "缓慢推进" in text
+    assert "动作参考（受场景替换规则约束）：人物抬手指向源视频售楼部沙盘" in text
+    assert "动作：人物抬手指向源视频售楼部沙盘" not in text
+    assert "运动参考（受场景替换规则约束）：relative_motion: 人物绕过源沙盘后靠近镜头" in text
+    assert "源售楼部广播" not in text
+    assert "overall_soundscape: 按已确认首帧的最终场景适配环境音" in text
+
+
+def test_confirmed_first_frame_sources_preserve_scene_replacement_flag(monkeypatch) -> None:
+    import json
+
+    from app import generation
+
+    monkeypatch.setattr(generation, "require_confirmed_first_frame", lambda *args, **kwargs: None)
+
+    def version(_conn, project_id, kind):
+        if kind == "first_frame_selection":
+            return {"id": "selection-v1"}
+        return {
+            "id": "candidates-v1",
+            "payload_json": json.dumps({"replace_scene": True}),
+        }
+
+    monkeypatch.setattr(generation, "latest_version", version)
+
+    sources = generation.confirmed_first_frame_sources(
+        object(), project_id="project-1", first_frame_asset_id="frame-1"
+    )
+
+    assert sources["first_frame_replace_scene"] is True
 
 
 def test_final_prompt_requires_explicit_timing_and_start_alignment() -> None:
@@ -63,6 +147,30 @@ def test_final_prompt_requires_explicit_timing_and_start_alignment() -> None:
     with pytest.raises(HTTPException) as exc:
         compile_replica_final_text(**base)
     assert exc.value.detail["code"] == "FIRST_FRAME_ALIGNMENT_REQUIRED"
+
+
+def test_longer_target_automatically_scales_timeline_to_full_duration() -> None:
+    from app.h3_prompts import compile_replica_final_text
+
+    text = compile_replica_final_text(
+        shot_payload={
+            "pace": "快节奏",
+            "shots": [
+                {"start_time": 0, "end_time": 2, "segment_kind": "ACTION_BEAT"},
+                {"start_time": 2, "end_time": 4, "segment_kind": "SHOT_CUT"},
+            ],
+        },
+        script_text="",
+        duration=15,
+        source_duration=4,
+        timeline_policy="preserve",
+        source_frame_time=0,
+    )
+
+    assert "[Shot 2] At 00:07.500" in text
+    assert "阶段 7.500–15.000 秒" in text
+    assert "人物动作、镜头运动和口播间隔等比放慢" in text
+    assert "pace: 快节奏" not in text
 
 
 @pytest.mark.parametrize("source_time", [7, -1])

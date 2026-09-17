@@ -8,6 +8,12 @@
 目标生成上下文：
 {GENERATION_CONTEXT_JSON}
 
+FFmpeg 切镜候选线索：
+{SCENE_BOUNDARY_GUIDANCE_JSON}
+候选时间不是真实切镜结论。必须对照完整视频核对每个候选点；只有画面证据
+证明硬切或转场时才标记 SHOT_CUT。候选检测不可用或结果为空时，仍须
+逐段观察完整视频；不得因此省略真实切镜。不得按候选点数量补造动作或凑段数。
+
 一、输出约定
 只返回合法 JSON 对象，不输出 Markdown、解释或分析过程。
 顶层字段严格为 schema_version、analysis、generation_prompt。

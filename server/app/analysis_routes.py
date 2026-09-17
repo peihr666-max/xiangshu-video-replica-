@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ from app.h3_prompts import GenerationContext
 from app.media import (
     DURATION_ROUNDING_TOLERANCE_SECONDS,
     MAX_DURATION_SECONDS,
+    MAX_UPLOAD_BYTES,
     is_reference_video_asset,
 )
 from app.media_routes import get_media_storage
@@ -51,14 +53,22 @@ from app.permissions import (
 )
 from app.prompt_context import attach_context_media
 from app.settings import SettingsRepository, SettingsUnavailableError
+from app.source_frames import (
+    FFmpegSceneBoundaryDetector,
+    SceneBoundaryDetectionFailed,
+    SourceFrameExtractorUnavailable,
+)
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
+    UploadedObjectSizeMismatch,
+    read_uploaded_object,
     require_storage_match,
     storage_object_ref_from_uri,
 )
 
 router = APIRouter(prefix="/api", tags=["analysis"])
+logger = logging.getLogger(__name__)
 
 # Must track the upload precheck: a video that passed upload at 15.05s has to stay
 # analysable instead of being rejected as an invalid request.
@@ -207,6 +217,8 @@ class AnalysisTaskWork:
     asset_uri: str
     generation_context: dict[str, Any] | None = None
     generation_media: list[dict[str, Any]] | None = None
+    storage: StorageAdapter | None = None
+    source_size_bytes: int | None = None
 
 
 def require_async_analysis_route(project_id: str) -> None:
@@ -812,6 +824,8 @@ def prepare_analysis_task(
         asset_uri=asset_uri,
         generation_context=context,
         generation_media=media,
+        storage=storage,
+        source_size_bytes=int(row["size_bytes"]),
     )
 
 
@@ -844,6 +858,7 @@ def perform_analysis_task(
             context["issues"] = [
                 item for item in context["issues"] if item["code"] != "MEDIA_METADATA_REQUIRED"
             ]
+    analysis_guidance = detect_scene_boundary_guidance(work, duration_seconds=duration)
     return analyze_video(
         video_uri=work.video_uri,
         video_duration_seconds=duration,
@@ -851,7 +866,59 @@ def perform_analysis_task(
         on_provider_result=on_provider_result,
         generation_context=work.generation_context,
         generation_media=work.generation_media,
+        analysis_guidance=analysis_guidance,
     )
+
+
+def detect_scene_boundary_guidance(
+    work: AnalysisTaskWork,
+    *,
+    duration_seconds: float,
+) -> dict[str, Any] | None:
+    """Provide bounded local cut candidates without turning them into facts."""
+
+    if not isinstance(work.provider, ApilioGemini) or work.storage is None:
+        return None
+    try:
+        reference = storage_object_ref_from_uri(work.asset_uri)
+        require_storage_match(work.storage, reference)
+        if work.source_size_bytes is None:
+            raise UploadedObjectSizeMismatch("source size is unavailable")
+        content = read_uploaded_object(
+            work.storage,
+            reference.key,
+            expected_size=work.source_size_bytes,
+            max_bytes=MAX_UPLOAD_BYTES,
+        )
+        candidates = FFmpegSceneBoundaryDetector().detect(
+            content,
+            filename=reference.key,
+            duration_seconds=duration_seconds,
+        )
+    except (
+        SceneBoundaryDetectionFailed,
+        SourceFrameExtractorUnavailable,
+        StorageBackendUnavailable,
+        UploadedObjectSizeMismatch,
+        ValueError,
+        OSError,
+    ) as exc:
+        logger.warning(
+            "Analysis scene-boundary guidance unavailable: project=%s asset=%s reason=%s",
+            work.lease.project_id,
+            work.lease.asset_id,
+            type(exc).__name__,
+        )
+        return {
+            "status": "UNAVAILABLE",
+            "candidate_cut_times_seconds": [],
+            "message": "本地切镜候选检测失败；请直接核对完整视频。",
+        }
+    return {
+        "status": "AVAILABLE",
+        "candidate_cut_times_seconds": list(candidates),
+        "message": ("这些时间只是 FFmpeg 候选线索，需核对完整视频后再判断是否真实切镜。"),
+    }
 
 
 def complete_analysis_task(
