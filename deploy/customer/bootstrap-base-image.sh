@@ -72,6 +72,10 @@ RUN cd /opt/video-replica/server \
     && ! test -e /opt/video-replica/server/scripts/reconcile_customer_billing.py \
     && .venv/bin/python -c "import pathlib, sys; forbidden = {'backup.py', 'sqlite_to_postgres.py', 'reconcile_customer_billing.py'}; found = [str(p) for p in pathlib.Path('/opt/video-replica/server').rglob('*') if p.is_file() and p.name in forbidden]; sys.exit('historical SQLite tooling in the customer image: ' + repr(found) if found else 0)"
 ENV PATH="/opt/video-replica/server/.venv/bin:$PATH"
+# Rollout and Compose migration commands use `sh -lc`; Debian /etc/profile
+# resets PATH, so restore the same virtualenv for login shells as well.
+RUN printf '%s\n' 'export PATH="/opt/video-replica/server/.venv/bin:$PATH"' \
+    > /etc/profile.d/video-replica-venv.sh
 WORKDIR /opt/video-replica/server
 DOCKERFILE
 
