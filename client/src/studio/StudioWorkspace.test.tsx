@@ -177,13 +177,11 @@ const livePanel = vi.hoisted(() => ({
 vi.mock("./LiveWorkspacePanel", () => ({
   LiveWorkspacePanel: (props: {
     handoffBatch?: { id: string } | null;
-    onBatchCreated: (batch: { id: string }) => void;
     onClose: () => void;
     onHandoffConsumed?: () => void;
     onProjectSelected: (project: typeof livePanel.project) => void;
     characterIdentityId?: string;
     panel?: string;
-    onBusyChange: (busy: boolean) => void;
   }) => {
     livePanel.props(props);
     return (
@@ -192,13 +190,13 @@ vi.mock("./LiveWorkspacePanel", () => ({
           type="button"
           onClick={() => props.onProjectSelected(livePanel.project)}
         >
-          选择测试项目
+          生成测试项目
         </button>
         <button
           type="button"
-          onClick={() => props.onBatchCreated({ id: "batch-1" })}
+          onClick={() => props.onProjectSelected(livePanel.project)}
         >
-          创建测试批次
+          查看测试项目
         </button>
         {props.handoffBatch ? (
           <span>存在交接批次</span>
@@ -212,12 +210,6 @@ vi.mock("./LiveWorkspacePanel", () => ({
         ) : null}
         <button type="button" onClick={props.onClose}>
           返回新工作台
-        </button>
-        <button type="button" onClick={() => props.onBusyChange(true)}>
-          模拟开始忙碌
-        </button>
-        <button type="button" onClick={() => props.onBusyChange(false)}>
-          模拟结束忙碌
         </button>
       </section>
     );
@@ -582,6 +574,7 @@ describe("V1.4 workspace integration", () => {
     // F-06 本地草稿会跨用例残留（防抖写入 localStorage），逐用例隔离
     window.localStorage.clear();
     vi.clearAllMocks();
+    live.loadProjectDraft.mockReset();
     api.createViralImportTask.mockReset();
     live.loadViralVideos.mockResolvedValue({ videos: [], errors: [] });
     api.customerGetWallet.mockReset();
@@ -802,33 +795,6 @@ describe("V1.4 workspace integration", () => {
     expect(api.getSettings).toHaveBeenCalledTimes(1);
     expect(window.location.hash).toBe("#studio/settings");
   });
-  it("busy期间浏览器回退完成后应用被延迟的历史路由", async () => {
-    live.loadStudioData.mockResolvedValue({
-      ...createReviewData(),
-      loading: false,
-    });
-    render(<StudioWorkspace currentUser={reviewUser} />);
-    await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
-
-    window.history.pushState(null, "", "#studio/viral");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(
-      await screen.findByRole("heading", { name: "爆款视频" }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "工作台" }));
-    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-    fireEvent.click(screen.getByRole("button", { name: "模拟开始忙碌" }));
-
-    await act(async () => window.history.back());
-    await waitFor(() => expect(window.location.hash).toBe("#studio/viral"));
-    expect(screen.getByLabelText("模拟已有功能工作区")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "模拟结束忙碌" }));
-
-    expect(
-      await screen.findByRole("heading", { name: "爆款视频" }),
-    ).toBeInTheDocument();
-  });
-
   it("普通导航清除旧详情返回位置且每个详情入口写入当前来源", () => {
     const reviewData = createReviewData();
     reviewData.tasks = [
@@ -917,22 +883,105 @@ describe("V1.4 workspace integration", () => {
     expect(screen.queryByText(/示例审核/)).not.toBeInTheDocument();
   });
 
-  it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {
+  it.each(["生成测试项目", "查看测试项目"])(
+    "%s 导入后进入同一个复刻页并显示项目标题",
+    async (entry) => {
+      const imported = createReviewState("workbench").draft;
+      imported.projectId = livePanel.project.id;
+      live.loadStudioData.mockResolvedValue({
+        ...createReviewData(),
+        projects: [livePanel.project],
+        loading: false,
+      });
+      live.loadProjectDraft.mockResolvedValue({ draft: imported, errors: [] });
+      render(<StudioWorkspace currentUser={reviewUser} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+      fireEvent.click(screen.getByRole("button", { name: entry }));
+
+      expect(
+        await screen.findByText("来源视频 · 张工预算项目"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("模拟已有功能工作区"),
+      ).not.toBeInTheDocument();
+      expect(window.location.hash).toBe("#studio/replica");
+    },
+  );
+
+  it("项目导入失败时留在列表、保留草稿并可重试", async () => {
+    const initialState = createState("workbench");
+    initialState.draft.script.text = "不要覆盖的草稿";
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      projects: [livePanel.project],
+      loading: false,
+    });
+    const importedAfterRetry = createReviewState("replica").draft;
+    importedAfterRetry.projectId = livePanel.project.id;
+    live.loadProjectDraft
+      .mockRejectedValueOnce(new Error("暂时失败"))
+      .mockResolvedValueOnce({
+        draft: importedAfterRetry,
+        errors: [],
+      });
+    render(
+      <StudioWorkspace currentUser={reviewUser} initialState={initialState} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
+
+    expect(await screen.findByText("暂时失败")).toBeInTheDocument();
+    expect(screen.getByLabelText("模拟已有功能工作区")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回新工作台" }));
+    fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+    expect(screen.getByDisplayValue("不要覆盖的草稿")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "工作台" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
+    await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByText("来源视频 · 张工预算项目"),
+    ).toBeInTheDocument();
+  });
+
+  it("关闭项目列表后忽略迟到的导入结果且不覆盖草稿", async () => {
     const imported = createReviewState("workbench").draft;
+    imported.projectId = livePanel.project.id;
+    imported.script.text = "迟到结果";
+    let resolveImport:
+      | ((value: { draft: typeof imported; errors: string[] }) => void)
+      | undefined;
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
       loading: false,
     });
-    live.loadProjectDraft.mockResolvedValue({ draft: imported, errors: [] });
-    render(<StudioWorkspace currentUser={reviewUser} />);
+    live.loadProjectDraft.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      }),
+    );
+    const initialState = createState("workbench");
+    initialState.draft.script.text = "当前草稿";
+    render(
+      <StudioWorkspace currentUser={reviewUser} initialState={initialState} />,
+    );
 
-    // 工作台“上传视频”已是图标化的本机文件上传；打开旧项目面板的入口
-    // 是无来源时的“开始复刻”。
     fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-    fireEvent.click(screen.getByRole("button", { name: "选择测试项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "返回新工作台" }));
-    await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveImport?.({ draft: imported, errors: [] });
+    });
+
+    expect(
+      screen.queryByText("来源视频 · 张工预算项目"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+    expect(screen.getByDisplayValue("当前草稿")).toBeInTheDocument();
   });
 
   it("workbench metric cards show real platform stats", async () => {
@@ -952,20 +1001,6 @@ describe("V1.4 workspace integration", () => {
     await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument());
     // 队列 = running + queued（3）；待处理来自统计而非 20 条切片。
     expect(screen.getByText("4")).toBeInTheDocument();
-  });
-
-  it("消费任务交接后清除暂存批次", async () => {
-    live.loadStudioData.mockResolvedValue({
-      ...createReviewData(),
-      loading: false,
-    });
-    render(<StudioWorkspace currentUser={reviewUser} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-    fireEvent.click(screen.getByRole("button", { name: "创建测试批次" }));
-    expect(screen.getByText("存在交接批次")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "消费交接批次" }));
-    expect(screen.getByText("没有交接批次")).toBeInTheDocument();
   });
 
   it("polls generation task progress silently while the workspace is open", async () => {

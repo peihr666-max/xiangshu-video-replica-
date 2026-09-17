@@ -120,9 +120,9 @@ H3_PROMPT_TEMPLATE_HASH = hashlib.sha256(
 ).hexdigest()
 
 # Final replica compilation is a separate contract from the retained preview API.
-FINAL_REPLICA_TEMPLATE_VERSION = "h3.replica.final.v1"
+FINAL_REPLICA_TEMPLATE_VERSION = "h3.replica.final.v2"
 FINAL_REPLICA_TEMPLATE_HASH = hashlib.sha256(
-    b"h3.replica.final.v1:confirmed-script:frame-authority:real-cuts:explicit-time:human-opening"
+    b"h3.replica.final.v2:confirmed-script:frame-scene-authority:real-cuts:explicit-duration:human-opening"
 ).hexdigest()
 
 # 拆解结果 motion 枚举到中文运动指令的确定性映射：渲染逻辑在代码里，
@@ -1132,6 +1132,7 @@ def confirmed_first_frame_sources(
             "character_reference_selection_id"
         ),
         "first_frame_reconstruction_mode": candidate_payload.get("reconstruction_mode"),
+        "first_frame_replace_scene": candidate_payload.get("replace_scene") is True,
         "character_contract": candidate_payload.get("character_contract"),
         "project_character_appearance_version_id": candidate_payload.get(
             "project_character_appearance_version_id"
@@ -1331,7 +1332,7 @@ def compile_prompt_version(
                 source_frame_time = float(timestamp)
         timeline_scale_factor = (
             request.output_duration_seconds / source_duration_seconds
-            if request.timeline_policy == "scale_confirmed"
+            if request.output_duration_seconds != source_duration_seconds
             else 1.0
         )
         prompt_text = compile_replica_final_text(
@@ -1342,6 +1343,7 @@ def compile_prompt_version(
             timeline_policy=request.timeline_policy,
             source_frame_time=source_frame_time,
             opening_action=request.opening_action,
+            replace_scene=first_frame_sources["first_frame_replace_scene"],
         )
         if len(prompt_text) > MAX_GENERATION_PROMPT_CHARS:
             raise generation_error(
@@ -6354,7 +6356,7 @@ def list_generation_batches(
                 created_at=str(row["created_at"]),
                 updated_at=str(row["updated_at"]),
                 display_name=batch_display_name(
-                    row["display_name"], row["creation_kind"], row["request_snapshot_json"]
+                    row["display_name"], row["creation_kind"], row["project_name"]
                 ),
                 source_batch_id=optional_text(row["source_batch_id"]),
                 source_task_id=optional_text(row["source_task_id"]),
@@ -6557,7 +6559,7 @@ def get_generation_batch(
         quantity=len(tasks),
         stale=stale,
         display_name=batch_display_name(
-            batch["display_name"], batch["creation_kind"], batch["request_snapshot_json"]
+            batch["display_name"], batch["creation_kind"], batch["project_name"]
         ),
         source_batch_id=optional_text(batch["source_batch_id"]),
         source_task_id=optional_text(batch["source_task_id"]),
@@ -7469,6 +7471,7 @@ def generation_request_snapshot(
         "character_version_id": prompt_snapshot.get("character_version_id"),
         "character_reference_selection_id": prompt_snapshot.get("character_reference_selection_id"),
         "first_frame_reconstruction_mode": prompt_snapshot.get("first_frame_reconstruction_mode"),
+        "first_frame_replace_scene": prompt_snapshot.get("first_frame_replace_scene") is True,
         "character_contract": prompt_snapshot.get("character_contract"),
         "project_character_appearance_version_id": prompt_snapshot.get(
             "project_character_appearance_version_id"
@@ -7833,20 +7836,19 @@ def completed_duration_seconds(*, started_at: str | None, completed_at: str | No
         return None
 
 
-def batch_display_name(name: Any, creation_kind: Any, snapshot: Any) -> str | None:
-    explicit = optional_text(name)
-    if explicit and explicit.strip():
+def batch_display_name(name: Any, creation_kind: Any, project_name: Any) -> str:
+    explicit = (optional_text(name) or "").strip()
+    if explicit:
         return explicit
-    if creation_kind != "independent":
-        return explicit
-    try:
-        payload = json.loads(str(snapshot))
-    except (TypeError, ValueError):
-        return explicit
-    prompt = payload.get("prompt_text") if isinstance(payload, dict) else None
-    if not isinstance(prompt, str):
-        return explicit
-    return " ".join(prompt.split())[:80] or explicit
+    project = (optional_text(project_name) or "").strip()
+    # 自动名称用中文；用户主动命名保持原样。提示词属于正文，不是作品名。
+    if project and any("\u4e00" <= char <= "\u9fff" for char in project):
+        return project
+    return {
+        "replica": "视频复刻",
+        "independent": "视频生成",
+        "replacement": "人物置换",
+    }.get(str(creation_kind), "视频作品")
 
 
 def request_prompt_version_id(value: Any) -> str:

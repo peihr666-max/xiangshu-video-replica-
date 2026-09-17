@@ -6,18 +6,33 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GenerationBatch, GenerationPriceQuote } from "../api";
+import type { GenerationBatch, GenerationPriceQuote, Project } from "../api";
 import type { CustomerCredentialStore } from "../customer/useCustomerSession";
 import type { WorkspaceShellProps } from "../workspace-shell";
 import { reviewUser } from "./fixtures";
 
-const analysis = vi.hoisted(() => ({ props: vi.fn() }));
+const projectFixture = {
+  id: "project-1",
+  name: "张工预算项目",
+} as Project;
 
-vi.mock("../AnalysisWorkspace", () => ({
-  AnalysisWorkspace: (props: { identityId?: string }) => {
-    analysis.props(props);
-    return <p>analysis-workspace</p>;
-  },
+vi.mock("../ProjectsPage", () => ({
+  ProjectsPage: ({
+    onOpenAnalysis,
+    onOpenDetail,
+  }: {
+    onOpenAnalysis: (project: Project) => void;
+    onOpenDetail: (project: Project) => void;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onOpenAnalysis(projectFixture)}>
+        生成该项目
+      </button>
+      <button type="button" onClick={() => onOpenDetail(projectFixture)}>
+        查看该项目
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("../TaskRecordsPanel", () => ({
@@ -45,8 +60,6 @@ it("任务面板消费交接后回传给工作区控制器清除暂存批次", (
     <LiveWorkspacePanel
       currentUser={reviewUser}
       handoffBatch={{ id: "batch-1" } as GenerationBatch}
-      onBatchCreated={vi.fn()}
-      onBusyChange={vi.fn()}
       onClose={vi.fn()}
       onHandoffConsumed={onHandoffConsumed}
       onProjectSelected={vi.fn()}
@@ -59,27 +72,28 @@ it("任务面板消费交接后回传给工作区控制器清除暂存批次", (
   expect(onHandoffConsumed).toHaveBeenCalledTimes(1);
 });
 
-it("分析面板会把 Studio 已选 IP 传给真实分析工作区", () => {
-  render(
-    <LiveWorkspacePanel
-      characterIdentityId="identity-1"
-      currentUser={reviewUser}
-      onBatchCreated={vi.fn()}
-      onBusyChange={vi.fn()}
-      onClose={vi.fn()}
-      onHandoffConsumed={vi.fn()}
-      onProjectSelected={vi.fn()}
-      onRefresh={vi.fn()}
-      panel="analysis"
-      project={{ id: "project-1" } as never}
-    />,
-  );
+it.each(["projects", "analysis"] as const)(
+  "%s 面板的生成和查看入口都交给统一复刻页",
+  (panel) => {
+    const onProjectSelected = vi.fn();
+    render(
+      <LiveWorkspacePanel
+        currentUser={reviewUser}
+        onClose={vi.fn()}
+        onHandoffConsumed={vi.fn()}
+        onProjectSelected={onProjectSelected}
+        onRefresh={vi.fn()}
+        panel={panel}
+      />,
+    );
 
-  expect(screen.getByText("analysis-workspace")).toBeInTheDocument();
-  expect(analysis.props).toHaveBeenCalledWith(
-    expect.objectContaining({ identityId: "identity-1" }),
-  );
-});
+    fireEvent.click(screen.getByRole("button", { name: "生成该项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看该项目" }));
+
+    expect(onProjectSelected).toHaveBeenNthCalledWith(1, projectFixture);
+    expect(onProjectSelected).toHaveBeenNthCalledWith(2, projectFixture);
+  },
+);
 
 // ---------------------------------------------------------------------------
 // CW-016：两个客户钱包入口（「使用记录」导航 + 个人中心「查看使用记录」）都经
@@ -274,8 +288,6 @@ function renderWalletEntry(
     <LiveWorkspacePanel
       currentUser={reviewUser}
       customerAccount={customerAccount}
-      onBatchCreated={vi.fn()}
-      onBusyChange={vi.fn()}
       onClose={vi.fn()}
       onHandoffConsumed={vi.fn()}
       onProjectSelected={vi.fn()}

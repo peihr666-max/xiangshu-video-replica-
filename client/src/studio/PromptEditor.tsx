@@ -35,18 +35,26 @@ export function replicaInputKey(input: {
 /** Shared final step for all replica entry points; compilation is always explicit. */
 export function ReplicaFinalPromptControls({
   input,
+  sourceDuration = 0,
+  sourceFrameTimestamp = 0,
+  showScriptPreview = true,
   value,
   onChange,
   snapshot,
   onPrepared,
   readOnly = false,
+  restoreEnabled = true,
 }: {
   input: Parameters<typeof replicaInputKey>[0];
+  sourceDuration?: number;
+  sourceFrameTimestamp?: number;
+  showScriptPreview?: boolean;
   value: string;
   onChange: (text: string) => void;
   snapshot: FinalReplicaSnapshot | null;
   onPrepared: (snapshot: FinalReplicaSnapshot | null) => void;
   readOnly?: boolean;
+  restoreEnabled?: boolean;
 }) {
   const key = replicaInputKey(input);
   const [confirmedKey, setConfirmedKey] = useState("");
@@ -69,12 +77,16 @@ export function ReplicaFinalPromptControls({
     };
   }, []);
   const ready = snapshot?.inputKey === key;
+  const requiresCompression = sourceDuration > input.duration + 0.25;
+  const extendsEnding =
+    sourceDuration > 0 && sourceDuration < input.duration - 0.25;
+  const requiresOpeningAction = sourceFrameTimestamp > 0.25;
   const preparedCallback = useRef(onPrepared);
   preparedCallback.current = onPrepared;
   useEffect(() => {
     let active = true;
     const revision = operation.current;
-    if (!input.projectId || !input.firstFrameAssetId) return;
+    if (!restoreEnabled || !input.projectId || !input.firstFrameAssetId) return;
     void Promise.resolve()
       .then(() => getLatestGenerationPrompt(input.projectId))
       .then((state) => {
@@ -109,8 +121,13 @@ export function ReplicaFinalPromptControls({
           shotCardVersionId: String(payload.shot_card_version_id),
         });
       })
-      .catch(() => {
-        /* Read recovery never starts another paid task. */
+      .catch((error: unknown) => {
+        if (!active || revision !== operation.current) return;
+        setMessage(
+          error instanceof Error
+            ? `历史终稿读取失败：${error.message}`
+            : "历史终稿读取失败，可重新合成。",
+        );
       });
     return () => {
       active = false;
@@ -124,9 +141,16 @@ export function ReplicaFinalPromptControls({
     input.resolution,
     input.ratio,
     input.shotCardVersionId,
+    restoreEnabled,
   ]);
   async function compose() {
-    if (busy || readOnly || confirmedKey !== key || !input.firstFrameAssetId)
+    if (
+      busy ||
+      readOnly ||
+      confirmedKey !== key ||
+      !input.firstFrameAssetId ||
+      (requiresCompression && !scale)
+    )
       return;
     operation.current += 1;
     setPending(null);
@@ -182,11 +206,8 @@ export function ReplicaFinalPromptControls({
     }
   }
   return (
-    <section aria-label="最终提示词合成">
-      <p>
-        确认文案和首帧后合成最终提示词。更换文案、首帧、分镜、时长或画幅后需要重新合成，当前编辑会保留。
-      </p>
-      <pre>{input.scriptText || "无口播"}</pre>
+    <section className="replica-final-controls" aria-label="最终提示词合成">
+      {showScriptPreview ? <pre>{input.scriptText || "无口播"}</pre> : null}
       <label>
         <input
           type="checkbox"
@@ -200,46 +221,73 @@ export function ReplicaFinalPromptControls({
             }
           }}
         />
-        {input.scriptText.trim() ? "确认采用以上文案" : "确认本视频无口播"}
+        {input.scriptText.trim() ? "采用这份文案" : "本视频无口播"}
       </label>
-      <label>
-        <input
-          type="checkbox"
-          disabled={readOnly || busy}
-          checked={scale}
-          onChange={(event) => {
-            operation.current += 1;
-            setPending(null);
-            setScale(event.target.checked);
-            onPrepared(null);
-          }}
-        />
-        明确允许按目标时长调整动作节奏（不删减台词）
-      </label>
-      <label>
-        中段首帧的开场衔接方案（选开场帧可留空）
-        <textarea
-          value={openingAction}
-          disabled={readOnly || busy}
-          onChange={(event) => {
-            operation.current += 1;
-            setPending(null);
-            setOpeningAction(event.target.value);
-            onPrepared(null);
-          }}
-        />
-      </label>
+      {requiresCompression ? (
+        <label>
+          <input
+            type="checkbox"
+            disabled={readOnly || busy}
+            checked={scale}
+            onChange={(event) => {
+              operation.current += 1;
+              setPending(null);
+              setScale(event.target.checked);
+              onPrepared(null);
+            }}
+          />
+          将 {sourceDuration.toFixed(1)} 秒内容压缩到 {input.duration} 秒
+        </label>
+      ) : null}
+      {extendsEnding ? <p>按目标时长放慢节奏。</p> : null}
+      {requiresOpeningAction ? (
+        <label>
+          开场衔接
+          <textarea
+            value={openingAction}
+            disabled={readOnly || busy}
+            placeholder="说明如何从这张中段画面开始"
+            onChange={(event) => {
+              operation.current += 1;
+              setPending(null);
+              setOpeningAction(event.target.value);
+              onPrepared(null);
+            }}
+          />
+        </label>
+      ) : (
+        <details>
+          <summary>高级设置</summary>
+          <label>
+            开场衔接（可选）
+            <textarea
+              value={openingAction}
+              disabled={readOnly || busy}
+              onChange={(event) => {
+                operation.current += 1;
+                setPending(null);
+                setOpeningAction(event.target.value);
+                onPrepared(null);
+              }}
+            />
+          </label>
+        </details>
+      )}
       <button
         type="button"
         disabled={
-          readOnly || busy || confirmedKey !== key || !input.firstFrameAssetId
+          readOnly ||
+          busy ||
+          confirmedKey !== key ||
+          !input.firstFrameAssetId ||
+          (requiresCompression && !scale)
         }
         onClick={() => void compose()}
       >
         {busy ? "正在合成…" : "合成最终提示词"}
       </button>
       <p role="status">
-        {ready ? "最终稿来源已绑定" : "最终稿待合成或更新"}。{message}
+        {ready ? "已就绪" : "待合成"}。{message}
       </p>
       {pending && (
         <details open>
@@ -308,7 +356,7 @@ export function PromptEditor({
         <button
           type="button"
           aria-label="AI 优化提示词"
-          title="按当前模式优化为 MiniMax-H3 格式"
+          title="按当前模式优化提示词"
           aria-busy={optimization.busy}
           disabled={
             readOnly ||

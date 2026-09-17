@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -16,6 +17,7 @@ vi.mock("./api", async (importOriginal) => {
   return {
     ...actual,
     chooseProjectMainCharacterVersion: vi.fn(),
+    getAssetDownloadUrl: vi.fn(),
     getProjectMainCharacter: vi.fn(),
     listProjectCharacterVersions: vi.fn(),
   };
@@ -112,7 +114,10 @@ describe("CharacterSelection", () => {
         onVersionChange={onVersionChange}
       />,
     );
-    const dropdown = await screen.findByRole("combobox", { name: "角色版本" });
+    const dropdown = await screen.findByRole("combobox", {
+      name: "人物场景形象",
+    });
+    expect(screen.getByText("人物场景")).toBeInTheDocument();
     await screen.findByRole("option", { name: /工地巡检/ });
     expect(
       within(dropdown).queryByRole("option", { name: /基础形象/ }),
@@ -123,12 +128,336 @@ describe("CharacterSelection", () => {
   });
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     vi.mocked(api.getProjectMainCharacter).mockResolvedValue(null);
     vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([option]);
     vi.mocked(api.chooseProjectMainCharacterVersion).mockResolvedValue(
       selected,
     );
+    vi.mocked(api.getAssetDownloadUrl).mockResolvedValue({
+      url: "/scene.jpg",
+    });
+  });
+
+  it("sceneOnly 只展示一张已选场景图", async () => {
+    const sceneSelected: api.ProjectMainCharacter = {
+      ...selected,
+      character_version_id: sceneOption.character_version_id,
+      character_snapshot: {
+        ...selected.character_snapshot,
+        character_version_id: sceneOption.character_version_id,
+        character_version_number: sceneOption.version_number,
+        persona_id: sceneOption.persona_id,
+        persona_snapshot_json: sceneOption.persona_snapshot_json,
+        published_assets: sceneOption.assets,
+      },
+    };
+    vi.mocked(api.getProjectMainCharacter).mockResolvedValue(sceneSelected);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+    ]);
+    render(<CharacterSelection projectId="scene" variant="inline" sceneOnly />);
+    expect(await screen.findByAltText("已选场景图")).toHaveAttribute(
+      "src",
+      "/scene.jpg",
+    );
+    expect(screen.getAllByRole("img", { name: "已选场景图" })).toHaveLength(1);
+    expect(screen.getByLabelText("人物场景形象")).toBeInTheDocument();
+    expect(api.getAssetDownloadUrl).toHaveBeenCalledWith("asset-FRONT_FULL");
+  });
+
+  it("sceneOnly 预览失败时显示可重试提示", async () => {
+    const sceneSelected: api.ProjectMainCharacter = {
+      ...selected,
+      character_version_id: sceneOption.character_version_id,
+      character_snapshot: {
+        ...selected.character_snapshot,
+        character_version_id: sceneOption.character_version_id,
+        character_version_number: sceneOption.version_number,
+        persona_id: sceneOption.persona_id,
+        persona_snapshot_json: sceneOption.persona_snapshot_json,
+        published_assets: sceneOption.assets,
+      },
+    };
+    vi.mocked(api.getProjectMainCharacter).mockResolvedValue(sceneSelected);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+    ]);
+    vi.mocked(api.getAssetDownloadUrl)
+      .mockRejectedValueOnce(new Error("预览加载失败"))
+      .mockResolvedValueOnce({ url: "/scene-retried.jpg" });
+
+    render(<CharacterSelection projectId="scene" variant="inline" sceneOnly />);
+
+    expect(await screen.findByText("场景图预览加载失败。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试预览" }));
+    expect(await screen.findByAltText("已选场景图")).toHaveAttribute(
+      "src",
+      "/scene-retried.jpg",
+    );
+    expect(api.getAssetDownloadUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it("sceneOnly 图片渲染失败后可重试，且旧重试不覆盖新场景", async () => {
+    const sceneSelected: api.ProjectMainCharacter = {
+      ...selected,
+      character_version_id: sceneOption.character_version_id,
+      character_snapshot: {
+        ...selected.character_snapshot,
+        character_version_id: sceneOption.character_version_id,
+        character_version_number: sceneOption.version_number,
+        persona_id: sceneOption.persona_id,
+        persona_snapshot_json: sceneOption.persona_snapshot_json,
+        published_assets: sceneOption.assets,
+      },
+    };
+    const secondScene = {
+      ...sceneOption,
+      character_version_id: "character-version-scene-2",
+      version_number: 2,
+      persona_snapshot_json: {
+        ...sceneOption.persona_snapshot_json,
+        name: "室内洽谈",
+      },
+      assets: sceneOption.assets.map((asset) => ({
+        ...asset,
+        character_asset_id: `${asset.character_asset_id}-2`,
+        asset_id: `${asset.asset_id}-2`,
+      })),
+    } satisfies api.ProjectCharacterVersionOption;
+    const secondSelection: api.ProjectMainCharacter = {
+      ...sceneSelected,
+      character_version_id: secondScene.character_version_id,
+      character_snapshot: {
+        ...sceneSelected.character_snapshot,
+        character_version_id: secondScene.character_version_id,
+        character_version_number: secondScene.version_number,
+        persona_snapshot_json: secondScene.persona_snapshot_json,
+        published_assets: secondScene.assets,
+      },
+    };
+    let resolveOldRetry: ((value: api.DownloadUrl) => void) | undefined;
+    const oldRetry = new Promise<api.DownloadUrl>((resolve) => {
+      resolveOldRetry = resolve;
+    });
+    let firstSceneRequestCount = 0;
+    vi.mocked(api.getProjectMainCharacter).mockResolvedValue(sceneSelected);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+      secondScene,
+    ]);
+    vi.mocked(api.chooseProjectMainCharacterVersion).mockResolvedValue(
+      secondSelection,
+    );
+    vi.mocked(api.getAssetDownloadUrl).mockImplementation((assetId) => {
+      if (assetId === "asset-FRONT_FULL") {
+        firstSceneRequestCount += 1;
+        return firstSceneRequestCount === 1
+          ? Promise.resolve({ url: "/scene-a.jpg" })
+          : oldRetry;
+      }
+      return Promise.resolve({ url: "/scene-b.jpg" });
+    });
+
+    render(<CharacterSelection projectId="scene" variant="inline" sceneOnly />);
+    const preview = await screen.findByAltText("已选场景图");
+    fireEvent.error(preview);
+    expect(await screen.findByText("场景图预览加载失败。")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "重试预览" }));
+
+    const dropdown = screen.getByRole("combobox", {
+      name: "人物场景形象",
+    });
+    fireEvent.change(dropdown, {
+      target: { value: secondScene.character_version_id },
+    });
+    expect(await screen.findByAltText("已选场景图")).toHaveAttribute(
+      "src",
+      "/scene-b.jpg",
+    );
+
+    await act(async () => {
+      resolveOldRetry?.({ url: "/scene-a-late.jpg" });
+      await oldRetry;
+    });
+    expect(screen.getByAltText("已选场景图")).toHaveAttribute(
+      "src",
+      "/scene-b.jpg",
+    );
+  });
+
+  it("sceneOnly 切换到新场景时重建预览节点", async () => {
+    const sceneSelected: api.ProjectMainCharacter = {
+      ...selected,
+      character_version_id: sceneOption.character_version_id,
+      character_snapshot: {
+        ...selected.character_snapshot,
+        character_version_id: sceneOption.character_version_id,
+        character_version_number: sceneOption.version_number,
+        persona_id: sceneOption.persona_id,
+        persona_snapshot_json: sceneOption.persona_snapshot_json,
+        published_assets: sceneOption.assets,
+      },
+    };
+    const secondScene = {
+      ...sceneOption,
+      character_version_id: "character-version-scene-2",
+      version_number: 2,
+      assets: sceneOption.assets.map((asset) => ({
+        ...asset,
+        character_asset_id: `${asset.character_asset_id}-2`,
+        asset_id: `${asset.asset_id}-2`,
+      })),
+    } satisfies api.ProjectCharacterVersionOption;
+    const secondSelection: api.ProjectMainCharacter = {
+      ...sceneSelected,
+      character_version_id: secondScene.character_version_id,
+      character_snapshot: {
+        ...sceneSelected.character_snapshot,
+        character_version_id: secondScene.character_version_id,
+        character_version_number: secondScene.version_number,
+        published_assets: secondScene.assets,
+      },
+    };
+    vi.mocked(api.getProjectMainCharacter).mockResolvedValue(sceneSelected);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+      secondScene,
+    ]);
+    vi.mocked(api.chooseProjectMainCharacterVersion).mockResolvedValue(
+      secondSelection,
+    );
+    vi.mocked(api.getAssetDownloadUrl).mockResolvedValue({
+      url: "/shared-scene.jpg",
+    });
+
+    render(<CharacterSelection projectId="scene" variant="inline" sceneOnly />);
+    const oldPreview = await screen.findByAltText("已选场景图");
+    fireEvent.change(screen.getByRole("combobox", { name: "人物场景形象" }), {
+      target: { value: secondScene.character_version_id },
+    });
+
+    await waitFor(() =>
+      expect(api.getAssetDownloadUrl).toHaveBeenCalledWith(
+        "asset-FRONT_FULL-2",
+      ),
+    );
+    const newPreview = await screen.findByAltText("已选场景图");
+    expect(newPreview).not.toBe(oldPreview);
+    expect(newPreview).toHaveAttribute("src", "/shared-scene.jpg");
+  });
+
+  it("sceneOnly 切换项目时立即隐藏旧项目预览", async () => {
+    const sceneSelected: api.ProjectMainCharacter = {
+      ...selected,
+      character_version_id: sceneOption.character_version_id,
+      character_snapshot: {
+        ...selected.character_snapshot,
+        character_version_id: sceneOption.character_version_id,
+        character_version_number: sceneOption.version_number,
+        persona_id: sceneOption.persona_id,
+        persona_snapshot_json: sceneOption.persona_snapshot_json,
+        published_assets: sceneOption.assets,
+      },
+    };
+    let resolveNextProject:
+      | ((selection: api.ProjectMainCharacter | null) => void)
+      | undefined;
+    const nextProject = new Promise<api.ProjectMainCharacter | null>(
+      (resolve) => {
+        resolveNextProject = resolve;
+      },
+    );
+    vi.mocked(api.getProjectMainCharacter)
+      .mockResolvedValueOnce(sceneSelected)
+      .mockReturnValueOnce(nextProject);
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+    ]);
+
+    const page = render(
+      <CharacterSelection projectId="scene-a" variant="inline" sceneOnly />,
+    );
+    expect(await screen.findByAltText("已选场景图")).toBeVisible();
+
+    page.rerender(
+      <CharacterSelection projectId="scene-b" variant="inline" sceneOnly />,
+    );
+    expect(screen.queryByAltText("已选场景图")).toBeNull();
+    await act(async () => {
+      resolveNextProject?.(null);
+      await nextProject;
+    });
+  });
+
+  it("sceneOnly 切换人物场景后立即保存并通知父级", async () => {
+    const secondScene = {
+      ...sceneOption,
+      character_version_id: "character-version-scene-2",
+      version_number: 2,
+      persona_snapshot_json: {
+        ...sceneOption.persona_snapshot_json,
+        name: "室内洽谈",
+        scene_description: "在会客厅讲解方案",
+      },
+    } satisfies api.ProjectCharacterVersionOption;
+    const secondSelection: api.ProjectMainCharacter = {
+      ...selected,
+      character_version_id: secondScene.character_version_id,
+      character_snapshot: {
+        ...selected.character_snapshot,
+        character_version_id: secondScene.character_version_id,
+        character_version_number: secondScene.version_number,
+        persona_id: secondScene.persona_id,
+        persona_snapshot_json: secondScene.persona_snapshot_json,
+        published_assets: secondScene.assets,
+      },
+    };
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([
+      sceneOption,
+      secondScene,
+    ]);
+    vi.mocked(api.chooseProjectMainCharacterVersion).mockResolvedValue(
+      secondSelection,
+    );
+    const onVersionChange = vi.fn();
+    render(
+      <CharacterSelection
+        projectId="scene"
+        variant="inline"
+        sceneOnly
+        onVersionChange={onVersionChange}
+      />,
+    );
+
+    const dropdown = await screen.findByRole("combobox", {
+      name: "人物场景形象",
+    });
+    await screen.findByRole("option", { name: /室内洽谈/ });
+    expect(dropdown).toBeEnabled();
+    fireEvent.change(dropdown, {
+      target: { value: secondScene.character_version_id },
+    });
+
+    await waitFor(() =>
+      expect(api.chooseProjectMainCharacterVersion).toHaveBeenCalledWith(
+        "scene",
+        secondScene.character_version_id,
+      ),
+    );
+    expect(onVersionChange).toHaveBeenLastCalledWith(secondSelection);
+  });
+
+  it("sceneOnly 空列表引导到人物库创建场景形象", async () => {
+    vi.mocked(api.listProjectCharacterVersions).mockResolvedValue([]);
+    render(<CharacterSelection projectId="scene" variant="inline" sceneOnly />);
+
+    expect(
+      await screen.findByRole("option", { name: "暂无可用场景形象" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("请到人物库创建并发布人物场景形象。"),
+    ).toBeInTheDocument();
   });
 
   it("restores the frozen role version as soon as the project opens", async () => {

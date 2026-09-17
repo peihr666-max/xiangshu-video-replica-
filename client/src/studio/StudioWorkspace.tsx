@@ -294,7 +294,6 @@ export function StudioWorkspace({
     identityId: string;
     tab: "base" | "scenes";
   }>();
-  const [liveProject, setLiveProject] = useState<Project>();
   const [handoffBatch, setHandoffBatch] = useState<GenerationBatch | null>(
     null,
   );
@@ -368,10 +367,6 @@ export function StudioWorkspace({
   const [videoSubmitting, setVideoSubmitting] = useState(false);
   const [videoSubmitError, setVideoSubmitError] = useState("");
   const [videoSubmitRejected, setVideoSubmitRejected] = useState(false);
-  const busyRef = useRef(false);
-  const pendingRouteRef = useRef<
-    ReturnType<typeof studioRouteFromHash> | undefined
-  >(undefined);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
   const restoredAssetsRef = useRef<StudioAsset[]>([]);
@@ -390,7 +385,6 @@ export function StudioWorkspace({
     generationDialogRevisionRef.current += 1;
     oralSubmitAttemptRef.current += 1;
     videoSubmitAttemptRef.current += 1;
-    pendingRouteRef.current = undefined;
   }
   const notify = useCallback((message: string) => {
     window.clearTimeout(noticeTimerRef.current);
@@ -1111,7 +1105,7 @@ export function StudioWorkspace({
   useEffect(() => {
     if (review) return;
     const timer = window.setInterval(() => {
-      if (document.hidden || busyRef.current) return;
+      if (document.hidden) return;
       retryWallet();
       void reloadTasks(currentUser)
         .then((tasks) => {
@@ -1205,11 +1199,6 @@ export function StudioWorkspace({
   useEffect(() => {
     const onHashChange = () => {
       const route = studioRouteFromHash(window.location.hash);
-      if (busyRef.current) {
-        pendingRouteRef.current = route;
-        notify("当前操作正在处理中，请等待完成后切换页面。");
-        return;
-      }
       operationRef.current += 1;
       setState((previous) => ({ ...previous, ...route }));
       if (livePanel) refresh();
@@ -1221,13 +1210,9 @@ export function StudioWorkspace({
       window.removeEventListener("hashchange", onHashChange);
       window.removeEventListener("popstate", onHashChange);
     };
-  }, [notify, livePanel, refresh]);
+  }, [livePanel, refresh]);
 
   const navigate: StudioContextValue["navigate"] = (page, patch = {}) => {
-    if (busyRef.current) {
-      notify("当前操作正在处理中，请等待完成后切换页面。");
-      return;
-    }
     operationRef.current += 1;
     setState((previous) => {
       const nextState = navigateStudioState(previous, page, patch);
@@ -1372,6 +1357,10 @@ export function StudioWorkspace({
     notify,
   ]);
   const openLive: StudioContextValue["openLive"] = (panel, character) => {
+    if (panel === "analysis") {
+      navigate("replica");
+      return;
+    }
     if (review) {
       notify(
         "当前为示例审核。此入口在正式登录后打开已实现的上传、分析、人物或账户功能，不调用真实业务接口。",
@@ -1398,20 +1387,23 @@ export function StudioWorkspace({
         });
       return;
     }
-    if (panel === "analysis")
-      setLiveProject(
-        data.projects.find((project) => project.id === state.draft.projectId),
-      );
     setCharacterTarget(character);
     setLivePanel(panel);
   };
   const importProject = async (project: Project) => {
     const operation = ++operationRef.current;
-    setLiveProject(project);
     try {
       const imported = await loadProjectDraft(project);
       if (operation !== operationRef.current) return;
-      setState((previous) => withImportedProject(previous, imported.draft));
+      setState((previous) => {
+        return {
+          ...withImportedProject(previous, imported.draft),
+          page: "replica" as const,
+        };
+      });
+      window.history.pushState(null, "", "#studio/replica");
+      setCharacterTarget(undefined);
+      setLivePanel(undefined);
       if (imported.errors.length) notify(imported.errors.join("；"));
       else notify("已带入项目来源与已保存文案。请核对内容并确认终稿。");
     } catch (cause) {
@@ -1809,12 +1801,7 @@ export function StudioWorkspace({
     ["running", "queued"].includes(task.status),
   ).length;
   const closeLive = () => {
-    if (busyRef.current) {
-      notify("操作尚未结束，请稍候。");
-      return;
-    }
     operationRef.current += 1;
-    setLiveProject(undefined);
     setLivePanel(undefined);
     refresh();
   };
@@ -1984,24 +1971,8 @@ export function StudioWorkspace({
                 characterInitialTab={characterTarget?.tab}
                 customerAccount={customerAccount}
                 customerWallet={customerWallet}
-                project={liveProject}
                 handoffBatch={handoffBatch}
                 onClose={closeLive}
-                onBusyChange={(busy) => {
-                  busyRef.current = busy;
-                  if (!busy && pendingRouteRef.current) {
-                    const pendingRoute = pendingRouteRef.current;
-                    pendingRouteRef.current = undefined;
-                    operationRef.current += 1;
-                    setState((previous) => ({ ...previous, ...pendingRoute }));
-                    setLivePanel(undefined);
-                  }
-                }}
-                onBatchCreated={(batch) => {
-                  setHandoffBatch(batch);
-                  setLivePanel("tasks");
-                  refresh();
-                }}
                 onHandoffConsumed={() => {
                   setHandoffBatch(null);
                   refresh();
@@ -2177,10 +2148,10 @@ export function StudioWorkspace({
                 <Button
                   onClick={() => {
                     closeGenerationDialog();
-                    openLive("analysis");
+                    navigate("replica");
                   }}
                 >
-                  进入项目生成流程
+                  进入视频拆解
                 </Button>
               )}
           </StudioDialog>

@@ -88,11 +88,10 @@ APILIO_OUTPUT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 )
 FIRST_FRAME_NO_TEXT_CONSTRAINT = (
-    "硬性输出约束（优先级最高）：最终首帧不得出现任何文字。"
-    "必须移除源图中的标题、字幕、话题词、标签、招牌、门联、水印与 Logo，"
-    "不得复制、重绘、替换或新增任何可读字符、字母、数字与符号；"
-    "原文字区域应使用符合周围场景的自然纹理补全，不得保留文字轮廓。"
-    "封面文字由后期添加；若其他指令与本约束冲突，一律以本约束为准。"
+    "硬性输出约束（优先级最高）：去除原图中的叠加字幕、叠加标题和后期文字标签，"
+    "不得新增这些覆盖文字。只清除后期叠加层，并用周围场景的自然纹理补全；"
+    "最终采用的人物衣物、随身物品和最终场景本身的文字与 Logo 保持原样，"
+    "不得抹除或改写。"
 )
 
 FirstFrameModel = Literal["gpt-image-2", "nano-banana-pro-2k"]
@@ -2255,6 +2254,9 @@ def effective_reference_asset_ids(
     input: the contact sheet supplies multi-angle identity while the
     identity's original uploaded photo is the authoritative face. Legacy
     characters without a contact sheet keep their selected per-view images.
+    Scene looks instead use the published FRONT_FULL crop shown in the UI;
+    sending the contact sheet would give the provider a different multi-panel
+    image than the user selected.
     Returns ``(asset_ids, roles)`` with roles mirroring asset_ids.
     """
     row = conn.execute(
@@ -2284,10 +2286,19 @@ def effective_reference_asset_ids(
         persona = None
     constraints = persona.get("appearance_constraints_json") if isinstance(persona, dict) else None
     if isinstance(constraints, dict) and constraints.get("appearance_type") == "scene":
-        if isinstance(contact_sheet_asset_id, str) and contact_sheet_asset_id:
-            return [contact_sheet_asset_id], ["scene_image"]
-        # Legacy published scene versions may contain separate approved views.
-        return legacy_selected, ["scene_image"] * len(legacy_selected)
+        snapshot_assets = snapshot.get("assets_by_view") if isinstance(snapshot, dict) else None
+        front_full = (
+            snapshot_assets.get("FRONT_FULL") if isinstance(snapshot_assets, dict) else None
+        )
+        front_full_asset_id = (
+            front_full.get("approved_asset_id") if isinstance(front_full, dict) else None
+        )
+        if isinstance(front_full_asset_id, str) and front_full_asset_id:
+            return [front_full_asset_id], ["scene_image"]
+        # A scene look is already a complete authored appearance. One selected
+        # scene image is sufficient; additional views only add conflicting cues.
+        selected_scene = legacy_selected[:1]
+        return selected_scene, ["scene_image"] * len(selected_scene)
     source_asset_id = row["source_asset_id"]
     if (
         isinstance(contact_sheet_asset_id, str)
@@ -2771,6 +2782,8 @@ def normalize_prompt(
             "第 2 张场景参考图是人物身份、服装造型与目标环境的唯一外观依据。"
             "使用场景参考图的背景替换原背景，结合源画面的透视重建自然完整场景；"
             "光照、人物阴影与目标环境一致，不保留与目标场景冲突的原建筑或道具。\n"
+            "目标场景参考图中实际存在的招牌文字与 Logo 保持原样；"
+            "不得恢复第 1 张源背景中的招牌、门联或其他场景文字。\n"
             "完整重构人物的头脸、头发、身体、服装与肢体连接，不能只换脸。"
             "不得增加其他人物，不复制参考板分格线、边框或多面板布局；"
             "禁止模糊补边、缩图留白和拼贴。输出一张完整画面。\n"
@@ -2785,11 +2798,12 @@ def normalize_prompt(
             "原视频源画面只提供人物姿态、动作、位置、朝向、遮挡关系、构图、机位、背景、道具和光照；"
             "这些内容保持不变。将目标形象自然适配原姿态和透视。\n"
             "以第 1 张源画面作为完整编辑画布，输出必须保持其画幅比例、取景范围和人物占画面比例。"
-            "只修改人物本身；人物以外的建筑、地面、植物、道具及原有字幕、文字和标识保持原样。"
+            "只修改人物本身；人物以外的建筑、地面、植物、道具及场景内原生文字和标识保持原样。"
             "禁止模糊补边，禁止增加上下或左右留白，禁止把原画面缩进新背景，禁止裁切或扩图。"
-            "如果原图有黑边、字幕覆盖在人物身上，也按原位置原样保留。\n"
+            "如果字幕覆盖在人物身上，清除字幕后自然补全人物与背景。\n"
             "场景参考图的背景、姿势、分格线、边框和多面板布局不属于替换内容，不能复制到结果。"
-            "只输出一张自然完整画面，不增加或删除其他主体。"
+            "只输出一张自然完整画面，不增加或删除其他主体。\n"
+            f"{FIRST_FRAME_NO_TEXT_CONSTRAINT}"
         )
         # Scene appearance is already authored; free text must not redesign it.
         return server_template
@@ -2819,7 +2833,7 @@ def normalize_prompt(
             f"{clothing_rule}遮挡边缘、镜面或反射中的人物也要保持一致。\n"
             "严禁只替换脸部、只覆盖头部或保留原视频人物的身体与服装；"
             "保持自然皮肤质感、正确肢体结构与真实透视；不得增加或删除画面主体；"
-            "不得出现文字、水印或边框。"
+            "不得新增字幕、水印或参考板边框。"
         )
         # Full mode may add user instructions, but it must not replace the
         # stable reference-role contract owned by the server.

@@ -322,6 +322,7 @@ class ApilioGemini:
         duration_seconds: float,
         context: dict[str, Any],
         media: list[dict[str, Any]],
+        analysis_guidance: dict[str, Any] | None = None,
     ) -> ProviderResponse:
         from app.h3_prompts import RULES
 
@@ -340,6 +341,10 @@ class ApilioGemini:
                 ensure_ascii=False,
             ),
         ).replace("{GENERATION_CONTEXT_JSON}", json.dumps(context, ensure_ascii=False))
+        instruction = instruction.replace(
+            "{SCENE_BOUNDARY_GUIDANCE_JSON}",
+            json.dumps(analysis_guidance or {}, ensure_ascii=False),
+        )
         text, raw = self._complete(
             {
                 "model": self.model,
@@ -419,15 +424,26 @@ def analyze_video(
     on_provider_result: Callable[[], None] | None = None,
     generation_context: dict[str, Any] | None = None,
     generation_media: list[dict[str, Any]] | None = None,
+    analysis_guidance: dict[str, Any] | None = None,
 ) -> AnalysisResult:
     from app.h3_prompts import analysis_prompt_result
 
-    if generation_context is not None and isinstance(provider, ApilioGemini):
+    if isinstance(provider, ApilioGemini) and (
+        generation_context is not None or analysis_guidance is not None
+    ):
+        provider_context = generation_context or {
+            "mode": None,
+            "duration_seconds": video_duration_seconds,
+            "generation_assets": [],
+            "issues": [],
+            "media_info": {},
+        }
         response = provider.analyze_with_context(
             video_uri=video_uri,
             duration_seconds=video_duration_seconds,
-            context=generation_context,
+            context=provider_context,
             media=generation_media or [],
+            analysis_guidance=analysis_guidance,
         )
     else:
         response = provider.analyze(video_uri=video_uri, duration_seconds=video_duration_seconds)
@@ -600,11 +616,11 @@ def analysis_instruction(duration_seconds: float) -> str:
         "关键规则：\n"
         "-1. person_count 必须统计该时间段画面内所有可见真人（包括局部露出者）；"
         "同一人的镜面反射不重复计数，海报、照片和屏幕中的人物不计数。\n"
-        "0. 对 8 秒及以上的视频，优先拆成 2-5 个可执行时间段。即使视频是单一连续镜头，"
-        "也要按动作阶段、手势变化、人物位移、运镜变化、讲话重点或收束节奏拆段；"
-        "不得仅因为没有剪辑切点就把整段视频输出为一个时间段。真实切镜填写 "
+        "0. 先逐段核对全片的真实剪辑边界，再在连续镜头内按清晰的动作、"
+        "站位或运镜阶段变化细分。段数服从实际内容，不设固定目标；"
+        "不得为了凑数制造不存在的切镜或动作。真实切镜填写 "
         "segment_kind=SHOT_CUT，同镜头内阶段变化填写 segment_kind=ACTION_BEAT，"
-        "boundary_reason 用中文说明拆分原因。不得为了凑数制造不存在的动作。\n"
+        "boundary_reason 用中文说明拆分原因。\n"
         "1. 人物在镜头内移动（行走、跑动、转身）时，subject_motion_state 必须选对应"
         "运动状态，action 必须写明运动方向与幅度；不得把移动中的人物概括成“说话”或"
         "“站立”，也不得把运动镜头写成固定机位。\n"

@@ -517,7 +517,15 @@ def test_scene_reference_never_adds_identity_original_photo():
     conn = SimpleNamespace(
         execute=lambda *args: SimpleNamespace(
             fetchone=lambda: {
-                "snapshot_json": json.dumps({"contact_sheet_asset_id": "scene-sheet"}),
+                "snapshot_json": json.dumps(
+                    {
+                        "contact_sheet_asset_id": "scene-sheet",
+                        "assets_by_view": {
+                            "FRONT_FULL": {"approved_asset_id": "scene-front-full"},
+                            "FRONT_FACE": {"approved_asset_id": "scene-front-face"},
+                        },
+                    }
+                ),
                 "persona_snapshot_json": json.dumps(
                     {"appearance_constraints_json": {"appearance_type": "scene"}}
                 ),
@@ -527,7 +535,31 @@ def test_scene_reference_never_adds_identity_original_photo():
     )
     assert effective_reference_asset_ids(
         conn, character_version_id="scene-version", legacy_selected=["scene-front"]
-    ) == (["scene-sheet"], ["scene_image"])
+    ) == (["scene-front-full"], ["scene_image"])
+
+
+def test_legacy_scene_reference_sends_only_one_selected_scene_image():
+    import json
+    from types import SimpleNamespace
+
+    from app.first_frames import effective_reference_asset_ids
+
+    conn = SimpleNamespace(
+        execute=lambda *args: SimpleNamespace(
+            fetchone=lambda: {
+                "snapshot_json": json.dumps({}),
+                "persona_snapshot_json": json.dumps(
+                    {"appearance_constraints_json": {"appearance_type": "scene"}}
+                ),
+                "source_asset_id": "original-identity-photo",
+            }
+        )
+    )
+    assert effective_reference_asset_ids(
+        conn,
+        character_version_id="legacy-scene-version",
+        legacy_selected=["selected-scene", "unused-view-2", "unused-view-3"],
+    ) == (["selected-scene"], ["scene_image"])
 
 
 def test_scene_prompt_uses_images_even_without_scene_text():
@@ -558,7 +590,9 @@ def test_scene_prompt_uses_images_even_without_scene_text():
     )
     assert "唯一外观依据" in prompt
     assert "禁止模糊补边" in prompt
-    assert "原有字幕、文字和标识保持原样" in prompt
+    assert "去除原图中的叠加字幕" in prompt
+    assert "最终采用的人物衣物、随身物品和最终场景本身的文字与 Logo" in prompt
+    assert "不得出现任何文字" not in prompt
     assert "原始照片" not in prompt
     assert "后台自动匹配" not in prompt
 
@@ -591,7 +625,9 @@ def test_scene_replacement_uses_target_background_without_preservation_conflict(
     )
     assert "场景参考图的背景" in prompt
     assert "替换原背景" in prompt
-    assert "原有字幕" not in prompt
+    assert "去除原图中的叠加字幕" in prompt
+    assert "目标场景参考图中实际存在的招牌文字与 Logo 保持原样" in prompt
+    assert "不得恢复第 1 张源背景中的招牌、门联或其他场景文字" in prompt
     assert "背景、道具和光照；这些内容保持不变" not in prompt
     assert "分格线" in prompt
 

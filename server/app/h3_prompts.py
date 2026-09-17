@@ -91,6 +91,7 @@ def compile_replica_final_text(
     timeline_policy: str,
     source_frame_time: float,
     opening_action: str = "",
+    replace_scene: bool = False,
 ) -> str:
     """Deterministic final composition, after confirmed inputs; no paid model call."""
 
@@ -114,56 +115,103 @@ def compile_replica_final_text(
         conflict("SCRIPT_DURATION_CONFLICT", "确认文案预计超过目标时长，请缩短文案或增加时长。")
     if re.search(r"</?d>|<(?:Picture|Video|Audio)\s", script_text):
         conflict("SCRIPT_TAG_INVALID", "确认文案请使用纯文本，不包含提示词标签。")
-    scale = duration / source_duration if timeline_policy == "scale_confirmed" else 1.0
+    scale = duration / source_duration if source_duration != duration else 1.0
     lines = [
-        "Use <Picture 1> as the exact first frame. "
-        "Preserve its person identity, clothing, pose and scene at the opening.",
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced.",
         "",
-        "integrated_multimodal_description:",
+        "integrated_multimodal_description: [Shot 1]",
+        f"目标成片时长：{duration} 秒，所有动作与运镜在此时长内完成。",
         "全片人物身份、服装和配饰以首帧为准，后续不得恢复源人物外观。",
     ]
-    for key in ("visual_style", "color_tone", "pace", "camera_language"):
+    if source_duration < duration:
+        lines.append("人物动作、镜头运动和口播间隔等比放慢，覆盖完整目标时长，不新增动作。")
+    if replace_scene:
+        lines.append("全片场景以已确认首帧为准，不得恢复源视频的环境、陈设或光照。")
+        lines.append(
+            "场景替换规则：以下动作与运动仅作为人物动作和镜头运动参考；"
+            "提及的原环境或固定道具，只有已存在于确认首帧时才可使用，"
+            "严禁添加源场景物体；不复用源场景声音。"
+        )
+    style_keys: tuple[str, ...] = (
+        ("pace", "camera_language")
+        if replace_scene
+        else (
+            "visual_style",
+            "color_tone",
+            "pace",
+            "camera_language",
+        )
+    )
+    if source_duration < duration:
+        style_keys = tuple(key for key in style_keys if key != "pace")
+    for key in style_keys:
         if shot_payload.get(key):
             lines.append(f"{key}: {shot_payload[key]}")
-    shot_number = 0
+    shot_number = 1
     for index, shot in enumerate(shot_payload["shots"]):
-        if index == 0 or shot.get("segment_kind") == "SHOT_CUT":
+        if index > 0 and shot.get("segment_kind") == "SHOT_CUT":
             shot_number += 1
             start = float(shot["start_time"]) * scale
-            timestamp = f"At {int(start // 60):02d}:{start % 60:06.3f} " if index else ""
-            lines.append(f"{timestamp}[Shot {shot_number}]")
+            lines.append(f"[Shot {shot_number}] At {int(start // 60):02d}:{start % 60:06.3f}")
         lines.append(
             f"阶段 {float(shot['start_time']) * scale:.3f}–{float(shot['end_time']) * scale:.3f} 秒"
         )
-        for key in (
-            "shot_type",
-            "composition",
-            "scene",
-            "scene_dressing",
-            "scene_lighting",
-            "camera_motion",
-        ):
+        shot_keys = (
+            (
+                "shot_type",
+                "composition",
+                "camera_motion",
+            )
+            if replace_scene
+            else (
+                "shot_type",
+                "composition",
+                "scene",
+                "scene_dressing",
+                "scene_lighting",
+                "camera_motion",
+            )
+        )
+        for key in shot_keys:
             if shot.get(key):
                 lines.append(f"{key}: {shot[key]}")
         if index == 0 and opening_action.strip():
             lines.append(f"用户确认的开场衔接：{opening_action.strip()}")
         else:
             if shot.get("action"):
-                lines.append(f"动作：{shot['action']}")
+                action_label = "动作参考（受场景替换规则约束）" if replace_scene else "动作"
+                lines.append(f"{action_label}：{shot['action']}")
             if isinstance(shot.get("motion"), dict):
-                lines.extend(f"{key}: {value}" for key, value in shot["motion"].items() if value)
+                motion_prefix = "运动参考（受场景替换规则约束）：" if replace_scene else ""
+                lines.extend(
+                    f"{motion_prefix}{key}: {value}"
+                    for key, value in shot["motion"].items()
+                    if value
+                )
     if script_text:
         lines.append(
-            f"确认口播（按全文顺序说出一次，与人物口型同步）：<d>[Chinese] {script_text}</d>"
+            f"The on-screen person shown in <Picture 1> (S1) says: <d>[Chinese] {script_text}</d>"
         )
     else:
         lines.append("无口播，不添加台词或人声旁白。")
-    for header, key in (
-        ("overall_soundscape", "ambient_sound"),
-        ("non_diegetic_music", "music_style_hint"),
-    ):
-        values = list(dict.fromkeys(str(s[key]) for s in shot_payload["shots"] if s.get(key)))
-        lines.append(f"{header}: " + ("；".join(values) if values else "N/A"))
+    ambient_values = list(
+        dict.fromkeys(
+            str(s["ambient_sound"]) for s in shot_payload["shots"] if s.get("ambient_sound")
+        )
+    )
+    soundscape = (
+        "按已确认首帧的最终场景适配环境音；不得恢复源场景广播或固定道具声音。"
+        if replace_scene
+        else ("；".join(ambient_values) if ambient_values else "N/A")
+    )
+    lines.append(f"overall_soundscape: {soundscape}")
+    music_values = list(
+        dict.fromkeys(
+            str(s["music_style_hint"]) for s in shot_payload["shots"] if s.get("music_style_hint")
+        )
+    )
+    lines.append("non_diegetic_music: " + ("；".join(music_values) if music_values else "N/A"))
     return "\n".join(lines)
 
 
@@ -202,8 +250,13 @@ def prompt_issues(
         first_line = text.splitlines()[0] if text else ""
         if "Picture 1" not in first_line or (mode == "FL2VA" and "Picture 2" not in first_line):
             add("FRAME_ALIGNMENT_REQUIRED", "缺少当前首尾帧的对齐说明。")
-    # Ref2VA can mention shots in subject/retention sections; verify only narrative.
-    narrative = text.split("detailed_description:", 1)[-1] if mode == "Ref2VA" else text
+    # Alignment instructions can reference shot numbers too. Validate only the
+    # timeline body so the official I2VA first-line reference is not a duplicate.
+    if mode == "Ref2VA":
+        narrative = text.split("detailed_description:", 1)[-1]
+    else:
+        narrative = text.split("integrated_multimodal_description:", 1)[-1]
+        narrative = narrative.split("overall_soundscape:", 1)[0]
     shot_numbers = [int(value) for value in re.findall(r"\[Shot (\d+)\]", narrative)]
     if shot_numbers != list(range(1, len(shot_numbers) + 1)):
         add("SHOT_SEQUENCE_INVALID", "镜头编号应连续，动作阶段不能重复新增镜头。")
