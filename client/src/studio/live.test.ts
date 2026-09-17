@@ -1808,3 +1808,101 @@ describe("studioAssetFromMaterial（素材映射数值时长）", () => {
     expect(asset.durationSeconds).toBeUndefined();
   });
 });
+
+describe("声音克隆输入格式", () => {
+  it.each([
+    "mp3",
+    "M4A",
+    "wav",
+    "wma",
+    "wmv",
+    "aac",
+    "flac",
+    "ogg",
+    "opus",
+    "aiff",
+    "aif",
+    "amr",
+  ])("支持 %s 声音样本", (extension) => {
+    expect(
+      live.validateOralAudioFile(
+        new File(["sample"], `sample.${extension}`),
+        "voice_clone",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("不放宽完整口播格式或允许未知文件", () => {
+    expect(
+      live.validateOralAudioFile(new File(["sample"], "sample.wav")),
+    ).toContain("MP3");
+    expect(
+      live.validateOralAudioFile(
+        new File(["sample"], "sample.exe"),
+        "voice_clone",
+      ),
+    ).toBeTruthy();
+    expect(
+      live.validateOralAudioFile(new File([], "sample.wav"), "voice_clone"),
+    ).toContain("不能为空");
+  });
+});
+
+describe("音频元数据读取", () => {
+  it("浏览器不返回元数据时有界结束并释放临时 URL", async () => {
+    vi.useFakeTimers();
+    const audio = document.createElement("audio");
+    const create = vi.spyOn(document, "createElement").mockReturnValue(audio);
+    const createUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:voice-sample");
+    const revokeUrl = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => {});
+    try {
+      const pending = live.readAudioDuration(
+        new File(["sample"], "sample.wma"),
+      );
+      const rejection = expect(pending).rejects.toThrow("超时");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(revokeUrl).toHaveBeenCalledWith("blob:voice-sample");
+      expect(audio.getAttribute("src")).toBeNull();
+    } finally {
+      create.mockRestore();
+      createUrl.mockRestore();
+      revokeUrl.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("单个克隆声音状态", () => {
+  it("只为就绪声音解析试听资产，不重新加载人物或源素材", async () => {
+    const record: OralVoiceRecord = {
+      id: "voice-1",
+      identity_id: "person-1",
+      title: "本人音色",
+      status: "READY",
+      submission_state: "SUBMITTED",
+      source_asset_id: "source-wma",
+      demo_asset_id: "demo-mp3",
+      confirmed: true,
+      error_message: null,
+      created_at: "",
+      updated_at: "",
+    };
+    api.getAssetDownloadUrl.mockResolvedValue({ url: "/demo.mp3" });
+    const result = await live.loadStudioVoice(record);
+    expect(result).toMatchObject({
+      id: "voice-1",
+      name: "本人音色",
+      status: "READY",
+      confirmed: true,
+      url: "/demo.mp3",
+    });
+    expect(api.getAssetDownloadUrl).toHaveBeenCalledExactlyOnceWith("demo-mp3");
+    expect(api.listOralVoices).not.toHaveBeenCalled();
+    expect(api.listSimpleCharacterLibraryPage).not.toHaveBeenCalled();
+  });
+});

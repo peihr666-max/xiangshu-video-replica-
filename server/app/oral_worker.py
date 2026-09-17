@@ -10,6 +10,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -31,6 +32,7 @@ from app.media_tools import (
     MediaToolUnavailable,
     MediaValidationFailed,
     inspect_media_bytes,
+    normalize_audio_to_mp3,
 )
 from app.storage import StorageAdapter, StoredObject
 
@@ -531,15 +533,15 @@ def _perform_submission(
         return OralWorkResult("submitted", provider_task_id=task_id)
     if lease.kind == "voice_submit":
         content = _object_bytes(storage, str(row["source_storage_uri"]))
-        inspect_media_bytes(
+        suffix = Path(str(row["source_storage_uri"])).suffix.lower() or ".bin"
+        normalized = normalize_audio_to_mp3(
             content,
-            suffix=".mp3",
-            expected_type="audio",
+            suffix=suffix,
             min_duration_seconds=5,
             max_duration_seconds=180,
         )
         target = vendor.create_upload_url("mp3")
-        vendor.upload_file(target, content)
+        vendor.upload_file(target, normalized)
         task_id = vendor.create_voice(title=str(row["title"])[:20], file_id=target.file_id)
         return OralWorkResult("submitted", provider_task_id=task_id)
     if str(row["mode"]) == "TTS":
@@ -573,7 +575,7 @@ def _invalid_media_message(kind: OralWorkKind) -> str:
     if kind == "avatar_submit":
         return "分身素材无法解码，请重新上传"
     if kind == "voice_submit":
-        return "声音素材需为 5 至 180 秒的有效 MP3"
+        return "声音素材需为 5 至 180 秒的有效音频"
     return "口播音频无法解码，请重新上传"
 
 

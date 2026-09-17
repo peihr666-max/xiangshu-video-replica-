@@ -5596,7 +5596,22 @@ function materialContentTypeForFile(file: File): string {
   const name = file.name.toLowerCase();
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
   if (name.endsWith(".png")) return "image/png";
-  if (name.endsWith(".mp3")) return "audio/mpeg";
+  const audioTypes: Record<string, string> = {
+    mp3: "audio/mpeg",
+    m4a: "audio/mp4",
+    wav: "audio/wav",
+    wma: "audio/x-ms-wma",
+    wmv: "video/x-ms-wmv",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    ogg: "audio/ogg",
+    opus: "audio/ogg",
+    aiff: "audio/aiff",
+    aif: "audio/aiff",
+    amr: "audio/amr",
+  };
+  const audioType = audioTypes[name.split(".").pop() ?? ""];
+  if (audioType) return audioType;
   if (name.endsWith(".mov")) return "video/quicktime";
   if (name.endsWith(".mp4")) return "video/mp4";
   return file.type || "application/octet-stream";

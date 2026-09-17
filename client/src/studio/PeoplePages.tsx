@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   confirmOralVoice,
   createMaterialUploadIntent,
@@ -16,8 +22,10 @@ import { useStudio } from "./context";
 import {
   loadMorePeople,
   loadPersonAssets,
+  loadStudioVoice,
   readAudioDuration,
   uploadOralAudioMaterial,
+  VOICE_CLONE_ACCEPT,
   validateOralAudioFile,
 } from "./live";
 import type { StudioPage, StudioPerson } from "./types";
@@ -90,7 +98,7 @@ function useOralStatusPolling(
   enabled: boolean,
   ids: string[],
   refreshItem: (id: string) => Promise<unknown>,
-  refreshPage: () => void,
+  refreshPage: (() => void) | undefined,
   setError: (message: string) => void,
   fallbackError: string,
 ) {
@@ -113,7 +121,7 @@ function useOralStatusPolling(
         setError(customerVisibleErrorMessage(rejected.reason, fallbackError));
       }
       if (results.some((result) => result.status === "fulfilled"))
-        refreshPage();
+        refreshPage?.();
       attempts += 1;
       if (attempts < ORAL_POLL_MAX_ATTEMPTS) {
         timer = setTimeout(poll, ORAL_POLL_INTERVAL_MS);
@@ -1434,6 +1442,38 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     setConsentedSourceId(undefined);
     cloneSubmissionRef.current = undefined;
   }, [selectedSourceAssetId]);
+  const voiceRequests = useRef(new Map<string, number>());
+  const refreshVoice = useCallback(
+    async (voiceId: string) => {
+      const request = (voiceRequests.current.get(voiceId) ?? 0) + 1;
+      voiceRequests.current.set(voiceId, request);
+      const result = await refreshOralVoice(voiceId);
+      const next = await loadStudioVoice(result);
+      if (!mountedRef.current || voiceRequests.current.get(voiceId) !== request)
+        return;
+      updateData((current) => {
+        let changed = false;
+        const people = current.people.map((item) => {
+          if (item.id !== person.id) return item;
+          const voices = item.voices.map((existing) => {
+            if (
+              existing.id !== voiceId ||
+              Object.entries(next).every(
+                ([key, value]) =>
+                  existing[key as keyof typeof existing] === value,
+              )
+            )
+              return existing;
+            changed = true;
+            return next;
+          });
+          return changed ? { ...item, voices } : item;
+        });
+        return changed ? { ...current, people } : current;
+      });
+    },
+    [person.id, updateData],
+  );
   useOralStatusPolling(
     !review,
     person.voices
@@ -1446,8 +1486,8 @@ function VoicePanel({ person }: { person: StudioPerson }) {
             (voice.status === "READY" && !voice.url)),
       )
       .map((voice) => voice.id),
-    refreshOralVoice,
-    refresh,
+    refreshVoice,
+    undefined,
     setError,
     "声音状态自动刷新失败",
   );
@@ -1476,7 +1516,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     const validationError =
       file.size > 20 * 1024 * 1024
         ? "声音克隆样本不能超过 20 MB。"
-        : validateOralAudioFile(file);
+        : validateOralAudioFile(file, "voice_clone");
     if (validationError) {
       setError(validationError);
       return;
@@ -1492,14 +1532,15 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     cloneSubmissionRef.current = undefined;
     setUploadProgress(0);
     try {
-      const duration = await readAudioDuration(file);
+      // The server verifies the actual audio track even when the browser lacks its codec.
+      const duration = await readAudioDuration(file).catch(() => undefined);
       if (
         !mountedRef.current ||
         personId !== personContextRef.current ||
         operation !== uploadOperationRef.current
       )
         return;
-      if (duration < 5 || duration > 180) {
+      if (duration !== undefined && (duration < 5 || duration > 180)) {
         setError("声音克隆样本时长必须为 5–180 秒。");
         return;
       }
@@ -1598,9 +1639,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
     if (busy) return;
     setBusy(true);
     try {
-      await refreshOralVoice(voiceId);
-      if (!mountedRef.current) return;
-      refresh();
+      await refreshVoice(voiceId);
     } catch (cause) {
       if (!mountedRef.current) return;
       notify(customerVisibleErrorMessage(cause, "声音克隆状态刷新失败"));
@@ -1692,62 +1731,68 @@ function VoicePanel({ person }: { person: StudioPerson }) {
                             : "待试听确认，暂不可选用"}
                 </p>
               </div>
-              <div>
-                {voice.url && (voice.confirmed || voice.status === "READY") ? (
-                  <audio
-                    controls
-                    preload="none"
-                    src={voice.url}
-                    aria-label={`${voice.name}试听`}
-                  >
-                    <track kind="captions" label="声音样本" />
-                  </audio>
-                ) : voice.status === "READY" ? null : (
-                  <Button
-                    variant="outline"
-                    onClick={() => notify("该声音暂无可播放样本")}
-                  >
-                    试听
-                  </Button>
-                )}
-                {voice.confirmed ? (
-                  <Button
-                    disabled={readOnly}
-                    variant="primary"
-                    onClick={() => {
-                      if (readOnly) return;
-                      patchDraft({ ipId: person.id, voiceId: voice.id });
-                      navigate(state.returnTo ?? "oral", {
-                        selectedPersonId: person.id,
-                        returnTo: undefined,
-                      });
-                    }}
-                  >
-                    使用此声音
-                  </Button>
-                ) : null}
-                {!voice.confirmed ? (
-                  voice.submissionState ===
-                  "SUBMISSION_UNKNOWN" ? null : voice.status === "PENDING" ||
-                    voice.status === "RUNNING" ? (
+              <div className="voice-card__actions">
+                <div className="voice-card__preview">
+                  {voice.url &&
+                  (voice.confirmed || voice.status === "READY") ? (
+                    <audio
+                      controls
+                      preload="none"
+                      src={voice.url}
+                      aria-label={`${voice.name}试听`}
+                    >
+                      <track kind="captions" label="声音样本" />
+                    </audio>
+                  ) : (
                     <Button
                       variant="outline"
-                      disabled={busy}
-                      onClick={() => void refreshClone(voice.id)}
+                      disabled
+                      aria-label={`${voice.name}试听尚未就绪`}
                     >
-                      刷新克隆状态
+                      试听准备中
                     </Button>
-                  ) : (voice.status === "READY" && Boolean(voice.url)) ||
-                    (review && !voice.status) ? (
+                  )}
+                </div>
+                <div className="voice-card__action">
+                  {voice.confirmed ? (
                     <Button
+                      disabled={readOnly}
                       variant="primary"
-                      disabled={readOnly || busy}
-                      onClick={() => void confirmVoice(voice.id)}
+                      onClick={() => {
+                        if (readOnly) return;
+                        patchDraft({ ipId: person.id, voiceId: voice.id });
+                        navigate(state.returnTo ?? "oral", {
+                          selectedPersonId: person.id,
+                          returnTo: undefined,
+                        });
+                      }}
                     >
-                      确认使用此声音
+                      使用此声音
                     </Button>
-                  ) : null
-                ) : null}
+                  ) : null}
+                  {!voice.confirmed ? (
+                    voice.submissionState ===
+                    "SUBMISSION_UNKNOWN" ? null : voice.status === "PENDING" ||
+                      voice.status === "RUNNING" ? (
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => void refreshClone(voice.id)}
+                      >
+                        刷新克隆状态
+                      </Button>
+                    ) : (voice.status === "READY" && Boolean(voice.url)) ||
+                      (review && !voice.status) ? (
+                      <Button
+                        variant="primary"
+                        disabled={readOnly || busy}
+                        onClick={() => void confirmVoice(voice.id)}
+                      >
+                        确认使用此声音
+                      </Button>
+                    ) : null
+                  ) : null}
+                </div>
               </div>
             </article>
           ))}
@@ -1776,7 +1821,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
               </span>
               <div>
                 <h4>5–180 秒声音样本</h4>
-                <p>使用 MP3 格式，单个文件不超过 20 MB。</p>
+                <p>支持 MP3、M4A、WAV、WMA 等格式，单个文件不超过 20 MB。</p>
               </div>
             </li>
             <li>
@@ -1835,7 +1880,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
               <Field label="上传声音样本">
                 <input
                   ref={uploadInputRef}
-                  accept=".mp3,audio/mpeg"
+                  accept={VOICE_CLONE_ACCEPT}
                   aria-label="选择声音样本"
                   disabled={readOnly || busy}
                   hidden
@@ -1861,7 +1906,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
                 <Icon name="upload" size={28} />
               </span>
               <strong>上传声音样本</strong>
-              <span>MP3 · 5–180 秒 · 最大 20 MB</span>
+              <span>MP3、M4A、WAV、WMA 等 · 5–180 秒 · 最大 20 MB</span>
             </button>
             <Field label="声音名称">
               <input
@@ -1914,8 +1959,9 @@ function VoicePanel({ person }: { person: StudioPerson }) {
               {busy ? "提交中…" : "开始克隆声音"}
             </Button>
             <Hint>
-              仅支持 MP3，时长 5–180 秒（3 分钟），上限 20
-              MB；克隆任务是异步的，只有已就绪且确认的声音可用于口播。
+              支持 MP3、M4A、WAV、WMA、AAC、FLAC、OGG、OPUS、AIFF、AMR，WMV
+              会提取音轨。 时长 5–180 秒（3 分钟），上限 20
+              MB；试听确认后即可用于口播。
             </Hint>
           </div>
         </StudioDialog>

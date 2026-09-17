@@ -6,8 +6,11 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createReviewData } from "./fixtures";
 import { PeoplePage, PersonPage } from "./PeoplePages";
+import type { StudioData } from "./types";
 
 const api = vi.hoisted(() => ({
   customerVisibleErrorMessage: vi.fn(
@@ -34,6 +37,7 @@ const live = vi.hoisted(() => ({
   loadMorePeople: vi.fn(),
   loadPersonAssets: vi.fn(),
   readAudioDuration: vi.fn(async () => 30),
+  loadStudioVoice: vi.fn(),
   uploadOralAudioMaterial: vi.fn(),
   validateOralAudioFile: vi.fn(),
 }));
@@ -59,12 +63,47 @@ let review = true;
 let currentRole: "customer" | "employee" | "auditor" = "customer";
 let draft: Record<string, string | undefined> = {};
 let pagination: Record<string, unknown> | undefined;
+let studioDataOverride: StudioData | undefined;
 let voiceSourceUses: string[] | undefined = ["voice_clone"];
+
+function VoiceStateHarness({ initialData }: { initialData: StudioData }) {
+  const [data, setData] = useState(initialData);
+  studioDataOverride = data;
+  updateData.mockImplementation(setData);
+  return <PersonPage />;
+}
+
+function voicePollingData() {
+  const data = createReviewData();
+  data.people = [
+    {
+      ...data.people[0],
+      id: "p1",
+      voices: [
+        {
+          id: "voice-running",
+          name: "克隆中音色",
+          status: "RUNNING",
+          confirmed: false,
+        },
+        {
+          id: "other-voice",
+          name: "其它声音",
+          status: "READY",
+          confirmed: true,
+          url: "/other.mp3",
+        },
+      ],
+    },
+    { ...data.people[1], id: "p2" },
+  ];
+  return data;
+}
 
 vi.mock("./context", () => ({
   useStudio: () => ({
     state: { page: currentPage, selectedPersonId, returnTo, draft },
-    data: {
+    data: studioDataOverride ?? {
       loading: false,
       errors: [],
       people: [
@@ -249,11 +288,12 @@ describe("PeoplePages", () => {
     draft = {};
     voiceSourceUses = ["voice_clone"];
     pagination = undefined;
+    studioDataOverride = undefined;
     navigate.mockClear();
     patchDraft.mockClear();
     notify.mockClear();
     refresh.mockClear();
-    updateData.mockClear();
+    updateData.mockReset();
     openPicker.mockClear();
     openLive.mockClear();
     vi.clearAllMocks();
@@ -508,7 +548,9 @@ describe("PeoplePages", () => {
   it("试听 does not select a confirmed voice, while 使用此声音 does", () => {
     currentPage = "person-voices";
     render(<PersonPage />);
-    screen.getAllByRole("button", { name: "试听" })[0].click();
+    expect(
+      screen.getByRole("button", { name: "已确认音色试听尚未就绪" }),
+    ).toBeDisabled();
     expect(patchDraft).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "使用此声音" }).click();
@@ -785,6 +827,32 @@ describe("PeoplePages", () => {
     );
   });
 
+  it("浏览器无法解码 WMA 时交给服务端检查音轨和时长", async () => {
+    currentPage = "person-voices";
+    review = false;
+    oralLive.validateOralAudioFile.mockReturnValue(undefined);
+    oralLive.readAudioDuration.mockRejectedValue(
+      new Error("unsupported codec"),
+    );
+    render(<PersonPage />);
+    fireEvent.click(screen.getByRole("button", { name: "创建克隆声音" }));
+    const input = screen.getByLabelText("选择声音样本");
+    expect(input).toHaveAttribute("accept", expect.stringContaining(".wmv"));
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["sample"], "voice.wma", { type: "audio/x-ms-wma" })],
+      },
+    });
+    await screen.findByText("已上传：voice.wma");
+    expect(oralLive.uploadOralAudioMaterial).toHaveBeenCalledWith(
+      expect.any(File),
+      "voice_clone",
+      undefined,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("取消声音样本上传后中止请求并忽略迟到完成", async () => {
     currentPage = "person-voices";
     review = false;
@@ -968,7 +1036,9 @@ describe("PeoplePages", () => {
     expect(screen.getByRole("button", { name: "开始克隆声音" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
-        files: [new File(["bad"], "voice.wav", { type: "audio/wav" })],
+        files: [
+          new File(["bad"], "voice.exe", { type: "application/octet-stream" }),
+        ],
       },
     });
     expect(screen.getByRole("alert")).toHaveTextContent("仅支持 MP3");
@@ -1090,7 +1160,7 @@ describe("PeoplePages", () => {
 
     expect(screen.getByText(/5–180 秒（3 分钟）清晰干声/)).toBeInTheDocument();
     expect(
-      screen.getByText(/MP3，时长 5–180 秒（3 分钟），上限 20 MB/),
+      screen.getByText(/时长 5–180 秒（3 分钟），上限 20 MB/),
     ).toBeInTheDocument();
   });
 
@@ -1210,6 +1280,83 @@ describe("PeoplePages", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("声音状态自动刷新失败");
     view.unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("声音结果只更新当前声音，原位显示试听并停止轮询", async () => {
+    vi.useFakeTimers();
+    currentPage = "person-voices";
+    review = false;
+    const next = {
+      id: "voice-running",
+      name: "克隆中音色",
+      status: "READY",
+      confirmed: false,
+      url: "/ready.mp3",
+    };
+    api.refreshOralVoice.mockResolvedValue(next);
+    oralLive.loadStudioVoice.mockResolvedValue(next);
+    const initialData = voicePollingData();
+    const view = render(<VoiceStateHarness initialData={initialData} />);
+    const card = screen.getByText("克隆中音色").closest("article");
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("克隆中音色试听")).toHaveAttribute(
+      "src",
+      "/ready.mp3",
+    );
+    expect(screen.getByText("克隆中音色").closest("article")).toBe(card);
+    expect(studioDataOverride?.people[0].voices[1]).toBe(
+      initialData.people[0].voices[1],
+    );
+    expect(studioDataOverride?.people[1]).toBe(initialData.people[1]);
+    expect(studioDataOverride?.assets).toBe(initialData.assets);
+    await act(async () => vi.advanceTimersByTimeAsync(12_000));
+    expect(api.refreshOralVoice).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("声音手动刷新迟到结果不能覆盖自动轮询的新结果", async () => {
+    vi.useFakeTimers();
+    currentPage = "person-voices";
+    review = false;
+    let finishOld!: (value: unknown) => void;
+    const next = {
+      id: "voice-running",
+      name: "克隆中音色",
+      status: "READY",
+      confirmed: false,
+      url: "/ready.mp3",
+    };
+    api.refreshOralVoice
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+      )
+      .mockResolvedValue(next);
+    oralLive.loadStudioVoice.mockImplementation(
+      async (record: unknown) => record,
+    );
+    const view = render(<VoiceStateHarness initialData={voicePollingData()} />);
+    fireEvent.click(screen.getByRole("button", { name: "刷新克隆状态" }));
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(screen.getByLabelText("克隆中音色试听")).toHaveAttribute(
+      "src",
+      "/ready.mp3",
+    );
+    await act(async () => {
+      finishOld({ ...next, status: "RUNNING", url: undefined });
+    });
+    expect(screen.getByLabelText("克隆中音色试听")).toHaveAttribute(
+      "src",
+      "/ready.mp3",
+    );
+    expect(
+      screen.queryByRole("button", { name: "刷新克隆状态" }),
+    ).not.toBeInTheDocument();
+    expect(refresh).not.toHaveBeenCalled();
+    view.unmount();
   });
 
   it("审核模式不发起自动刷新", async () => {

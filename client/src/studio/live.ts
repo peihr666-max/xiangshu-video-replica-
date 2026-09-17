@@ -47,6 +47,7 @@ import {
   type MaterialItem,
   type OralAvatarRecord,
   type OralTaskRecord,
+  type OralVoiceRecord,
   type Project,
   type PublishAccountItem,
   putMaterial,
@@ -171,8 +172,35 @@ export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
 
 export type OralAudioPurpose = "oral_audio" | "voice_clone";
 
-export function validateOralAudioFile(file: File) {
-  if (!file.name.toLowerCase().endsWith(".mp3")) return "仅支持 MP3 音频。";
+export const VOICE_CLONE_EXTENSIONS = [
+  "mp3",
+  "m4a",
+  "wav",
+  "wma",
+  "wmv",
+  "aac",
+  "flac",
+  "ogg",
+  "opus",
+  "aiff",
+  "aif",
+  "amr",
+];
+export const VOICE_CLONE_ACCEPT = VOICE_CLONE_EXTENSIONS.map(
+  (extension) => `.${extension}`,
+).join(",");
+
+export function validateOralAudioFile(
+  file: File,
+  purpose: OralAudioPurpose = "oral_audio",
+) {
+  const extension = file.name.toLowerCase().split(".").pop();
+  const allowed = purpose === "voice_clone" ? VOICE_CLONE_EXTENSIONS : ["mp3"];
+  if (!extension || !allowed.includes(extension)) {
+    return purpose === "voice_clone"
+      ? "请选择 MP3、M4A、WAV、WMA、AAC、FLAC、OGG、OPUS、AIFF、AMR 音频或带音轨的 WMV 文件。"
+      : "仅支持 MP3 音频。";
+  }
   if (file.size <= 0) return "上传文件不能为空。";
   if (file.size > MAX_ORAL_SOURCE_BYTES) return "上传文件不能超过 50 MB。";
   return undefined;
@@ -183,19 +211,27 @@ export function readAudioDuration(file: File): Promise<number> {
     const url = URL.createObjectURL(file);
     const audio = document.createElement("audio");
     const cleanup = () => {
+      clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
       audio.removeAttribute("src");
       URL.revokeObjectURL(url);
     };
+    // Some WebViews cannot decode Windows audio containers; callers may defer to server probing.
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("读取音频时长超时。"));
+    }, 10_000);
     audio.preload = "metadata";
     audio.onloadedmetadata = () => {
       const duration = audio.duration;
       cleanup();
       if (Number.isFinite(duration) && duration > 0) resolve(duration);
-      else reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
+      else reject(new Error("无法读取音频时长，请重新选择声音文件。"));
     };
     audio.onerror = () => {
       cleanup();
-      reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
+      reject(new Error("无法读取音频时长，请重新选择声音文件。"));
     };
     audio.src = url;
   });
@@ -567,23 +603,12 @@ async function loadOralIdentityAssets(
       origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
       duration: oralStatusLabel(avatar.status, avatar.submission_state),
     })),
-    voices: voiceRows.map((voice) => {
-      const demoUrl = voice.demo_asset_id
-        ? previewUrls.get(voice.demo_asset_id)
-        : undefined;
-      return {
-        id: voice.id,
-        name: voice.title,
-        confirmed:
-          voice.status === "READY" &&
-          Boolean(voice.confirmed) &&
-          Boolean(demoUrl),
-        status: voice.status,
-        submissionState: voice.submission_state,
-        error: voice.error_message ?? undefined,
-        url: demoUrl,
-      };
-    }),
+    voices: voiceRows.map((voice) =>
+      studioVoice(
+        voice,
+        voice.demo_asset_id ? previewUrls.get(voice.demo_asset_id) : undefined,
+      ),
+    ),
     assets: sourceEntries.map(([id, descriptor]) => ({
       id,
       name: descriptor.name,
@@ -596,6 +621,28 @@ async function loadOralIdentityAssets(
     })),
     errors,
   };
+}
+
+function studioVoice(voice: OralVoiceRecord, url?: string): StudioVoice {
+  return {
+    id: voice.id,
+    name: voice.title,
+    confirmed:
+      voice.status === "READY" && Boolean(voice.confirmed) && Boolean(url),
+    status: voice.status,
+    submissionState: voice.submission_state,
+    error: voice.error_message ?? undefined,
+    url,
+  };
+}
+
+export async function loadStudioVoice(
+  voice: OralVoiceRecord,
+): Promise<StudioVoice> {
+  const url = voice.demo_asset_id
+    ? await signedUrl(voice.demo_asset_id, getAssetDownloadUrl)
+    : undefined;
+  return studioVoice(voice, url);
 }
 
 async function loadPeople(): Promise<{
@@ -1144,7 +1191,7 @@ export async function uploadVideoMaterial(
 export async function uploadOralAudioMaterial(
   file: File,
   purpose: OralAudioPurpose,
-  durationSeconds: number,
+  durationSeconds: number | undefined,
   onProgress: (progress: number) => void,
   signal?: AbortSignal,
 ): Promise<StudioAsset> {

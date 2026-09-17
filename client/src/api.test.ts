@@ -973,6 +973,41 @@ describe("素材库 API", () => {
     );
   });
 
+  it.each([
+    ["m4a", "audio/mp4"],
+    ["wav", "audio/wav"],
+    ["wma", "audio/x-ms-wma"],
+    ["wmv", "video/x-ms-wmv"],
+    ["aac", "audio/aac"],
+    ["flac", "audio/flac"],
+    ["ogg", "audio/ogg"],
+    ["opus", "audio/ogg"],
+    ["aiff", "audio/aiff"],
+    ["aif", "audio/aiff"],
+    ["amr", "audio/amr"],
+  ])("按扩展名规范化 %s 声音样本 MIME", async (extension, contentType) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ asset_id: "audio-1" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await createMaterialUploadIntent(
+      new File(["sample"], `声音.${extension.toUpperCase()}`, {
+        type: "application/octet-stream",
+      }),
+      { audioPurpose: "voice_clone" },
+    );
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)),
+    ).toMatchObject({
+      content_type: contentType,
+      audio_purpose: "voice_clone",
+    });
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)),
+    ).not.toHaveProperty("duration_seconds");
+  });
+
   it("取消完成素材请求时中止底层 fetch 而不误报超时", async () => {
     let requestSignal: AbortSignal | undefined;
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
