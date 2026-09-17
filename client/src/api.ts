@@ -3,7 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { components } from "./generated/api";
 
-const REQUEST_TIMEOUT_MS = 5_000;
+// MATERIAL-PERF-C（P0-6）：启动扇出约 20–40 个请求，5 秒硬超时会让任何一片
+// 慢请求把对应数据降级为空（首开缺内容）。默认放宽到 10 秒，配合 loadStudioData
+// 的失败切片单次重试。
+export const REQUEST_TIMEOUT_MS = 10_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
 const CLOUD_OP_TIMEOUT_MS = 60_000;
@@ -1276,6 +1279,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 
 export function setInternalAccessToken(token: string | null): void {
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   const normalized = token?.trim() ?? "";
   internalAccessToken = normalized || null;
 }
@@ -1285,6 +1289,7 @@ export function setInternalAccessToken(token: string | null): void {
  * shared project/analysis/generation API adapter can authenticate requests. */
 export function setCustomerSessionToken(token: string | null): void {
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   const normalized = token?.trim() ?? "";
   customerSessionToken = normalized || null;
   customerSessionOwner = null;
@@ -1300,6 +1305,7 @@ export function attachCustomerSessionToken(token: string): () => void {
   }
   const owner = Symbol("customer-workspace-session");
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   customerSessionToken = normalized;
   customerSessionOwner = owner;
   return () => {
@@ -4064,16 +4070,42 @@ export async function confirmFirstFrame(
   );
 }
 
+// MATERIAL-PERF-C（P1-2）：签名 URL 有效期 15 分钟，模块级缓存 12 分钟内
+// 直接复用（跨页/跨弹层不再重复授权请求）；会话代际变化时整体失效。
+const DOWNLOAD_URL_CACHE_TTL_MS = 12 * 60 * 1000;
+const downloadUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+function clearDownloadUrlCache(): void {
+  downloadUrlCache.clear();
+}
+
+/** 会话凭据代际变化时整体失效签名缓存（换号/登出绝不复用旧授权）。 */
+function bumpDownloadUrlCacheEpoch(): void {
+  clearDownloadUrlCache();
+}
+
 export async function getAssetDownloadUrl(
   assetId: string,
+  options: { fresh?: boolean } = {},
 ): Promise<DownloadUrl> {
+  // 素材持久缓存通道要求每次预览都重新授权（吊销/清理必须即时生效，
+  // 由既有测试钉住）；其余展示型调用方默认享受 12 分钟签名复用。
+  const cached = options.fresh ? undefined : downloadUrlCache.get(assetId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return { url: cached.url };
+  }
   const result = await requestApiJson<DownloadUrl>(
     `/api/assets/${encodeURIComponent(assetId)}/download-url`,
     "读取源画面失败",
     { method: "POST" },
     CLOUD_OP_TIMEOUT_MS,
   );
-  return { ...result, url: resolveManagedMediaUrl(result.url) };
+  const url = resolveManagedMediaUrl(result.url);
+  downloadUrlCache.set(assetId, {
+    url,
+    expiresAt: Date.now() + DOWNLOAD_URL_CACHE_TTL_MS,
+  });
+  return { url };
 }
 
 export async function getCachedCharacterAssetUrl(
@@ -4603,7 +4635,7 @@ export async function getMaterialCachedPreview(
   const generationAtStart = await materialReadGeneration(context, assetId);
   // Fresh authorization is required even when every media byte is already local.
   const { url } = await materialWait(
-    getAssetDownloadUrl(assetId),
+    getAssetDownloadUrl(assetId, { fresh: true }),
     options.signal,
   );
   requireMaterialContext(context);

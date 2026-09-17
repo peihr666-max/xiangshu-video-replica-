@@ -81,6 +81,7 @@ import {
   lockGenerationPrompt,
   publishBrowserRequest,
   putMaterial,
+  REQUEST_TIMEOUT_MS,
   readAnalysisPayload,
   readFirstFrameCandidates,
   reconcileUncertainTask,
@@ -817,6 +818,55 @@ describe("批量素材预览授权", () => {
       }),
     ).rejects.toThrow();
     expect(f.batchCalls).toHaveLength(0);
+  });
+});
+
+describe("下载签名模块级缓存", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function grantFetcher(calls: string[]) {
+    return vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      if (String(url).endsWith("/download-url"))
+        return Response.json({ url: `https://media.example/${calls.length}` });
+      throw new Error(`unexpected ${String(url)}`);
+    });
+  }
+
+  it("12 分钟内复用同一签名，过期后重新授权", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", grantFetcher(calls));
+    setCustomerSessionToken("sig-cache-session");
+    const first = await getAssetDownloadUrl("asset-a");
+    const second = await getAssetDownloadUrl("asset-a");
+    expect(second.url).toBe(first.url);
+    expect(calls).toHaveLength(1);
+    vi.advanceTimersByTime(13 * 60 * 1000);
+    await getAssetDownloadUrl("asset-a");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("fresh 选项绕过缓存（素材持久缓存通道要求每次新授权）", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", grantFetcher(calls));
+    setCustomerSessionToken("sig-cache-session");
+    await getAssetDownloadUrl("asset-a");
+    await getAssetDownloadUrl("asset-a", { fresh: true });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("不同资产互不串用", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", grantFetcher(calls));
+    setCustomerSessionToken("sig-cache-session");
+    await getAssetDownloadUrl("asset-a");
+    await getAssetDownloadUrl("asset-b");
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -2936,7 +2986,11 @@ describe("startVideoAnalysis", () => {
 
     await startVideoAnalysis("project-1", "asset-1");
 
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5_000);
+    // MATERIAL-PERF-C：默认超时 5s→10s；本用例钉住分析入队走普通超时而非云操作超时。
+    expect(timeoutSpy).toHaveBeenCalledWith(
+      expect.any(Function),
+      REQUEST_TIMEOUT_MS,
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
       expect.objectContaining({
