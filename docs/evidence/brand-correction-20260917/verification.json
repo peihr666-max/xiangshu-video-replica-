@@ -1,0 +1,22 @@
+{
+  "base_sha": "80fee758da1632d86dfaaad566c3ac3fa9290f8a",
+  "delivery_base_sha": "41fc171d",
+  "red": "Welcome page returned /studio/brand.png instead of bounded shared logo",
+  "targeted": 36,
+  "static": "PASS",
+  "frontend": 1676,
+  "backend": {
+    "passed": 2527,
+    "skipped": 1,
+    "shards": [
+      633,
+      686,
+      648,
+      560
+    ]
+  },
+  "secret_scan": "PASS",
+  "review": "APPROVE",
+  "preview": "http://127.0.0.1:5237/review/v1.4#studio/workbench",
+  "deployment": false
+}

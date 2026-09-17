@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { BrandIdentity } from "../BrandIdentity";
 import { StudioContext } from "../studio/context";
 import { WorkbenchPage } from "../studio/MainPages";
 import { navGroups } from "../studio/StudioWorkspace";
@@ -48,10 +49,7 @@ export function CustomerWelcomePage({ onLogin }: { onLogin(): void }) {
       <div className="studio-shell">
         <aside className="studio-sidebar">
           <div className="studio-brand">
-            <span>
-              <img src="/studio/brand.png" alt="众墅之家" />
-              <b>｜ AI 即创</b>
-            </span>
+            <BrandIdentity />
             <small>乡墅爆款视频创作平台</small>
           </div>
           <Button
