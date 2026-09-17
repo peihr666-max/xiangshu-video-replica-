@@ -20,7 +20,6 @@ from app.admin_auth_routes import router as admin_auth_router
 from app.admin_customer_routes import router as admin_customer_router
 from app.admin_dashboard_routes import router as admin_dashboard_router
 from app.admin_device_routes import router as admin_device_router
-from app.admin_profit_routes import router as admin_profit_router
 from app.admin_runtime_routes import router as admin_runtime_router
 from app.admin_session_routes import router as admin_session_router
 from app.analysis_routes import router as analysis_router
@@ -372,7 +371,6 @@ app.include_router(admin_auth_router)
 app.include_router(admin_dashboard_router)
 app.include_router(admin_customer_router)
 app.include_router(admin_session_router)
-app.include_router(admin_profit_router)
 app.include_router(customer_pricing_router)
 app.include_router(itemized_billing_router)
 app.include_router(billing_viral_router)
