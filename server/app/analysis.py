@@ -490,7 +490,7 @@ def analyze_video(
     return AnalysisResult(
         analysis=analysis,
         generation_prompt=generation_prompt,
-        provider_response_ref=_provider_response_ref(response.raw, None),
+        provider_response_ref=_provider_response_ref(response.raw),
     )
 
 
@@ -1004,17 +1004,8 @@ def next_version_number(conn: BusinessConnection, *, project_id: str, kind: str)
     return int(row[0])
 
 
-def _provider_response_ref(
-    raw_response: dict[str, Any],
-    repaired_response: dict[str, Any] | None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "stored_as": "versions.payload_json",
-        "raw": raw_response,
-    }
-    if repaired_response is not None:
-        payload["repaired_raw"] = repaired_response
-    return payload
+def _provider_response_ref(raw_response: dict[str, Any]) -> dict[str, Any]:
+    return {"stored_as": "versions.payload_json", "raw": raw_response}
 
 
 def _default_analysis_payload(duration_seconds: float) -> dict[str, Any]:
