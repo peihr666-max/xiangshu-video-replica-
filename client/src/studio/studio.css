@@ -116,26 +116,10 @@ html:has(.studio-shell) {
 .studio-shell button.studio-brand:hover:not(:disabled) {
   background: transparent;
 }
-.studio-brand > span {
-  display: flex;
-  align-items: center;
-  white-space: nowrap;
-  justify-content: center;
-  gap: 3px;
-}
-.studio-brand img {
-  width: 42px;
-  height: 36px;
-  object-fit: contain;
-}
-.studio-brand b {
-  font-weight: 500;
-  font-size: var(--font-label);
-}
 .studio-brand small {
   display: block;
   margin-top: 10px;
-  font-size: var(--font-caption);
+  font-size: var(--font-body);
   color: #c8c8c1;
 }
 .studio-button {
@@ -1592,12 +1576,6 @@ html:has(.studio-shell) {
     --studio-sidebar: 224px;
     font-size: var(--font-body);
   }
-  .studio-brand img {
-    width: 42px;
-  }
-  .studio-brand b {
-    font-size: var(--font-label);
-  }
   .studio-sidebar {
     padding: 20px 14px;
   }
@@ -1913,16 +1891,6 @@ html:has(.studio-shell) {
   margin-right: auto;
   min-width: 0;
 }
-.studio-shell--creation .studio-creation-brand img {
-  width: 34px;
-  height: 34px;
-}
-.studio-shell--creation .studio-creation-brand strong {
-  color: var(--studio-gold);
-  white-space: nowrap;
-  font-size: 18px;
-  font-weight: 500;
-}
 .studio-shell--creation .studio-topbar {
   position: relative;
   inset: auto;
@@ -1966,7 +1934,7 @@ html:has(.studio-shell) {
   .studio-shell--creation .studio-sidebar {
     padding: 16px 6px;
   }
-  .studio-shell--creation .studio-brand b,
+  .studio-shell--creation .studio-brand .brand-identity__text,
   .studio-shell--creation .studio-brand small,
   .studio-shell--creation .studio-nav-label {
     display: none;
@@ -2003,9 +1971,6 @@ html:has(.studio-shell) {
 @media (max-width: 1280px) {
   .studio-shell--creation .studio-global-search {
     width: 170px;
-  }
-  .studio-shell--creation .studio-creation-brand strong {
-    font-size: 15px;
   }
 }
 @media (max-width: 900px) {

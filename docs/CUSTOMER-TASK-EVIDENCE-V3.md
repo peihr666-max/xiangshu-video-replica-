@@ -1517,3 +1517,8 @@ Mac 桌面复用已有认证云端扫码及加密保存；Windows 读取失败�
 ## 2026-09-17 REPLICA-SIMPLE-FLOW-20260917
 
 REVIEW_READY / 本地自动化通过，待 PR 评审及合并。Owner Codex 会话 `01a0ad07-554c-7a13-b90b-309b3aaef984`；Reviewer 为独立代理交叉复核和主执行者整合自检。基线 `origin/main@3932d528`，分支 `feat/replica-simple-flow-20260917`，独立 worktree `.worktrees/REPLICA-SIMPLE-FLOW-20260917`；开工已 fetch 并核对远程分支、开放 PR、工作树和共享 claim。范围：Studio 三步复刻、文案后置、分镜编辑整合、单场景参考、去字幕而保留实体文字、切镜候选、MiniMax 结构和中文默认作品名。隔离预览 5227、专项 PG 5547、四片 PG 5551—5554。不核销旧任务验收；未付费调用、合并或部署。详见[独立证据](evidence/REPLICA-SIMPLE-FLOW-20260917.md)。
+
+
+## BRAND-IDENTITY-20260917 品牌展示维护
+
+放大工作台与创作页品牌，个人中心共用金色 Logo，桌面图标加入公司及软件名两排。基线 `2f3815e0` 的完整静态门通过（前端 1675 项）；PG 和 PR 结果见[独立证据](evidence/BRAND-IDENTITY-20260917.md)。不改变客户业务验收等级；未合并部署或更新已安装客户端。
