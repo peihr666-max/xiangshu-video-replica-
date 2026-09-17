@@ -8,13 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import time
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from playwright.async_api import Locator, Page, Response, StorageState, async_playwright
+from playwright.async_api import (
+    BrowserContext,
+    Locator,
+    Page,
+    Response,
+    StorageState,
+    async_playwright,
+)
 
 from app.publish_browser import Platform
 
@@ -28,6 +36,10 @@ ENDPOINTS = {
     "wechat_channels": "/auth/auth_data",
     "xiaohongshu": "/api/galaxy/user/info",
 }
+DOUYIN_IDENTITY_URL = "https://creator.douyin.com/web/api/media/user/info/?aid=1128"
+DOUYIN_PROBE_INTERVAL_SECONDS = 3.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,9 +54,13 @@ def parse_identity(platform: Platform, body: Any) -> dict[str, str] | None:
     if not isinstance(body, dict):
         return None
     try:
-        if platform == "douyin" and body.get("status_code") == 0:
+        status_code = body.get("status_code")
+        if platform == "douyin" and (
+            (type(status_code) is int and status_code == 0)
+            or (type(status_code) is str and status_code == "0")
+        ):
             user = body.get("user", {})
-            uid, name = user.get("uid", user.get("user_id")), user.get("nickname")
+            uid, name = user.get("uid") or user.get("user_id"), user.get("nickname")
         elif platform == "wechat_channels" and body.get("errCode", body.get("errcode")) == 0:
             data = body.get("data", {})
             user = (
@@ -67,6 +83,42 @@ def parse_identity(platform: Platform, body: Any) -> dict[str, str] | None:
         return {"platform_user_id": str(uid).strip(), "username": name.strip()}
     except (AttributeError, TypeError, IndexError):
         return None
+
+
+def _is_douyin_creator_page(url: str) -> bool:
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}" == ORIGINS["douyin"] and (
+        parsed.path == "/creator-micro" or parsed.path.startswith("/creator-micro/")
+    )
+
+
+async def _probe_douyin_identity(context: BrowserContext) -> dict[str, str] | None:
+    response = None
+    try:
+        response = await context.request.get(
+            DOUYIN_IDENTITY_URL,
+            timeout=5000,
+            max_redirects=0,
+        )
+        if not response.ok:
+            logger.warning(
+                "douyin identity probe rejected at creator backend: http_status=%s",
+                response.status,
+            )
+            return None
+        return parse_identity("douyin", await response.json())
+    except Exception as exc:
+        logger.warning("douyin identity probe failed at creator backend: %s", type(exc).__name__)
+        return None
+    finally:
+        if response is not None:
+            try:
+                await response.dispose()
+            except Exception as exc:
+                logger.warning(
+                    "douyin identity probe cleanup failed at creator backend: %s",
+                    type(exc).__name__,
+                )
 
 
 async def qr_locator(page: Page, platform: Platform) -> Locator | None:
@@ -131,6 +183,7 @@ async def login_events(
     storage: dict[str, Any] | None = None,
 ) -> AsyncGenerator[BrowserEvent, None]:
     identity: dict[str, str] | None = None
+    last_douyin_probe_at: float | None = None
     tasks: set[asyncio.Task[None]] = set()
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
@@ -149,7 +202,9 @@ async def login_events(
                 ] or not parsed.path.endswith(ENDPOINTS[platform]):
                     return
                 try:
-                    identity = parse_identity(platform, await response.json())
+                    parsed_identity = parse_identity(platform, await response.json())
+                    if platform != "douyin" or parsed_identity is not None:
+                        identity = parsed_identity
                 except Exception:
                     pass
 
@@ -164,7 +219,22 @@ async def login_events(
             await page.goto(ORIGINS[platform], wait_until="commit", timeout=45000)
             deadline = time.monotonic() + 280
             while time.monotonic() < deadline:
+                on_douyin_creator_page = platform == "douyin" and _is_douyin_creator_page(page.url)
+                now = time.monotonic()
+                if (
+                    on_douyin_creator_page
+                    and identity is None
+                    and (
+                        last_douyin_probe_at is None
+                        or now - last_douyin_probe_at >= DOUYIN_PROBE_INTERVAL_SECONDS
+                    )
+                ):
+                    last_douyin_probe_at = now
+                    probed_identity = await _probe_douyin_identity(context)
+                    if probed_identity is not None:
+                        identity = probed_identity
                 current = urlparse(page.url)
+                on_douyin_creator_page = platform == "douyin" and _is_douyin_creator_page(page.url)
                 if (
                     identity is not None
                     and f"{current.scheme}://{current.netloc}" == ORIGINS[platform]
@@ -172,6 +242,10 @@ async def login_events(
                     state = dict(await context.storage_state(indexed_db=True))
                     yield BrowserEvent("connected", identity=identity, storage=state)
                     return
+                if on_douyin_creator_page:
+                    yield BrowserEvent("confirming")
+                    await asyncio.sleep(1.5)
+                    continue
                 try:
                     for frame in page.frames:
                         parsed = urlparse(frame.url)
@@ -202,6 +276,12 @@ async def login_events(
                 except Exception:
                     yield BrowserEvent("action_required")
                 await asyncio.sleep(1.5)
+            if platform == "douyin":
+                logger.warning(
+                    "douyin login expired: creator_backend=%s identity_captured=%s",
+                    _is_douyin_creator_page(page.url),
+                    identity is not None,
+                )
             yield BrowserEvent("expired")
         finally:
             for task in tasks:

@@ -306,10 +306,16 @@ export function LocalPublishAccountsPanel({
   }
   async function focus() {
     if (!loginId) return;
+    const id = loginId;
+    const ownerId = user.id;
+    const current = generation.current;
     try {
-      await focusLocalPublishLogin(user.id, loginId);
+      await focusLocalPublishLogin(ownerId, id);
+      if (current !== generation.current || currentLogin.current !== id) return;
+      setRetryPoll((value) => value + 1);
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (current === generation.current && currentLogin.current === id)
+        setError(errorMessage(cause));
     }
   }
   async function remove() {
@@ -340,9 +346,7 @@ export function LocalPublishAccountsPanel({
       <h2>发布账号管理</h2>
       <p>选择平台，在下方扫描官方二维码，确认后账号将显示在对应标签下。</p>
       {!native && !review && (
-        <p role="status">
-          网页端账号的登录状态加密保存在服务器，可在个人中心解绑。
-        </p>
+        <p role="status">账号的登录状态加密保存在服务器，可在个人中心解绑。</p>
       )}
       {review && <p>审核预览：扫码和账号操作需登录工作台后使用。</p>}
       <div className="content-platform-options">

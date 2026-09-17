@@ -2327,6 +2327,118 @@ describe("发布账号官方扫码", () => {
     });
     nativeAccounts.cancelLocalPublishLogin.mockResolvedValue(undefined);
   });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  it("自动检测暂停后打开官方窗口会恢复当前会话检测", async () => {
+    vi.useFakeTimers();
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("recovery-login");
+    nativeAccounts.focusLocalPublishLogin.mockResolvedValue(undefined);
+    nativeAccounts.checkLocalPublishLogin.mockRejectedValue(
+      new Error("暂时无法读取登录状态"),
+    );
+    const { value } = open();
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "抖音" }));
+    await act(async () => {});
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_500);
+    });
+    expect(
+      screen.getByText("自动检测已暂停，请重试检测或重新获取二维码。"),
+    ).toBeInTheDocument();
+
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "connected",
+      image: null,
+      account: { ...account, platform: "douyin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "打开官方窗口" }));
+    await act(async () => {});
+    expect(nativeAccounts.focusLocalPublishLogin).toHaveBeenCalledWith(
+      value.user.id,
+      "recovery-login",
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(screen.getByText("抖音 · 平台真实昵称")).toBeInTheDocument();
+    expect(screen.queryByLabelText("抖音扫码登录")).toBeNull();
+  });
+  it("取消扫码后迟到的官方窗口响应不会恢复已结束会话", async () => {
+    vi.useFakeTimers();
+    const focusRequest = deferred<void>();
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("cancelled-login");
+    nativeAccounts.focusLocalPublishLogin.mockReturnValue(focusRequest.promise);
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "action_required",
+      image: null,
+      account: null,
+    });
+    open();
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "抖音" }));
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "打开官方窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消扫码" }));
+    await act(async () => {});
+    expect(screen.queryByLabelText("抖音扫码登录")).toBeNull();
+
+    focusRequest.resolve();
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(nativeAccounts.checkLocalPublishLogin).toHaveBeenCalledOnce();
+    expect(screen.queryByLabelText("抖音扫码登录")).toBeNull();
+  });
+  it("旧会话的窗口响应不会重启新会话的轮询", async () => {
+    vi.useFakeTimers();
+    const oldFocusRequest = deferred<void>();
+    nativeAccounts.startLocalPublishLogin
+      .mockResolvedValueOnce("old-login")
+      .mockResolvedValueOnce("new-login");
+    nativeAccounts.focusLocalPublishLogin.mockReturnValue(
+      oldFocusRequest.promise,
+    );
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "action_required",
+      image: null,
+      account: null,
+    });
+    open();
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "抖音" }));
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "打开官方窗口" }));
+    fireEvent.click(screen.getByRole("button", { name: "取消扫码" }));
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "小红书" }));
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(nativeAccounts.checkLocalPublishLogin).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("小红书扫码登录")).toBeInTheDocument();
+
+    oldFocusRequest.resolve();
+    await act(async () => {});
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(nativeAccounts.checkLocalPublishLogin).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("小红书扫码登录")).toBeInTheDocument();
+  });
   it("扫码确认后把导出的登录状态加密同步到服务端，失败可重试", async () => {
     const storage = {
       cookies: [{ name: "sid", value: "s", domain: ".xiaohongshu.com" }],
@@ -2494,10 +2606,30 @@ describe("发布账号官方扫码", () => {
     );
     expect(nativeAccounts.listLocalPublishAccounts).toHaveBeenCalled();
     expect(
-      screen.getByText(
-        "网页端账号的登录状态加密保存在服务器，可在个人中心解绑。",
-      ),
+      screen.getByText("账号的登录状态加密保存在服务器，可在个人中心解绑。"),
     ).toBeInTheDocument();
+  });
+  it("非原生模式需要额外验证时不显示官方窗口入口", async () => {
+    nativeAccounts.canUseLocalPublishAccounts.mockReturnValue(false);
+    nativeAccounts.startLocalPublishLogin.mockResolvedValue("cloud-login");
+    nativeAccounts.checkLocalPublishLogin.mockResolvedValue({
+      phase: "action_required",
+      image: null,
+      account: null,
+    });
+    open();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "抖音" })).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "抖音" }));
+    await screen.findByText(
+      "平台要求进一步验证，请按平台提示完成后重试。",
+      {},
+      { timeout: 2500 },
+    );
+
+    expect(screen.queryByRole("button", { name: "打开官方窗口" })).toBeNull();
+    expect(nativeAccounts.focusLocalPublishLogin).not.toHaveBeenCalled();
   });
   it("个人中心显示二维码，过期后移除图片并可重新获取", async () => {
     nativeAccounts.startLocalPublishLogin.mockResolvedValue("qr-1");
