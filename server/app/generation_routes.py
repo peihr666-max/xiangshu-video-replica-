@@ -74,6 +74,7 @@ from app.generation import (
     version_result,
     version_state,
 )
+from app.material_thumbs import store_video_thumbnail
 from app.media import MAX_UPLOAD_BYTES, FFprobeVideoProbe, VideoProbeFailed, VideoProbeUnavailable
 from app.media_routes import MediaStorage
 from app.media_tools import (
@@ -826,6 +827,8 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
             content,
             content_type="video/mp4",
         )
+        # MATERIAL-THUMBS-B：成片字节在手时抽首帧（写事务之外）；失败只损失缩略图。
+        thumbnail_key = store_video_thumbnail(storage, stored.key, content)
         with db.write() as (conn, actor):
             return persist_generation_result_archive(
                 conn,
@@ -834,6 +837,7 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
                 stored=stored,
                 duration_seconds=duration_seconds,
                 normalization_metadata=normalization_metadata,
+                thumbnail_key=thumbnail_key,
             )
     except (
         H3ProviderFailed,

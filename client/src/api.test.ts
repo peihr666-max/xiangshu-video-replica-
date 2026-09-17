@@ -59,6 +59,7 @@ import {
   getLatestProjectFirstFrames,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
   getMaterialCachedPreviews,
   getMaterialCacheUsage,
@@ -785,6 +786,25 @@ describe("批量素材预览授权", () => {
     const f = await batchFixture();
     expect(await getMaterialCachedPreviews("user", [])).toEqual({});
     expect(f.fetcher).not.toHaveBeenCalled();
+  });
+
+  it("视频条目附带缩略图 URL，无缩略图条目不出现", async () => {
+    await batchFixture({
+      thumbnail_url: "https://media.example/a-thumb?sig=2",
+    });
+    const { previews, thumbnails } = await getMaterialBatchPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(thumbnails["batch-a"]).toBe("https://media.example/a-thumb?sig=2");
+    expect(previews["batch-a"]).toMatchObject({
+      url: "https://media.example/a?sig=1",
+    });
+    const plain = await batchFixture();
+    expect(plain.batchCalls).toEqual([]);
+    const again = await getMaterialBatchPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(again.thumbnails).toEqual({});
   });
 
   it("中止信号取消批量请求", async () => {

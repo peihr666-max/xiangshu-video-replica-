@@ -20,8 +20,8 @@ import {
   fetchViralVideoMedia,
   fetchViralVideoStatistics,
   getAssetDownloadUrl,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
-  getMaterialCachedPreviews,
   getMaterialCacheUsage,
   getStudioDraft,
   getViralImportTask,
@@ -1806,6 +1806,10 @@ function MaterialsPageContent() {
   const [renameValue, setRenameValue] = useState("");
   const [groupValue, setGroupValue] = useState("");
   const [previewStates, setPreviewStates] = useState<MaterialPreviewStates>({});
+  // MATERIAL-THUMBS-B：视频瓦片封面（键 = 授权 id；7 天签名，img 直接展示）。
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>(
+    {},
+  );
   const visiblePreviewIdsRef = useRef(new Set<string>());
   const previewRequestVersionsRef = useRef(new Map<string, number>());
   const previewLoadingIdsRef = useRef(new Set<string>());
@@ -2004,7 +2008,7 @@ function MaterialsPageContent() {
         );
       }
       try {
-        const results = await getMaterialCachedPreviews(
+        const { previews, thumbnails } = await getMaterialBatchPreviews(
           user.id,
           pending.map((asset) => ({
             id: asset.previewAssetId ?? asset.assetId ?? "",
@@ -2013,9 +2017,22 @@ function MaterialsPageContent() {
           { signal: controller.signal },
         );
         if (!aliveRef.current || revision !== cacheRevisionRef.current) {
-          for (const resource of Object.values(results)) resource.release();
+          for (const resource of Object.values(previews)) resource.release();
           return;
         }
+        setThumbnailUrls((current) => {
+          const next = { ...current };
+          for (const asset of pending) {
+            const authId = asset.previewAssetId ?? asset.assetId ?? "";
+            if (
+              visiblePreviewIdsRef.current.has(asset.id) &&
+              thumbnails[authId]
+            )
+              next[authId] = thumbnails[authId];
+            else delete next[authId];
+          }
+          return next;
+        });
         setPreviewStates((current) => {
           const next = { ...current };
           for (const asset of pending) {
@@ -2026,7 +2043,7 @@ function MaterialsPageContent() {
               continue;
             if (!visiblePreviewIdsRef.current.has(asset.id)) continue;
             const resource =
-              results[asset.previewAssetId ?? asset.assetId ?? ""];
+              previews[asset.previewAssetId ?? asset.assetId ?? ""];
             previewResourcesRef.current.get(asset.id)?.release();
             if (resource) {
               previewResourcesRef.current.set(asset.id, resource);
@@ -2226,6 +2243,16 @@ function MaterialsPageContent() {
         Object.entries(current).filter(([id]) => visibleIds.has(id)),
       ),
     );
+    setThumbnailUrls((current) => {
+      const visibleAuthIds = new Set(
+        remoteAssets.map(
+          (asset) => asset.previewAssetId ?? asset.assetId ?? "",
+        ),
+      );
+      return Object.fromEntries(
+        Object.entries(current).filter(([id]) => visibleAuthIds.has(id)),
+      );
+    });
     // 可见素材一次批量授权；仅 generationTaskId 素材走单资产回退。
     void loadPreviewsBatch(remoteAssets);
     for (const asset of remoteAssets) {
@@ -2543,27 +2570,37 @@ function MaterialsPageContent() {
       <section className="content-material-layout">
         <div className="content-material-list">
           <div className="content-asset-grid">
-            {currentAssets.map((asset) => (
-              <AssetCard
-                key={asset.id}
-                asset={{
-                  ...asset,
-                  url: asset.url ?? previewStates[asset.id]?.url,
-                }}
-                selected={selected?.id === asset.id}
-                previewStatus={previewStates[asset.id]?.status}
-                onSelect={() => {
-                  if (previewStates[asset.id]?.status === "error")
-                    void loadPreview(asset);
-                  setSelectedAsset(asset);
-                  patchState({ selectedAssetId: asset.id });
-                }}
-                onPreviewError={(failedUrl) => {
-                  invalidatePreview(asset, failedUrl);
-                }}
-                onPlay={() => void warmPreview(asset)}
-              />
-            ))}
+            {currentAssets.map((asset) => {
+              const authId = asset.previewAssetId ?? asset.assetId ?? "";
+              // MATERIAL-THUMBS-B：带封面的视频瓦片用 img 展示缩略图（懒加载），
+              // 不再让浏览器经服务端代理流式拉原视频；点开详情仍加载可播放视频。
+              const thumbnailUrl =
+                asset.kind === "video" ? thumbnailUrls[authId] : undefined;
+              return (
+                <AssetCard
+                  key={asset.id}
+                  asset={{
+                    ...asset,
+                    url: thumbnailUrl
+                      ? undefined
+                      : (asset.url ?? previewStates[asset.id]?.url),
+                    poster: thumbnailUrl ?? asset.poster,
+                  }}
+                  selected={selected?.id === asset.id}
+                  previewStatus={previewStates[asset.id]?.status}
+                  onSelect={() => {
+                    if (previewStates[asset.id]?.status === "error")
+                      void loadPreview(asset);
+                    setSelectedAsset(asset);
+                    patchState({ selectedAssetId: asset.id });
+                  }}
+                  onPreviewError={(failedUrl) => {
+                    invalidatePreview(asset, failedUrl);
+                  }}
+                  onPlay={() => void warmPreview(asset)}
+                />
+              );
+            })}
           </div>
           {remoteLoading ? <Hint>正在读取云端素材…</Hint> : null}
           {remoteError ? <Hint>{remoteError}</Hint> : null}
@@ -2634,6 +2671,12 @@ function MaterialsPageContent() {
                   asset={{
                     ...selected,
                     url: selected.url ?? previewStates[selected.id]?.url,
+                    poster:
+                      (selected.kind === "video"
+                        ? thumbnailUrls[
+                            selected.previewAssetId ?? selected.assetId ?? ""
+                          ]
+                        : undefined) ?? selected.poster,
                   }}
                   alt={selected.name}
                   onError={(failedUrl) => {
