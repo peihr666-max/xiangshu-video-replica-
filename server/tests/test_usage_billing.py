@@ -18,7 +18,7 @@ from test_customer_pricing import (  # noqa: F401
 )
 
 from app.billing_catalog import SERVICES, Tariff, calculate_credits
-from app.billing_reports import date_bounds, statistics
+from app.billing_reports import date_bounds, operation_rows, statistics
 from app.db_portable import BusinessConnection
 from app.usage_billing import accept_operation, finish_operation, record_attempt
 
@@ -749,6 +749,52 @@ def test_preexisting_unknown_balance_is_not_relabelled_as_new_cash(client, route
             ).fetchone()[0]
             == 20
         )
+
+
+def test_delivered_charge_without_provider_attempt_is_unknown_cost_not_free(client, route_state):
+    """A delivered paid request ran a provider call; recording none proves nothing.
+
+    Pricing the absence as zero would publish full-margin profit for any subject
+    whose metering was never wired, and would do so silently: no unknown-cost
+    flag, no pending state, nothing for an operator to reconcile against.
+    """
+    _, uid = account(client)
+    with psycopg.connect(route_state) as raw:
+        conn = BusinessConnection.postgres(raw)
+        credit_lot(raw, uid, key="funded", credits=100, amount_fen=100)
+        raw.execute(
+            "INSERT INTO billing_tariffs(service,enabled,unit_credits,unit_cost_fen) "
+            "VALUES('analysis',true,5,3)"
+        )
+        metered = accept_operation(
+            conn, user_id=uid, service="analysis", source_id="metered", units=1
+        )
+        record_attempt(conn, operation_id=metered, attempt_key="call", usage=1)
+        finish_operation(conn, operation_id=metered, units=1, succeeded=True)
+        unmetered = accept_operation(
+            conn, user_id=uid, service="analysis", source_id="unmetered", units=1
+        )
+        finish_operation(conn, operation_id=unmetered, units=1, succeeded=True)
+
+        rows = {
+            row["source_id"]: row
+            for row in operation_rows(
+                conn, start=date(2000, 1, 1), end=date(2099, 1, 1), user_id=uid
+            )
+        }
+        assert rows["metered"]["cost_fen"] == Decimal(3)
+        assert rows["metered"]["profit_fen"] == Decimal(2)
+        assert rows["unmetered"]["attempt_count"] == 0
+        assert rows["unmetered"]["cost_fen"] is None
+        assert rows["unmetered"]["profit_fen"] is None
+
+        totals = statistics(conn, start=date(2000, 1, 1), end=date(2099, 1, 1), user_id=uid)[
+            "totals"
+        ]
+        assert totals["unknown_cost_count"] == 1
+        assert totals["cost_fen"] is None
+        assert totals["profit_fen"] is None
+        assert totals["profit_margin"] is None
 
 
 def test_admin_publishes_independent_cost_and_price_with_audit_and_conflict(
