@@ -177,6 +177,10 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # later CW before they may use create_test_database/drop_test_database):
         #   t11_activation_code_service, t34_chain_e2e,
         #   t13c_customer_activation_concurrency, t22r_customer_recharge
+        # MATERIAL-PERF-A-20260917 批量素材预览授权：dedicated database for the
+        # 批量 download-urls 安全/语义矩阵 (test_material_perf_batch_urls.py),
+        # migrated to alembic head and truncated per test.
+        "matperf_a_batch_urls_test",
     }
 )
 

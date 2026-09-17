@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
@@ -946,6 +946,18 @@ def _create_download_grant(
         entity_type="asset",
         entity_id=asset_id,
     )
+    _row, url = _grant_download_for_asset(conn, actor=actor, asset_id=asset_id)
+    return DownloadUrlResponse(url=url)
+
+
+def _grant_download_for_asset(
+    conn: BusinessConnection, *, actor: CurrentUser, asset_id: str
+) -> tuple[sqlite3.Row, str]:
+    """单资产授权主体：属主校验 → 完整性校验 → 逐资产审计 → 签名 URL。
+
+    单资产端点与批量端点（MATERIAL-PERF-A）共用，保证两条通道的授权、
+    审计口径与签名格式完全一致。
+    """
     row = require_asset_access(
         conn,
         actor=actor,
@@ -995,7 +1007,78 @@ def _create_download_grant(
             status_code=503,
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
-    return DownloadUrlResponse(url=url)
+    return row, url
+
+
+class DownloadUrlsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: Annotated[list[str], Field(min_length=1, max_length=100)]
+
+
+class DownloadUrlItem(BaseModel):
+    asset_id: str
+    url: str | None = None
+    sha256: str | None = None
+    size_bytes: int | None = None
+    content_type: str | None = None
+    error_code: str | None = None
+
+
+class DownloadUrlsResponse(BaseModel):
+    items: list[DownloadUrlItem]
+
+
+@router.post("/assets/download-urls", response_model=DownloadUrlsResponse)
+def create_download_urls(
+    request: DownloadUrlsRequest,
+    db: BusinessDbDep,
+) -> DownloadUrlsResponse:
+    """批量签发素材预览授权（MATERIAL-PERF-A P0-2）。
+
+    素材库网格此前对每个瓦片各发一次单资产授权（N+1 写连接 + 审计往返）；
+    本端点在一个写事务内逐资产复用与单资产端点完全相同的授权逻辑。他属/
+    缺失/未完成上传按条返回 ``error_code``（属主掩蔽与单端点同形），不拖垮
+    整批；审计仍逐资产落行，口径不因批量而变稀。
+    """
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="asset.download_url.create",
+            entity_type="asset",
+            entity_id="batch",
+        )
+        items: list[DownloadUrlItem] = []
+        seen: set[str] = set()
+        for asset_id in request.asset_ids:
+            if asset_id in seen:
+                continue
+            seen.add(asset_id)
+            try:
+                row, url = _grant_download_for_asset(conn, actor=actor, asset_id=asset_id)
+            except HTTPException as exc:
+                detail: dict[Any, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+                code = detail.get("code")
+                items.append(
+                    DownloadUrlItem(
+                        asset_id=asset_id,
+                        error_code=str(code) if code else f"HTTP_{exc.status_code}",
+                    )
+                )
+                continue
+            items.append(
+                DownloadUrlItem(
+                    asset_id=asset_id,
+                    url=url,
+                    sha256=str(row["sha256"]),
+                    size_bytes=int(row["size_bytes"]),
+                    content_type=(
+                        str(row["content_type"]) if row["content_type"] is not None else None
+                    ),
+                )
+            )
+    return DownloadUrlsResponse(items=items)
 
 
 @router.post("/assets/{asset_id}/cached-url", response_model=DownloadUrlResponse)
