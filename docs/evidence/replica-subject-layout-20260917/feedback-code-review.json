@@ -1,0 +1,30 @@
+{
+  "verdict": "APPROVE",
+  "reviewer": "independent native code-reviewer",
+  "issues": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "total": 0
+  },
+  "scope": [
+    "voice clone formats and normalization",
+    "voice result local refresh and stable controls",
+    "copy and prompt input heights",
+    "first and last frame source cards",
+    "reference material layout and preview"
+  ],
+  "final_followup": "reference preview focus restoration",
+  "evidence": [
+    "CreationPages.tsx stores the exact preview trigger and restores focus in requestAnimationFrame with preventScroll",
+    "StudioDialog close button and cancel/Escape both route through closeReferencePreview",
+    "CreationPages.test.tsx covers close-button and cancel focus return",
+    "1440 and 390 browser geometry report focusReturned=true and escapeFocusReturned=true",
+    "Prior review approved other scope; duplicate decode and stateful-test issues already fixed"
+  ],
+  "limits": [
+    "No paid provider generation",
+    "Not deployed"
+  ]
+}

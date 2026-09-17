@@ -1,0 +1,42 @@
+{
+  "scope": "main-brand-sync-reference-regression",
+  "score": 98,
+  "pass": true,
+  "differences": [
+    "同步 main 品牌改动后，桌面紧凑侧栏保持 88px，仅展示品牌图标；手机展开侧栏展示横排“众墅之家｜AI 即创”品牌。",
+    "创作内容区没有重复品牌 Logo，整页仅保留侧栏中的一处 BrandIdentity。",
+    "参考素材仍保持添加区在上、素材列表在下，预览关闭后焦点返回原缩略卡。"
+  ],
+  "evidence": {
+    "geometry": "geometry.json",
+    "screenshots": [
+      "1440-reference.png",
+      "390-reference.png",
+      "390-sidebar-open.png"
+    ],
+    "desktop_1440": {
+      "sidebar_width_px": 88,
+      "compact_brand_text_hidden": true,
+      "brand_flex_direction": "row",
+      "brand_identity_count": 1,
+      "content_brand_identity_count": 0,
+      "reference_ordered_vertically": true,
+      "preview_dialog_visible": true,
+      "focus_returned": true,
+      "horizontal_overflow": false,
+      "console_errors": []
+    },
+    "mobile_390": {
+      "expanded_sidebar_width_px": 265,
+      "brand_text_visible": true,
+      "horizontal_brand_lockup": true,
+      "brand_identity_count": 1,
+      "content_brand_identity_count": 0,
+      "reference_ordered_vertically": true,
+      "preview_dialog_visible": true,
+      "focus_returned": true,
+      "horizontal_overflow": false,
+      "console_errors": []
+    }
+  }
+}

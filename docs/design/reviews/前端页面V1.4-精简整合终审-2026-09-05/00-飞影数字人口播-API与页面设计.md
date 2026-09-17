@@ -184,3 +184,10 @@ GET `/voice/task` 完成后提供 `voice` 和 `demo_url`；GET `/voice/list` 可
 - 保留黑金品牌；侧栏顺序为爆款视频 → 文案工坊 → 视频创作。
 - 仅这一个口播页面重新生成；不宣称整个 V1.4 审核包已经完成。
 
+
+
+## 2026-09-17 声音克隆上传接口增量
+
+本次仅扩展声音克隆样本输入。`POST /api/studio/materials/upload-intent` 的 `audio_purpose=voice_clone` 接受 MP3、M4A、WAV、WMA、AAC、FLAC、OGG、OPUS、AIFF/AIF、AMR，以及带音轨的 WMV。浏览器不支持解码时可以不传 `duration_seconds`，不能用虚构时长替代；上传完成接口必须读取真实音轨并验证 5–180 秒，克隆样本仍不得超过 20 MB。没有可读音轨、损坏或超长输入不能提交 Provider。
+
+克隆 Worker 在 Provider 调用前把输入规范为 MP3，WMV 只取音轨。继续使用现有 `create_upload_url("mp3")` 和声音创建接口；原文件类型不会伪装为 MP3 直接上传。完整口播和参考音频的现有格式/时长合同保持各自约束。本地格式回归与真实付费 Provider 验收分别登记。

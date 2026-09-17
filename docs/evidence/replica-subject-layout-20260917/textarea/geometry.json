@@ -1,0 +1,848 @@
+{
+  "generatedAt": "2026-09-17T07:18:26.671Z",
+  "results": [
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/copy",
+      "heading": "文案工坊",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "document": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "scrollHeight": 1973,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "来源原文",
+          "rows": 2,
+          "rect": {
+            "x": 137,
+            "y": 308.59,
+            "width": 1254,
+            "height": 224
+          },
+          "style": {
+            "minHeight": "192px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 1,
+          "label": "本次改写要求",
+          "rows": 2,
+          "rect": {
+            "x": 313,
+            "y": 873.09,
+            "width": 1078,
+            "height": 176
+          },
+          "style": {
+            "minHeight": "160px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 2,
+          "label": "二创文案",
+          "rows": 2,
+          "rect": {
+            "x": 137,
+            "y": 1363.89,
+            "width": 1254,
+            "height": 360
+          },
+          "style": {
+            "minHeight": "320px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1440",
+      "route": "copy",
+      "screenshot": "outputs/replica-subject-layout/textarea/1440-copy.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/replica",
+      "heading": "1 视频拆解",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "document": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "scrollHeight": 2710,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "口播文案",
+          "rows": 10,
+          "rect": {
+            "x": 730.39,
+            "y": 1889.95,
+            "width": 668.61,
+            "height": 256
+          },
+          "style": {
+            "minHeight": "256px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 1,
+          "label": "textarea-2",
+          "rows": 2,
+          "rect": {
+            "x": 842.39,
+            "y": 2319.95,
+            "width": 187,
+            "height": 66
+          },
+          "style": {
+            "minHeight": "0px",
+            "maxHeight": "none",
+            "resize": "both",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 2,
+          "label": "最终提示词",
+          "rows": 20,
+          "rect": {
+            "x": 730.39,
+            "y": 2521.95,
+            "width": 668.61,
+            "height": 444
+          },
+          "style": {
+            "minHeight": "256px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1440",
+      "route": "replica",
+      "screenshot": "outputs/replica-subject-layout/textarea/1440-replica.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/video",
+      "heading": null,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "document": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "scrollHeight": 1026,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "提示词",
+          "rows": 10,
+          "rect": {
+            "x": 108,
+            "y": 562,
+            "width": 655.77,
+            "height": 180
+          },
+          "style": {
+            "minHeight": "180px",
+            "maxHeight": "720px",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1440",
+      "route": "video",
+      "screenshot": "outputs/replica-subject-layout/textarea/1440-video.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/reference",
+      "heading": null,
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "document": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "scrollHeight": 1026,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "提示词",
+          "rows": 10,
+          "rect": {
+            "x": 108,
+            "y": 543.5,
+            "width": 655.77,
+            "height": 180
+          },
+          "style": {
+            "minHeight": "180px",
+            "maxHeight": "720px",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1440",
+      "route": "reference",
+      "screenshot": "outputs/replica-subject-layout/textarea/1440-reference.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/oral",
+      "heading": "数字人口播",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "document": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "scrollHeight": 1182,
+        "horizontalOverflow": false
+      },
+      "textareas": [],
+      "viewportName": "1440",
+      "route": "oral",
+      "screenshot": "outputs/replica-subject-layout/textarea/1440-oral.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/publishing",
+      "heading": "发布管理",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "document": {
+        "scrollWidth": 1440,
+        "clientWidth": 1440,
+        "scrollHeight": 1378,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "填写发布说明",
+          "rows": 2,
+          "rect": {
+            "x": 589.52,
+            "y": 985.08,
+            "width": 801.48,
+            "height": 128
+          },
+          "style": {
+            "minHeight": "128px",
+            "maxHeight": "none",
+            "resize": "both",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1440",
+      "route": "publishing",
+      "screenshot": "outputs/replica-subject-layout/textarea/1440-publishing.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/copy",
+      "heading": "文案工坊",
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "document": {
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "scrollHeight": 1973,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "来源原文",
+          "rows": 2,
+          "rect": {
+            "x": 267,
+            "y": 308.59,
+            "width": 714,
+            "height": 224
+          },
+          "style": {
+            "minHeight": "192px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 1,
+          "label": "本次改写要求",
+          "rows": 2,
+          "rect": {
+            "x": 443,
+            "y": 873.09,
+            "width": 538,
+            "height": 176
+          },
+          "style": {
+            "minHeight": "160px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 2,
+          "label": "二创文案",
+          "rows": 2,
+          "rect": {
+            "x": 267,
+            "y": 1363.89,
+            "width": 714,
+            "height": 360
+          },
+          "style": {
+            "minHeight": "320px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1024",
+      "route": "copy",
+      "screenshot": "outputs/replica-subject-layout/textarea/1024-copy.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/replica",
+      "heading": "1 视频拆解",
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "document": {
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "scrollHeight": 3469,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "口播文案",
+          "rows": 10,
+          "rect": {
+            "x": 618,
+            "y": 2649.08,
+            "width": 365,
+            "height": 256
+          },
+          "style": {
+            "minHeight": "256px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 1,
+          "label": "textarea-2",
+          "rows": 2,
+          "rect": {
+            "x": 730,
+            "y": 3079.08,
+            "width": 187,
+            "height": 66
+          },
+          "style": {
+            "minHeight": "0px",
+            "maxHeight": "none",
+            "resize": "both",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 2,
+          "label": "最终提示词",
+          "rows": 20,
+          "rect": {
+            "x": 618,
+            "y": 3281.08,
+            "width": 365,
+            "height": 444
+          },
+          "style": {
+            "minHeight": "256px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1024",
+      "route": "replica",
+      "screenshot": "outputs/replica-subject-layout/textarea/1024-replica.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/video",
+      "heading": null,
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "document": {
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "scrollHeight": 1059,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "提示词",
+          "rows": 10,
+          "rect": {
+            "x": 244,
+            "y": 607,
+            "width": 369.14,
+            "height": 180
+          },
+          "style": {
+            "minHeight": "180px",
+            "maxHeight": "720px",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1024",
+      "route": "video",
+      "screenshot": "outputs/replica-subject-layout/textarea/1024-video.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/reference",
+      "heading": null,
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "document": {
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "scrollHeight": 1040,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "提示词",
+          "rows": 10,
+          "rect": {
+            "x": 244,
+            "y": 588.5,
+            "width": 369.14,
+            "height": 180
+          },
+          "style": {
+            "minHeight": "180px",
+            "maxHeight": "720px",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "1024",
+      "route": "reference",
+      "screenshot": "outputs/replica-subject-layout/textarea/1024-reference.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/oral",
+      "heading": "数字人口播",
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "document": {
+        "scrollWidth": 1024,
+        "clientWidth": 1024,
+        "scrollHeight": 1080,
+        "horizontalOverflow": false
+      },
+      "textareas": [],
+      "viewportName": "1024",
+      "route": "oral",
+      "screenshot": "outputs/replica-subject-layout/textarea/1024-oral.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/publishing",
+      "heading": "发布管理",
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "document": {
+        "scrollWidth": 1144,
+        "clientWidth": 1024,
+        "scrollHeight": 1381,
+        "horizontalOverflow": true
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "填写发布说明",
+          "rows": 2,
+          "rect": {
+            "x": 585,
+            "y": 911.83,
+            "width": 538,
+            "height": 128
+          },
+          "style": {
+            "minHeight": "128px",
+            "maxHeight": "none",
+            "resize": "both",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": false
+        }
+      ],
+      "viewportName": "1024",
+      "route": "publishing",
+      "screenshot": "outputs/replica-subject-layout/textarea/1024-publishing.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/copy",
+      "heading": "文案工坊",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "scrollHeight": 2611,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "来源原文",
+          "rows": 2,
+          "rect": {
+            "x": 39,
+            "y": 358.59,
+            "width": 312,
+            "height": 224
+          },
+          "style": {
+            "minHeight": "192px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 1,
+          "label": "本次改写要求",
+          "rows": 2,
+          "rect": {
+            "x": 39,
+            "y": 1211.33,
+            "width": 312,
+            "height": 176
+          },
+          "style": {
+            "minHeight": "160px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 2,
+          "label": "二创文案",
+          "rows": 2,
+          "rect": {
+            "x": 39,
+            "y": 1820.31,
+            "width": 312,
+            "height": 360
+          },
+          "style": {
+            "minHeight": "320px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "390",
+      "route": "copy",
+      "screenshot": "outputs/replica-subject-layout/textarea/390-copy.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/replica",
+      "heading": "1 视频拆解",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "scrollHeight": 3827,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "口播文案",
+          "rows": 10,
+          "rect": {
+            "x": 41,
+            "y": 2969.78,
+            "width": 308,
+            "height": 256
+          },
+          "style": {
+            "minHeight": "256px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 1,
+          "label": "textarea-2",
+          "rows": 2,
+          "rect": {
+            "x": 153,
+            "y": 3399.78,
+            "width": 187,
+            "height": 66
+          },
+          "style": {
+            "minHeight": "0px",
+            "maxHeight": "none",
+            "resize": "both",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        },
+        {
+          "index": 2,
+          "label": "最终提示词",
+          "rows": 20,
+          "rect": {
+            "x": 41,
+            "y": 3601.78,
+            "width": 308,
+            "height": 444
+          },
+          "style": {
+            "minHeight": "256px",
+            "maxHeight": "none",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "390",
+      "route": "replica",
+      "screenshot": "outputs/replica-subject-layout/textarea/390-replica.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/video",
+      "heading": null,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "scrollHeight": 1556,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "提示词",
+          "rows": 10,
+          "rect": {
+            "x": 16,
+            "y": 611,
+            "width": 358,
+            "height": 180
+          },
+          "style": {
+            "minHeight": "180px",
+            "maxHeight": "720px",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "390",
+      "route": "video",
+      "screenshot": "outputs/replica-subject-layout/textarea/390-video.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/reference",
+      "heading": null,
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "scrollHeight": 1585,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "提示词",
+          "rows": 10,
+          "rect": {
+            "x": 16,
+            "y": 639.5,
+            "width": 358,
+            "height": 180
+          },
+          "style": {
+            "minHeight": "180px",
+            "maxHeight": "720px",
+            "resize": "vertical",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "390",
+      "route": "reference",
+      "screenshot": "outputs/replica-subject-layout/textarea/390-reference.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/oral",
+      "heading": "数字人口播",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "scrollHeight": 2030,
+        "horizontalOverflow": false
+      },
+      "textareas": [],
+      "viewportName": "390",
+      "route": "oral",
+      "screenshot": "outputs/replica-subject-layout/textarea/390-oral.png",
+      "consoleErrors": []
+    },
+    {
+      "url": "http://127.0.0.1:5247/review/v1.4#studio/publishing",
+      "heading": "发布管理",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "document": {
+        "scrollWidth": 390,
+        "clientWidth": 390,
+        "scrollHeight": 2248,
+        "horizontalOverflow": false
+      },
+      "textareas": [
+        {
+          "index": 0,
+          "label": "填写发布说明",
+          "rows": 2,
+          "rect": {
+            "x": 39,
+            "y": 1633.69,
+            "width": 312,
+            "height": 128
+          },
+          "style": {
+            "minHeight": "128px",
+            "maxHeight": "none",
+            "resize": "both",
+            "overflowY": "auto"
+          },
+          "withinViewportWidth": true
+        }
+      ],
+      "viewportName": "390",
+      "route": "publishing",
+      "screenshot": "outputs/replica-subject-layout/textarea/390-publishing.png",
+      "consoleErrors": []
+    }
+  ]
+}

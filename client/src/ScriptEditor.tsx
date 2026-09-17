@@ -69,7 +69,7 @@ export function ScriptEditor({
             aria-label="口播稿内容"
             onChange={(event) => onScriptTextChange(event.target.value)}
             readOnly={readOnly || scriptSource === "original"}
-            rows={6}
+            rows={12}
             value={scriptText}
           />
         </label>

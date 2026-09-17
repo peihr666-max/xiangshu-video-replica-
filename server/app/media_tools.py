@@ -381,6 +381,7 @@ def inspect_media_bytes(
     expected_type: Literal["image", "video", "audio"],
     min_duration_seconds: float | None = None,
     max_duration_seconds: float | None = None,
+    local_input_only: bool = False,
 ) -> MediaInspection:
     """Decode-probe untrusted media bytes and enforce the expected stream type."""
     if not content:
@@ -400,8 +401,10 @@ def inspect_media_bytes(
             "stream=codec_type,codec_name,width,height,duration:format=duration,format_name",
             "-of",
             "json",
-            str(media_path),
         ]
+        if local_input_only:
+            command.extend(["-protocol_whitelist", "file,pipe"])
+        command.append(str(media_path))
         try:
             completed = subprocess.run(
                 command,
@@ -460,6 +463,72 @@ def inspect_media_bytes(
         width=width,
         height=height,
     )
+
+
+def normalize_audio_to_mp3(
+    content: bytes,
+    *,
+    suffix: str,
+    min_duration_seconds: float | None = None,
+    max_duration_seconds: float | None = None,
+) -> bytes:
+    """Decode one audio track and return a provider-safe mono MP3 sample."""
+    inspect_media_bytes(
+        content,
+        suffix=suffix,
+        expected_type="audio",
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+        local_input_only=True,
+    )
+    ffmpeg_path = resolve_media_binary("ffmpeg")
+    safe_suffix = suffix if suffix.startswith(".") and suffix[1:].isalnum() else ".bin"
+    with tempfile.TemporaryDirectory(prefix="video-replica-audio-normalize-") as temp_dir:
+        source_path = Path(temp_dir) / f"source{safe_suffix}"
+        output_path = Path(temp_dir) / "normalized.mp3"
+        try:
+            source_path.write_bytes(content)
+        except OSError as exc:
+            raise MediaToolFailed("音频临时文件写入失败") from exc
+        _run(
+            [
+                ffmpeg_path,
+                "-v",
+                "error",
+                "-y",
+                "-xerror",
+                "-nostdin",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-i",
+                str(source_path),
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "44100",
+                "-c:a",
+                "mp3",
+                "-b:a",
+                "128k",
+                str(output_path),
+            ]
+        )
+        try:
+            normalized = output_path.read_bytes()
+        except OSError as exc:
+            raise MediaToolFailed("标准 MP3 读取失败") from exc
+    inspect_media_bytes(
+        normalized,
+        suffix=".mp3",
+        expected_type="audio",
+        min_duration_seconds=min_duration_seconds,
+        max_duration_seconds=max_duration_seconds,
+        local_input_only=True,
+    )
+    return normalized
 
 
 def normalize_image_to_png(content: bytes) -> bytes:

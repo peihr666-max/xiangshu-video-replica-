@@ -58,6 +58,7 @@ FIRST_FRAME_SELECTION_KIND = "first_frame_selection"
 FIRST_FRAME_SCHEMA_VERSION = "b5.first-frame.v1"
 PROJECT_CHARACTER_APPEARANCE_KIND = "project_character_appearance"
 PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION = "wp1.project-character-appearance.v2"
+FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION = 3
 FIRST_FRAME_RECONSTRUCTION_MODE = "full_person_replace.v1"
 FIRST_FRAME_MODELS = ("gpt-image-2", "nano-banana-pro-2k")
 FIRST_FRAME_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -1384,6 +1385,7 @@ def derive_project_appearance_spec(
     selection_reason = "；".join(reason_parts) + "；由后台自动匹配项目人物造型。"
     fingerprint_source = {
         "schema_version": PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION,
+        "replacement_contract_version": FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION,
         "source_analysis_version_id": source_analysis_version_id,
         "source_timestamp_seconds": source_timestamp_seconds,
         "category": category,
@@ -1449,7 +1451,7 @@ def _apply_scene_look_snapshot(
         "subject": appearance.subject,
         "appearance_source": "SCENE_LOOK",
         "review_mode": "HUMAN_CONFIRMATION",
-        "replacement_contract_version": 2,
+        "replacement_contract_version": FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION,
         "scene_look_name": name,
         "scene_look_description": scene_description,
         "scene_look_version_id": character_version_id,
@@ -1519,17 +1521,12 @@ def _appearance_number(value: object) -> float | None:
     return float(value)
 
 
-def require_single_person_video_analysis(
+def require_readable_video_analysis(
     conn: BusinessConnection,
     *,
     project_id: str,
 ) -> None:
-    """Require a current single-person analysis before any paid image call.
-
-    Legacy analysis rows without a trustworthy per-segment count must be
-    re-analysed under the current strict provider contract. A later source-frame
-    inspection remains defense in depth; it must not be the first paid-work gate.
-    """
+    """Refuse damaged analysis while keeping readable legacy rows usable."""
 
     analysis_version = latest_version(conn, project_id, "analysis")
     if analysis_version is None:
@@ -1548,27 +1545,14 @@ def require_single_person_video_analysis(
         raise first_frame_error(
             409,
             "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
-            "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+            "当前拆解结果结构不完整，请先重新拆解视频。",
         )
     for shot in shots:
         if not isinstance(shot, dict):
             raise first_frame_error(
                 409,
                 "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
-                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
-            )
-        person_count = shot.get("person_count")
-        if not isinstance(person_count, int) or isinstance(person_count, bool):
-            raise first_frame_error(
-                409,
-                "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
-                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
-            )
-        if person_count > 1:
-            raise first_frame_error(
-                422,
-                "MULTI_PERSON_VIDEO_UNSUPPORTED",
-                "当前版本仅支持单人视频；拆解结果检测到多人同框，请更换单人参考视频。",
+                "当前拆解结果结构不完整，请先重新拆解视频。",
             )
 
 
@@ -1726,7 +1710,7 @@ def prepare_first_frame_generation(
         entity_type="project",
         entity_id=project_id,
     )
-    require_single_person_video_analysis(conn, project_id=project_id)
+    require_readable_video_analysis(conn, project_id=project_id)
     require_project_access(conn, actor=actor, project_id=project_id, action="first_frame.generate")
     if model not in FIRST_FRAME_MODELS:
         raise first_frame_error(
@@ -2771,6 +2755,12 @@ def normalize_prompt(
         source_analysis_version_id=None,
         source_timestamp_seconds=None,
     )
+    primary_subject_contract = (
+        f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
+        "如果画面中有多人，只重构这一名主要人物；"
+        "其他人物的身份、服装、数量、位置、动作和遮挡关系均保持不变，"
+        "不得把目标人物外观扩散到旁人。"
+    )
     if replace_scene:
         if appearance.appearance_source != "SCENE_LOOK":
             raise first_frame_error(
@@ -2780,6 +2770,7 @@ def normalize_prompt(
             f"将源画面的主要人物完整替换为所选场景形象“{character_name}”。\n"
             "第 1 张源画面提供人物姿态、动作、机位、画幅和主体占比；保留这些空间关系。\n"
             "第 2 张场景参考图是人物身份、服装造型与目标环境的唯一外观依据。"
+            f"{primary_subject_contract}\n"
             "使用场景参考图的背景替换原背景，结合源画面的透视重建自然完整场景；"
             "光照、人物阴影与目标环境一致，不保留与目标场景冲突的原建筑或道具。\n"
             "目标场景参考图中实际存在的招牌文字与 Logo 保持原样；"
@@ -2791,10 +2782,11 @@ def normalize_prompt(
         )
     if appearance.appearance_source == "SCENE_LOOK":
         server_template = (
-            f"将第 1 张原视频源画面中的唯一人物，替换为用户选中的场景形象“{character_name}”。\n"
+            f"将第 1 张原视频源画面中的主要人物，替换为用户选中的场景形象“{character_name}”。\n"
             "第 2 张及后续输入图是同一个已完成造型的场景人物，是唯一外观依据："
             "完整沿用其面容、发型、肤色、体型、服装、鞋履和配饰。"
             "不要重新设计服饰，不要保留原视频人物的外貌或衣服。\n"
+            f"{primary_subject_contract}\n"
             "原视频源画面只提供人物姿态、动作、位置、朝向、遮挡关系、构图、机位、背景、道具和光照；"
             "这些内容保持不变。将目标形象自然适配原姿态和透视。\n"
             "以第 1 张源画面作为完整编辑画布，输出必须保持其画幅比例、取景范围和人物占画面比例。"
@@ -2812,9 +2804,7 @@ def normalize_prompt(
             f"项目人物造型（后台自动匹配）：场景为“{appearance.scene}”，"
             f"人物身份为“{appearance.subject}”；服装要求：{appearance.outfit_description}\n"
             "项目人物造型优先于参考图服装；人物身份特征必须稳定，但不得机械复制参考图的服装。\n"
-            f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
-            "如果画面中有多人，只重构这一名主要人物；其他人物的身份、服装、数量、位置与动作均保持不变，"
-            "不得把目标人物外观扩散到旁人。"
+            f"{primary_subject_contract}"
         )
         contact_sheet_role = (
             "第 2 张输入图是该角色的五视图参考板，仅用于确定人物身份、长相、发型与身材比例；"

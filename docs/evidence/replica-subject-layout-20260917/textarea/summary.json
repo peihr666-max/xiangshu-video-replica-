@@ -1,0 +1,359 @@
+[
+  {
+    "viewport": "1440",
+    "route": "copy",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "来源原文",
+        "width": 1254,
+        "height": 224,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "本次改写要求",
+        "width": 1078,
+        "height": 176,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "二创文案",
+        "width": 1254,
+        "height": 360,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1440",
+    "route": "replica",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "口播文案",
+        "width": 668.61,
+        "height": 256,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "textarea-2",
+        "width": 187,
+        "height": 66,
+        "rows": 2,
+        "resize": "both",
+        "within": true
+      },
+      {
+        "label": "最终提示词",
+        "width": 668.61,
+        "height": 444,
+        "rows": 20,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1440",
+    "route": "video",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "提示词",
+        "width": 655.77,
+        "height": 180,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1440",
+    "route": "reference",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "提示词",
+        "width": 655.77,
+        "height": 180,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1440",
+    "route": "oral",
+    "overflow": false,
+    "textareas": [],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1440",
+    "route": "publishing",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "填写发布说明",
+        "width": 801.48,
+        "height": 128,
+        "rows": 2,
+        "resize": "both",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1024",
+    "route": "copy",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "来源原文",
+        "width": 714,
+        "height": 224,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "本次改写要求",
+        "width": 538,
+        "height": 176,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "二创文案",
+        "width": 714,
+        "height": 360,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1024",
+    "route": "replica",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "口播文案",
+        "width": 365,
+        "height": 256,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "textarea-2",
+        "width": 187,
+        "height": 66,
+        "rows": 2,
+        "resize": "both",
+        "within": true
+      },
+      {
+        "label": "最终提示词",
+        "width": 365,
+        "height": 444,
+        "rows": 20,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1024",
+    "route": "video",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "提示词",
+        "width": 369.14,
+        "height": 180,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1024",
+    "route": "reference",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "提示词",
+        "width": 369.14,
+        "height": 180,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1024",
+    "route": "oral",
+    "overflow": false,
+    "textareas": [],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "1024",
+    "route": "publishing",
+    "overflow": true,
+    "textareas": [
+      {
+        "label": "填写发布说明",
+        "width": 538,
+        "height": 128,
+        "rows": 2,
+        "resize": "both",
+        "within": false
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "390",
+    "route": "copy",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "来源原文",
+        "width": 312,
+        "height": 224,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "本次改写要求",
+        "width": 312,
+        "height": 176,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "二创文案",
+        "width": 312,
+        "height": 360,
+        "rows": 2,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "390",
+    "route": "replica",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "口播文案",
+        "width": 308,
+        "height": 256,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      },
+      {
+        "label": "textarea-2",
+        "width": 187,
+        "height": 66,
+        "rows": 2,
+        "resize": "both",
+        "within": true
+      },
+      {
+        "label": "最终提示词",
+        "width": 308,
+        "height": 444,
+        "rows": 20,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "390",
+    "route": "video",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "提示词",
+        "width": 358,
+        "height": 180,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "390",
+    "route": "reference",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "提示词",
+        "width": 358,
+        "height": 180,
+        "rows": 10,
+        "resize": "vertical",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "390",
+    "route": "oral",
+    "overflow": false,
+    "textareas": [],
+    "consoleErrors": 0
+  },
+  {
+    "viewport": "390",
+    "route": "publishing",
+    "overflow": false,
+    "textareas": [
+      {
+        "label": "填写发布说明",
+        "width": 312,
+        "height": 128,
+        "rows": 2,
+        "resize": "both",
+        "within": true
+      }
+    ],
+    "consoleErrors": 0
+  }
+]

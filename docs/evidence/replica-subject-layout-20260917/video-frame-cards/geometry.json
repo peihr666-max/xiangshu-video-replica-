@@ -1,0 +1,136 @@
+{
+  "generatedAt": "2026-09-17T07:29:52.224Z",
+  "results": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "overflow": false,
+      "documentWidth": {
+        "scroll": 1440,
+        "client": 1440
+      },
+      "cards": [
+        {
+          "label": "更换首帧",
+          "rect": {
+            "x": 108,
+            "y": 261,
+            "width": 320.875,
+            "height": 280
+          },
+          "media": {
+            "width": 318.875,
+            "height": 179.453125
+          },
+          "imageObjectFit": "contain"
+        },
+        {
+          "label": "添加尾帧",
+          "rect": {
+            "x": 442.875,
+            "y": 261,
+            "width": 320.890625,
+            "height": 280
+          },
+          "media": null,
+          "imageObjectFit": null
+        }
+      ],
+      "standaloneLocalUploadButtons": 0,
+      "dialog": {
+        "visible": true,
+        "library": true,
+        "local": true
+      },
+      "focusReturned": true,
+      "consoleErrors": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 900
+      },
+      "overflow": false,
+      "documentWidth": {
+        "scroll": 1024,
+        "client": 1024
+      },
+      "cards": [
+        {
+          "label": "更换首帧",
+          "rect": {
+            "x": 244,
+            "y": 261,
+            "width": 369.140625,
+            "height": 240
+          },
+          "media": {
+            "width": 355.359375,
+            "height": 199.984375
+          },
+          "imageObjectFit": "contain"
+        },
+        {
+          "label": "添加尾帧",
+          "rect": {
+            "x": 244,
+            "y": 557,
+            "width": 369.140625,
+            "height": 240
+          },
+          "media": null,
+          "imageObjectFit": null
+        }
+      ],
+      "standaloneLocalUploadButtons": 0,
+      "consoleErrors": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "overflow": false,
+      "documentWidth": {
+        "scroll": 390,
+        "client": 390
+      },
+      "cards": [
+        {
+          "label": "更换首帧",
+          "rect": {
+            "x": 16,
+            "y": 253,
+            "width": 358,
+            "height": 240
+          },
+          "media": {
+            "width": 355.359375,
+            "height": 199.984375
+          },
+          "imageObjectFit": "contain"
+        },
+        {
+          "label": "添加尾帧",
+          "rect": {
+            "x": 16,
+            "y": 549,
+            "width": 358,
+            "height": 240
+          },
+          "media": null,
+          "imageObjectFit": null
+        }
+      ],
+      "standaloneLocalUploadButtons": 0,
+      "consoleErrors": []
+    }
+  ],
+  "reference": {
+    "referenceUpload": "上传文件点击或拖拽添加",
+    "frameCards": 0,
+    "overflow": false
+  }
+}

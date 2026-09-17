@@ -334,6 +334,40 @@ describe("V1.4 创作页面", () => {
     }));
   });
 
+  it("sizes the replica columns from the current source video and resets on replacement", () => {
+    const value = studio();
+    const asset = {
+      id: "source-1",
+      name: "来源视频".repeat(40),
+      kind: "video" as const,
+      url: "/portrait.mp4",
+      group: "项目",
+      source: "上传",
+      saved: true,
+    };
+    value.data.assets.push(asset);
+    useStudio.mockReturnValue(value);
+    const view = render(<ReplicaPage />);
+    const grid = view.container.querySelector(
+      ".creation-replica-stage-grid",
+    ) as HTMLElement;
+    const video = grid.querySelector("video");
+    if (!video) throw new Error("replica source preview missing");
+    Object.defineProperties(video, {
+      videoWidth: { value: 1920 },
+      videoHeight: { value: 1080 },
+    });
+    fireEvent.loadedMetadata(video);
+    expect(grid.style.getPropertyValue("--replica-source-ratio")).toBe(
+      String(1920 / 1080),
+    );
+    asset.url = "/next.mp4";
+    view.rerender(<ReplicaPage />);
+    expect(grid.style.getPropertyValue("--replica-source-ratio")).toBe(
+      String(9 / 16),
+    );
+  });
+
   it("提取原文后不显示二创编辑框或终稿按钮", () => {
     const value = studio();
     value.state.draft.script = {
@@ -1942,6 +1976,109 @@ describe("V1.4 创作页面", () => {
     expect(value.navigate).toHaveBeenCalledWith("reference");
   });
 
+  it("首尾帧空卡片从卡片内选择素材库或本地上传", () => {
+    const value = studio();
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: {
+        ...value.state.draft,
+        firstFrameId: undefined,
+        tailFrameId: undefined,
+      },
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    expect(
+      screen.getByRole("button", { name: "添加首帧" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "添加尾帧" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "本机上传" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加首帧" }));
+    const dialog = screen.getByRole("dialog", { name: "选择首帧来源" });
+    expect(
+      within(dialog).getByRole("button", { name: "从素材库选择" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "本机上传" }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "从素材库选择" }),
+    );
+    expect(value.openPicker).toHaveBeenCalledWith("first-frame");
+    expect(screen.queryByRole("dialog", { name: "选择首帧来源" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加尾帧" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "选择尾帧来源" })).getByRole(
+        "button",
+        { name: "从素材库选择" },
+      ),
+    );
+    expect(value.openPicker).toHaveBeenCalledWith("tail-frame");
+  });
+
+  it("已选首帧在原卡片预览并可点击更换", () => {
+    const value = studio();
+    value.state = { ...value.state, page: "video" };
+    value.data.assets = value.data.assets.map((asset) =>
+      asset.id === "frame-1"
+        ? { ...asset, url: "https://assets.example/frame.png" }
+        : asset,
+    );
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const card = screen.getByRole("button", { name: "更换首帧" });
+    expect(within(card).getByRole("img", { name: "首帧" })).toHaveAttribute(
+      "src",
+      "https://assets.example/frame.png",
+    );
+    fireEvent.click(card);
+    expect(
+      screen.getByRole("dialog", { name: "选择首帧来源" }),
+    ).toBeInTheDocument();
+  });
+
+  it("首帧来源弹层复用本地上传链路并在完成后关闭", async () => {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: { ...value.state.draft, firstFrameId: undefined },
+    };
+    replicaLive.uploadVideoMaterial.mockResolvedValue({
+      id: "local-first",
+      name: "first.jpg",
+      kind: "image",
+      url: "https://assets.example/local-first.jpg",
+      group: "首帧素材",
+      source: "本机上传",
+      saved: true,
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "添加首帧" }));
+    fireEvent.change(screen.getByLabelText("上传首帧"), {
+      target: {
+        files: [new File(["image"], "first.jpg", { type: "image/jpeg" })],
+      },
+    });
+
+    await waitFor(() =>
+      expect(value.patchDraft).toHaveBeenCalledWith({
+        firstFrameId: "local-first",
+      }),
+    );
+    expect(value.updateData).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog", { name: "选择首帧来源" })).toBeNull();
+  });
+
   it("文图与参考空占位默认竖屏且不随输出比例变化", () => {
     const value = studio({ state: { ...studio().state, page: "video" } });
     useStudio.mockReturnValue(value);
@@ -2120,6 +2257,105 @@ describe("V1.4 创作页面", () => {
     expect(screen.getByText("音频 · 素材库")).toBeInTheDocument();
     expect(screen.queryByText(/无效素材/)).toBeNull();
     expect(screen.queryByRole("button", { name: "整理参考素材" })).toBeNull();
+  });
+
+  it("参考素材放在添加区下方，图片视频音频均可单击预览", async () => {
+    const value = studio();
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: {
+        ...value.state.draft,
+        referenceIds: ["reference-1", "reference-video", "reference-audio"],
+      },
+    };
+    value.data.assets = value.data.assets.map((asset) =>
+      asset.id === "reference-1"
+        ? { ...asset, url: "https://media.example/reference.jpg" }
+        : asset,
+    );
+    value.data.assets.push(
+      {
+        id: "reference-video",
+        name: "庭院运镜.mp4",
+        kind: "video",
+        group: "参考素材",
+        source: "素材库",
+        saved: true,
+      },
+      {
+        id: "reference-audio",
+        name: "环境声.wav",
+        kind: "audio",
+        group: "参考素材",
+        source: "素材库",
+        saved: true,
+      },
+    );
+    useStudio.mockReturnValue(value);
+    const view = render(<VideoPage />);
+
+    const upload = screen.getByRole("button", { name: "上传文件" });
+    const firstPreview = screen.getByRole("button", {
+      name: "预览 乡墅外观.jpg",
+    });
+    expect(
+      upload.compareDocumentPosition(firstPreview) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(firstPreview);
+    let dialog = screen.getByRole("dialog", { name: "预览 乡墅外观.jpg" });
+    expect(
+      within(dialog).getByRole("img", { name: "乡墅外观.jpg" }),
+    ).toBeVisible();
+    fireEvent.click(within(dialog).getByRole("button", { name: "关闭" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(firstPreview));
+
+    const videoPreview = screen.getByRole("button", {
+      name: "预览 庭院运镜.mp4",
+    });
+    fireEvent.click(videoPreview);
+    dialog = screen.getByRole("dialog", { name: "预览 庭院运镜.mp4" });
+    await waitFor(() =>
+      expect(dialog.querySelector("video")).toHaveAttribute(
+        "src",
+        "https://signed.example/reference-video.png",
+      ),
+    );
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(videoPreview));
+
+    fireEvent.click(screen.getByRole("button", { name: "预览 环境声.wav" }));
+    dialog = screen.getByRole("dialog", { name: "预览 环境声.wav" });
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText("环境声.wav")).toHaveAttribute(
+        "src",
+        "https://signed.example/reference-audio.png",
+      ),
+    );
+    expect(replicaApi.getAssetDownloadUrl).toHaveBeenCalledWith(
+      "reference-video",
+    );
+    expect(replicaApi.getAssetDownloadUrl).toHaveBeenCalledWith(
+      "reference-audio",
+    );
+
+    view.unmount();
+  });
+
+  it("移除参考素材不会误打开预览", () => {
+    const value = studio();
+    value.state = { ...value.state, page: "reference" };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "移除 乡墅外观.jpg" }));
+
+    expect(value.patchDraft).toHaveBeenCalledWith({ referenceIds: [] });
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("参考素材本机上传对超过 15 秒的视频在发请求前拦截", async () => {

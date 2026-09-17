@@ -1,0 +1,8 @@
+{
+  "score": 95,
+  "verdict": "pass",
+  "category_match": true,
+  "differences": [],
+  "suggestions": [],
+  "reasoning": "真实本地样片的9:16、16:9、1:1在1440/1024/390窗口保持原始比例；长名称不越列，左右区域无重叠。12个工作区宽屏侧栏均88px，创作页仅侧栏保留Logo，手机导航切换正常。"
+}

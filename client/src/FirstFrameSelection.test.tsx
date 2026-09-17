@@ -547,6 +547,10 @@ describe("FirstFrameSelection", () => {
       />,
     );
     await screen.findByText("人物置换首帧");
+    expect(screen.getByLabelText("首帧编辑提示词")).toHaveAttribute(
+      "rows",
+      "10",
+    );
 
     fireEvent.change(screen.getByLabelText("首帧生成模式"), {
       target: { value: "gpt-image-2" },

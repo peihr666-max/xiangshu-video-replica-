@@ -508,6 +508,50 @@ def test_scene_replacement_has_no_ai_review_or_automatic_regeneration(resuming, 
         assert checkpoints[-1] == result
 
 
+def test_three_first_frames_go_directly_to_human_review_without_inspection():
+    from types import SimpleNamespace
+
+    from app.first_frames import GeneratedImage, perform_first_frame_generation
+
+    class Inspector:
+        def inspect_source(self, *args, **kwargs):
+            pytest.fail("human review must not inspect the source with AI")
+
+        def inspect_candidate(self, *args, **kwargs):
+            pytest.fail("human review must not inspect generated candidates with AI")
+
+    class Provider:
+        calls = 0
+
+        def edit(self, **kwargs):
+            self.calls += 1
+            assert kwargs["output_count"] == 3
+            return [
+                GeneratedImage(content=f"candidate-{index}".encode(), content_type="image/png")
+                for index in range(3)
+            ]
+
+    provider = Provider()
+    work = SimpleNamespace(
+        source_image=image(b"source", "image/png", "source.png"),
+        reference_images=[image(b"reference", "image/png", "reference.png")],
+        quantity=3,
+        model="gpt-image-2",
+        effective_prompt="replace primary subject",
+        project_appearance=SimpleNamespace(appearance_source="SCENE_LOOK"),
+    )
+
+    result = perform_first_frame_generation(
+        work,
+        provider=provider,
+        quality_inspector=Inspector(),
+    )
+
+    assert provider.calls == 1
+    assert len(result) == 3
+    assert all(candidate.quality is None for candidate in result)
+
+
 def test_scene_reference_never_adds_identity_original_photo():
     import json
     from types import SimpleNamespace
@@ -562,6 +606,87 @@ def test_legacy_scene_reference_sends_only_one_selected_scene_image():
     ) == (["selected-scene"], ["scene_image"])
 
 
+def test_primary_subject_replacement_contract_versions_both_appearance_fingerprints():
+    import hashlib
+    import json
+
+    from app.first_frames import (
+        FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION,
+        _apply_scene_look_snapshot,
+        derive_project_appearance_spec,
+    )
+
+    assert FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION == 3
+    appearance = derive_project_appearance_spec(
+        analysis_payload={
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 5,
+                    "subject": "主讲人",
+                    "action": "介绍项目",
+                    "scene": "施工现场",
+                }
+            ]
+        },
+        source_analysis_version_id="analysis-1",
+        source_timestamp_seconds=2,
+    )
+    expected_video_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "schema_version": "wp1.project-character-appearance.v2",
+                "replacement_contract_version": 3,
+                "source_analysis_version_id": "analysis-1",
+                "source_timestamp_seconds": 2,
+                "category": "CONSTRUCTION",
+                "scene": "施工现场",
+                "subject": "主讲人",
+                "outfit_description": appearance.outfit_description,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert appearance.fingerprint == expected_video_fingerprint
+
+    scene_appearance = _apply_scene_look_snapshot(
+        appearance,
+        character_snapshot={
+            "persona_snapshot_json": {
+                "name": "工地形象",
+                "scene_description": "乡村自建房施工现场",
+                "costume_description": "蓝色工装",
+                "appearance_constraints_json": {"appearance_type": "scene"},
+            }
+        },
+        character_version_id="scene-version-1",
+    )
+    expected_scene_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "schema_version": "wp1.project-character-appearance.v2",
+                "source_analysis_version_id": "analysis-1",
+                "source_timestamp_seconds": 2,
+                "source_scene": "施工现场",
+                "subject": "主讲人",
+                "appearance_source": "SCENE_LOOK",
+                "review_mode": "HUMAN_CONFIRMATION",
+                "replacement_contract_version": 3,
+                "scene_look_name": "工地形象",
+                "scene_look_description": "乡村自建房施工现场",
+                "scene_look_version_id": "scene-version-1",
+                "outfit_description": "蓝色工装",
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    assert scene_appearance.fingerprint == expected_scene_fingerprint
+
+
 def test_scene_prompt_uses_images_even_without_scene_text():
     from app.first_frames import (
         _apply_scene_look_snapshot,
@@ -571,7 +696,19 @@ def test_scene_prompt_uses_images_even_without_scene_text():
 
     appearance = _apply_scene_look_snapshot(
         derive_project_appearance_spec(
-            analysis_payload={}, source_analysis_version_id=None, source_timestamp_seconds=None
+            analysis_payload={
+                "shots": [
+                    {
+                        "start_time": 0,
+                        "end_time": 5,
+                        "subject": "现场负责人",
+                        "action": "介绍项目",
+                        "scene": "施工现场",
+                    }
+                ]
+            },
+            source_analysis_version_id="analysis-1",
+            source_timestamp_seconds=2,
         ),
         character_snapshot={
             "persona_snapshot_json": {
@@ -595,6 +732,9 @@ def test_scene_prompt_uses_images_even_without_scene_text():
     assert "不得出现任何文字" not in prompt
     assert "原始照片" not in prompt
     assert "后台自动匹配" not in prompt
+    assert "目标替换对象仅为源画面中承担“现场负责人”角色的主要人物" in prompt
+    assert "其他人物的身份、服装、数量、位置、动作和遮挡关系均保持不变" in prompt
+    assert "不得把目标人物外观扩散到旁人" in prompt
 
 
 def test_scene_replacement_uses_target_background_without_preservation_conflict():
@@ -606,7 +746,19 @@ def test_scene_replacement_uses_target_background_without_preservation_conflict(
 
     appearance = _apply_scene_look_snapshot(
         derive_project_appearance_spec(
-            analysis_payload={}, source_analysis_version_id=None, source_timestamp_seconds=None
+            analysis_payload={
+                "shots": [
+                    {
+                        "start_time": 0,
+                        "end_time": 5,
+                        "subject": "现场负责人",
+                        "action": "介绍项目",
+                        "scene": "施工现场",
+                    }
+                ]
+            },
+            source_analysis_version_id="analysis-1",
+            source_timestamp_seconds=2,
         ),
         character_snapshot={
             "persona_snapshot_json": {
@@ -630,6 +782,65 @@ def test_scene_replacement_uses_target_background_without_preservation_conflict(
     assert "不得恢复第 1 张源背景中的招牌、门联或其他场景文字" in prompt
     assert "背景、道具和光照；这些内容保持不变" not in prompt
     assert "分格线" in prompt
+    assert "目标替换对象仅为源画面中承担“现场负责人”角色的主要人物" in prompt
+    assert "其他人物的身份、服装、数量、位置、动作和遮挡关系均保持不变" in prompt
+
+
+@pytest.mark.parametrize(
+    "shot",
+    [
+        {
+            "start_time": 0,
+            "end_time": 5,
+            "subject": "主讲人",
+            "action": "介绍项目",
+            "scene": "施工现场",
+            "person_count": 3,
+        },
+        {
+            "start_time": 0,
+            "end_time": 5,
+            "subject": "主讲人",
+            "action": "介绍项目",
+            "scene": "施工现场",
+        },
+    ],
+)
+def test_first_frame_analysis_gate_accepts_multi_person_and_legacy_counts(monkeypatch, shot):
+    from app import first_frames
+
+    monkeypatch.setattr(
+        first_frames,
+        "latest_version",
+        lambda *_args: {
+            "payload_json": json.dumps({"analysis": {"shots": [shot]}}),
+        },
+    )
+
+    first_frames.require_readable_video_analysis(object(), project_id="project-1")
+
+
+@pytest.mark.parametrize(
+    "payload_json",
+    [
+        "{broken-json",
+        json.dumps({"analysis": {"shots": ["broken-shot"]}}),
+    ],
+)
+def test_first_frame_analysis_gate_still_rejects_damaged_analysis(monkeypatch, payload_json):
+    from fastapi import HTTPException
+
+    from app import first_frames
+
+    monkeypatch.setattr(
+        first_frames,
+        "latest_version",
+        lambda *_args: {"payload_json": payload_json},
+    )
+
+    with pytest.raises(HTTPException) as error:
+        first_frames.require_readable_video_analysis(object(), project_id="project-1")
+    assert error.value.detail["code"] == "VIDEO_ANALYSIS_UPGRADE_REQUIRED"
 
 
 def test_scene_replacement_requires_authored_scene_look():
@@ -640,6 +851,38 @@ def test_scene_replacement_requires_authored_scene_look():
     with pytest.raises(HTTPException) as error:
         normalize_prompt(None, character_name="角色", replace_scene=True)
     assert error.value.detail["code"] == "FIRST_FRAME_SCENE_LOOK_REQUIRED"
+
+
+def test_legacy_reference_prompt_targets_only_the_analysed_primary_subject():
+    from app.first_frames import derive_project_appearance_spec, normalize_prompt
+
+    appearance = derive_project_appearance_spec(
+        analysis_payload={
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 5,
+                    "subject": "主讲人",
+                    "action": "讲解施工进度",
+                    "scene": "施工现场",
+                    "person_count": 3,
+                }
+            ]
+        },
+        source_analysis_version_id="analysis-1",
+        source_timestamp_seconds=2,
+    )
+
+    prompt = normalize_prompt(
+        None,
+        character_name="林夏",
+        reference_roles=["contact_sheet", "source_photo"],
+        project_appearance=appearance,
+    )
+
+    assert "目标替换对象仅为源画面中承担“主讲人”角色的主要人物" in prompt
+    assert "其他人物的身份、服装、数量、位置、动作和遮挡关系均保持不变" in prompt
+    assert "不得把目标人物外观扩散到旁人" in prompt
 
 
 def test_scene_provider_timeout_does_not_resubmit_paid_generation():

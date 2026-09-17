@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -88,7 +89,17 @@ import type {
   StudioTask,
   StudioVideo,
 } from "./types";
-import { Button, Empty, Field, Hint, Icon, Media, Panel, Tabs } from "./ui";
+import {
+  Button,
+  Empty,
+  Field,
+  Hint,
+  Icon,
+  Media,
+  Panel,
+  StudioDialog,
+  Tabs,
+} from "./ui";
 import "./creation.css";
 import { OralJourney } from "./OralJourney";
 
@@ -1222,6 +1233,13 @@ export function ReplicaPage() {
     data.videos,
     state.draft.sourceId ?? state.selectedVideoId,
   );
+  const sourceMediaKey = source?.url || source?.poster || source?.id || "";
+  const [sourceRatio, setSourceRatio] = useState<{
+    source: string;
+    ratio: number;
+  }>();
+  const previewRatio =
+    sourceRatio?.source === sourceMediaKey ? sourceRatio.ratio : 9 / 16;
   const selectedFirstFrame = findAsset(data.assets, state.draft.firstFrameId);
   const [stage, setStage] = useState<ReplicaStage>(() =>
     state.draft.projectId ? "ready" : "source",
@@ -2030,7 +2048,12 @@ export function ReplicaPage() {
             </Panel>
           ) : (
             <>
-              <div className="creation-replica-stage-grid">
+              <div
+                className="creation-replica-stage-grid"
+                style={
+                  { "--replica-source-ratio": previewRatio } as CSSProperties
+                }
+              >
                 <div className="creation-replica-media-column">
                   <SourceStrip source={source} />
                   <Panel className="creation-replica-video">
@@ -2038,6 +2061,9 @@ export function ReplicaPage() {
                       asset={source}
                       alt="参考视频"
                       className="creation-replica-video__media"
+                      onAspectRatioChange={(ratio) =>
+                        setSourceRatio({ source: sourceMediaKey, ratio })
+                      }
                       presentation="video"
                       aspectRatio="adaptive"
                     />
@@ -3199,6 +3225,89 @@ function VideoMaterialUpload({
   );
 }
 
+function VideoFrameCard({
+  asset,
+  disabled,
+  label,
+  optionalLabel,
+  picker,
+  onChooseLibrary,
+  onRemove,
+  onUploaded,
+}: {
+  asset?: StudioAsset;
+  disabled: boolean;
+  label: "首帧" | "尾帧";
+  optionalLabel: string;
+  picker: "first-frame" | "tail-frame";
+  onChooseLibrary: (picker: "first-frame" | "tail-frame") => void;
+  onRemove: () => void;
+  onUploaded: (asset: StudioAsset) => void;
+}) {
+  const [sourceOpen, setSourceOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeAndRestoreFocus = () => {
+    setSourceOpen(false);
+    requestAnimationFrame(() => triggerRef.current?.focus());
+  };
+  const chooseLibrary = () => {
+    setSourceOpen(false);
+    onChooseLibrary(picker);
+  };
+  return (
+    <div className="creation-frame-slot">
+      <button
+        aria-haspopup="dialog"
+        aria-label={asset ? `更换${label}` : `添加${label}`}
+        className="creation-frame-card"
+        disabled={disabled}
+        onClick={() => setSourceOpen(true)}
+        ref={triggerRef}
+        type="button"
+      >
+        {asset ? (
+          <Media asset={asset} alt={label} presentation="video" />
+        ) : (
+          <span className="creation-frame-empty">
+            <Icon name="plus" size={38} />
+            <strong>{`添加${label}`}</strong>
+            <small>从素材库选择或本地上传</small>
+          </span>
+        )}
+        <span className="creation-frame-card-label">
+          {asset ? `${label} · 点击更换` : optionalLabel}
+        </span>
+      </button>
+      {asset && (
+        <Button variant="quiet" disabled={disabled} onClick={onRemove}>
+          {`移除${label}`}
+        </Button>
+      )}
+      {sourceOpen && (
+        <StudioDialog title={`选择${label}来源`} onClose={closeAndRestoreFocus}>
+          <p className="creation-frame-source-copy">
+            从素材库选择已有图片，或从本机上传新图片。
+          </p>
+          <div className="creation-frame-source-actions">
+            <Button variant="outline" onClick={chooseLibrary}>
+              从素材库选择
+            </Button>
+            <VideoMaterialUpload
+              disabled={disabled}
+              group={`${label}素材`}
+              label={label}
+              onUploaded={(uploadedAsset) => {
+                onUploaded(uploadedAsset);
+                closeAndRestoreFocus();
+              }}
+            />
+          </div>
+        </StudioDialog>
+      )}
+    </div>
+  );
+}
+
 export function VideoPage() {
   const {
     state,
@@ -3221,6 +3330,20 @@ export function VideoPage() {
   } = useStudio();
   const readOnly = user.role === "auditor";
   const [previewReferenceId, setPreviewReferenceId] = useState<string>();
+  const [referencePreviewDialogId, setReferencePreviewDialogId] =
+    useState<string>();
+  const [resolvedReferencePreview, setResolvedReferencePreview] =
+    useState<StudioAsset>();
+  const [referencePreviewLoading, setReferencePreviewLoading] = useState(false);
+  const [referencePreviewError, setReferencePreviewError] = useState("");
+  const referencePreviewRequestRef = useRef(0);
+  const referencePreviewTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const closeReferencePreview = () => {
+    setReferencePreviewDialogId(undefined);
+    requestAnimationFrame(() =>
+      referencePreviewTriggerRef.current?.focus({ preventScroll: true }),
+    );
+  };
   const referenceMode = state.page === "reference";
   const storedFirstFrame =
     findAsset(data.assets, state.draft.firstFrameId) ??
@@ -3328,6 +3451,54 @@ export function VideoPage() {
     },
   );
   const references = referenceValidation.assets;
+  const referencePreviewDialogAsset = references.find(
+    (asset) => asset.id === referencePreviewDialogId,
+  );
+  const referencePreviewMedia =
+    resolvedReferencePreview?.id === referencePreviewDialogId
+      ? resolvedReferencePreview
+      : referencePreviewDialogAsset?.url
+        ? referencePreviewDialogAsset
+        : undefined;
+  useEffect(() => {
+    const requestId = ++referencePreviewRequestRef.current;
+    if (!referencePreviewDialogAsset) {
+      setResolvedReferencePreview(undefined);
+      setReferencePreviewLoading(false);
+      setReferencePreviewError("");
+      return;
+    }
+    if (referencePreviewDialogAsset.url) {
+      setResolvedReferencePreview(referencePreviewDialogAsset);
+      setReferencePreviewLoading(false);
+      setReferencePreviewError("");
+      return;
+    }
+
+    setResolvedReferencePreview(undefined);
+    setReferencePreviewLoading(true);
+    setReferencePreviewError("");
+    void getAssetDownloadUrl(
+      referencePreviewDialogAsset.assetId ?? referencePreviewDialogAsset.id,
+    )
+      .then(({ url }) => {
+        if (referencePreviewRequestRef.current !== requestId) return;
+        setResolvedReferencePreview({ ...referencePreviewDialogAsset, url });
+        setReferencePreviewLoading(false);
+      })
+      .catch((cause: unknown) => {
+        if (referencePreviewRequestRef.current !== requestId) return;
+        setReferencePreviewLoading(false);
+        setReferencePreviewError(
+          customerVisibleErrorMessage(cause, "素材预览读取失败，请重试。"),
+        );
+      });
+
+    return () => {
+      if (referencePreviewRequestRef.current === requestId)
+        referencePreviewRequestRef.current += 1;
+    };
+  }, [referencePreviewDialogAsset]);
   const effectiveCapabilitiesStatus = review
     ? "ready"
     : (videoCapabilitiesStatus ?? (videoCapabilities ? "ready" : "loading"));
@@ -3549,6 +3720,24 @@ export function VideoPage() {
                 </Button>
               )}
               <div className="creation-reference-materials">
+                <VideoMaterialUpload
+                  key={`reference-upload-${state.draft.id}`}
+                  disabled={
+                    readOnly ||
+                    referenceCapabilityPending ||
+                    referenceCapabilityError ||
+                    referenceModeDisabled ||
+                    referenceHasIssues ||
+                    referenceAssetsPending ||
+                    referenceAssetsError ||
+                    referenceAtLimit
+                  }
+                  acceptKinds={["image", "video", "audio"]}
+                  dropzone
+                  group="参考素材"
+                  label="参考素材"
+                  onUploaded={addReference}
+                />
                 <div className="creation-reference-list">
                   {references.map((asset, index) => (
                     <div className="creation-reference-row" key={asset.id}>
@@ -3557,7 +3746,12 @@ export function VideoPage() {
                         className="creation-reference-preview-button"
                         aria-label={`预览 ${asset.name}`}
                         aria-pressed={previewReferenceId === asset.id}
-                        onClick={() => setPreviewReferenceId(asset.id)}
+                        onClick={(event) => {
+                          referencePreviewTriggerRef.current =
+                            event.currentTarget;
+                          setPreviewReferenceId(asset.id);
+                          setReferencePreviewDialogId(asset.id);
+                        }}
                       >
                         <Media
                           asset={
@@ -3622,25 +3816,28 @@ export function VideoPage() {
                     </div>
                   ))}
                 </div>
-                <VideoMaterialUpload
-                  key={`reference-upload-${state.draft.id}`}
-                  disabled={
-                    readOnly ||
-                    referenceCapabilityPending ||
-                    referenceCapabilityError ||
-                    referenceModeDisabled ||
-                    referenceHasIssues ||
-                    referenceAssetsPending ||
-                    referenceAssetsError ||
-                    referenceAtLimit
-                  }
-                  acceptKinds={["image", "video", "audio"]}
-                  dropzone
-                  group="参考素材"
-                  label="参考素材"
-                  onUploaded={addReference}
-                />
               </div>
+              {referencePreviewDialogAsset ? (
+                <StudioDialog
+                  title={`预览 ${referencePreviewDialogAsset.name}`}
+                  onClose={closeReferencePreview}
+                >
+                  {referencePreviewLoading ? (
+                    <p role="status">正在读取素材预览…</p>
+                  ) : referencePreviewError ? (
+                    <p className="settings-error" role="alert">
+                      {referencePreviewError}
+                    </p>
+                  ) : (
+                    <Media
+                      asset={referencePreviewMedia}
+                      alt={referencePreviewDialogAsset.name}
+                      className="creation-reference-dialog-media"
+                      presentation="video"
+                    />
+                  )}
+                </StudioDialog>
+              ) : null}
             </ControlGroup>
           ) : (
             <ControlGroup
@@ -3677,61 +3874,33 @@ export function VideoPage() {
                 </div>
               )}
               <div className="creation-frame-row">
-                <div className="creation-frame-slot">
-                  <button
-                    disabled={readOnly}
-                    onClick={() => openPicker("first-frame")}
-                    type="button"
-                  >
-                    <Media asset={firstFrame} alt="首帧" presentation="video" />
-                    <span>首帧（选填）</span>
-                  </button>
-                  {firstFrameId && (
-                    <Button
-                      variant="quiet"
-                      disabled={readOnly}
-                      onClick={() => patchDraft({ firstFrameId: undefined })}
-                    >
-                      移除首帧
-                    </Button>
-                  )}
-                  <VideoMaterialUpload
-                    group="首帧素材"
-                    label="首帧"
-                    onUploaded={(asset) => {
-                      appendMaterial(asset);
-                      patchDraft({ firstFrameId: asset.id });
-                    }}
-                  />
-                </div>
+                <VideoFrameCard
+                  asset={firstFrame}
+                  disabled={readOnly}
+                  label="首帧"
+                  optionalLabel="首帧（选填）"
+                  picker="first-frame"
+                  onChooseLibrary={openPicker}
+                  onRemove={() => patchDraft({ firstFrameId: undefined })}
+                  onUploaded={(asset) => {
+                    appendMaterial(asset);
+                    patchDraft({ firstFrameId: asset.id });
+                  }}
+                />
                 <Icon name="arrow" />
-                <div className="creation-frame-slot">
-                  <button
-                    disabled={readOnly}
-                    onClick={() => openPicker("tail-frame")}
-                    type="button"
-                  >
-                    <Media asset={tailFrame} alt="尾帧" presentation="video" />
-                    <span>尾帧（可选）</span>
-                  </button>
-                  {state.draft.tailFrameId && (
-                    <Button
-                      variant="quiet"
-                      disabled={readOnly}
-                      onClick={() => patchDraft({ tailFrameId: undefined })}
-                    >
-                      移除尾帧
-                    </Button>
-                  )}
-                  <VideoMaterialUpload
-                    group="尾帧素材"
-                    label="尾帧"
-                    onUploaded={(asset) => {
-                      appendMaterial(asset);
-                      patchDraft({ tailFrameId: asset.id });
-                    }}
-                  />
-                </div>
+                <VideoFrameCard
+                  asset={tailFrame}
+                  disabled={readOnly}
+                  label="尾帧"
+                  optionalLabel="尾帧（可选）"
+                  picker="tail-frame"
+                  onChooseLibrary={openPicker}
+                  onRemove={() => patchDraft({ tailFrameId: undefined })}
+                  onUploaded={(asset) => {
+                    appendMaterial(asset);
+                    patchDraft({ tailFrameId: asset.id });
+                  }}
+                />
               </div>
             </ControlGroup>
           )}

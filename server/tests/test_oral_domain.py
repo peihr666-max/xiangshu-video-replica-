@@ -46,6 +46,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 # Set the audit HMAC key before importing app modules (audit writers require it).
@@ -235,6 +236,7 @@ class ScriptedVendorTransport:
     def __init__(self) -> None:
         self.routes: dict[tuple[str, str], bytes | Callable[[bytes | None], bytes]] = {}
         self.calls: list[tuple[str, str]] = []
+        self.put_bodies: list[bytes] = []
 
     def on(
         self, method: str, prefix: str, responder: bytes | Callable[[bytes | None], bytes]
@@ -251,6 +253,7 @@ class ScriptedVendorTransport:
     ) -> bytes:
         self.calls.append((method, url))
         if method == "PUT":
+            self.put_bodies.append(body or b"")
             return b""
         path = url.split("?", 1)[0]
         for (route_method, prefix), responder in self.routes.items():
@@ -1532,9 +1535,180 @@ def test_voice_clone_rejects_undecodable_audio_before_provider_submission(
     assert tuple(persisted) == (
         "FAILED",
         "FAILED",
-        "声音素材需为 5 至 180 秒的有效 MP3",
+        "声音素材需为 5 至 180 秒的有效音频",
     )
     assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    ("suffix", "audio_codec", "with_video"),
+    [
+        (".wav", "pcm_s16le", False),
+        (".m4a", "aac", False),
+        (".wma", "wmav2", False),
+        (".wmv", "wmav2", True),
+    ],
+)
+def test_voice_clone_normalizes_common_audio_formats_before_provider_upload(
+    tmp_path: Any,
+    fake_source_storage: FakeSourceStorage,
+    suffix: str,
+    audio_codec: str,
+    with_video: bool,
+) -> None:
+    media_path = tmp_path / f"voice{suffix}"
+    command = [
+        resolve_media_binary("ffmpeg"),
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=16000",
+    ]
+    if with_video:
+        command.extend(["-f", "lavfi", "-i", "color=c=black:s=32x32:r=5"])
+    command.extend(["-t", "6", "-c:a", audio_codec])
+    if with_video:
+        command.extend(["-c:v", "msmpeg4v3"])
+    command.append(str(media_path))
+    subprocess.run(command, check=True, capture_output=True)
+    fake_source_storage.objects[f"voice{suffix}"] = media_path.read_bytes()
+    vendor, transport = make_vendor()
+    transport.on(
+        "POST",
+        "/api/v2/hifly/tool/create_upload_url",
+        envelope(
+            {
+                "upload_url": "https://up.example/normalized",
+                "content_type": "audio/mpeg",
+                "file_id": "normalized-file",
+            }
+        ),
+    )
+    transport.on("POST", "/api/v2/hifly/voice/create", envelope({"task_id": "voice-task"}))
+
+    result = perform_oral_work(
+        OralWorkLease(
+            kind="voice_submit",
+            record_id=f"voice-{suffix[1:]}",
+            worker_id="format-worker",
+            lease_token="format-lease",
+            attempt_count=1,
+            row={
+                "source_storage_uri": f"fake://assets/voice{suffix}",
+                "title": "张工声音",
+            },
+        ),
+        vendor=vendor,
+        storage=fake_source_storage,
+    )
+
+    assert result.outcome == "submitted"
+    assert len(transport.put_bodies) == 1
+    uploaded = transport.put_bodies[0]
+    assert uploaded != media_path.read_bytes() or suffix == ".mp3"
+    normalized_path = tmp_path / "normalized.mp3"
+    normalized_path.write_bytes(uploaded)
+    probe = subprocess.run(
+        [
+            resolve_media_binary("ffprobe"),
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "default=nw=1:nk=1",
+            str(normalized_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.strip() == "mp3"
+
+
+def test_voice_clone_transcode_failure_never_calls_provider(
+    fake_source_storage: FakeSourceStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.media_tools import MediaToolFailed
+
+    vendor, transport = make_vendor()
+
+    def fail_normalization(*_args: Any, **_kwargs: Any) -> bytes:
+        raise MediaToolFailed("forced transcode failure")
+
+    monkeypatch.setattr("app.oral_worker.normalize_audio_to_mp3", fail_normalization)
+    result = perform_oral_work(
+        OralWorkLease(
+            kind="voice_submit",
+            record_id="voice-transcode-failure",
+            worker_id="format-worker",
+            lease_token="format-lease",
+            attempt_count=1,
+            row={"source_storage_uri": "fake://assets/voice.mp3", "title": "张工声音"},
+        ),
+        vendor=vendor,
+        storage=fake_source_storage,
+    )
+
+    assert result.outcome == "failed"
+    assert result.message == "媒体校验服务暂不可用，请稍后重试"
+    assert transport.calls == []
+
+
+def test_voice_audio_media_commands_restrict_protocols_and_fail_on_decode_errors(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import media_tools
+
+    commands: list[list[str]] = []
+    inspections: list[dict[str, Any]] = []
+
+    def inspect(_content: bytes, **kwargs: Any) -> Any:
+        inspections.append(kwargs)
+        return object()
+
+    def run(command: list[str]) -> None:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"ID3-normalized")
+
+    monkeypatch.setattr(media_tools, "inspect_media_bytes", inspect)
+    monkeypatch.setattr(media_tools, "resolve_media_binary", lambda _tool: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(media_tools, "_run", run)
+
+    normalized = media_tools.normalize_audio_to_mp3(
+        b"RIFF-source",
+        suffix=".wav",
+        min_duration_seconds=5,
+        max_duration_seconds=180,
+    )
+
+    assert normalized == b"ID3-normalized"
+    assert len(commands) == 1
+    command = commands[0]
+    assert "-xerror" in command
+    assert command[command.index("-protocol_whitelist") + 1] == "file,pipe"
+    assert inspections == [
+        {
+            "suffix": ".wav",
+            "expected_type": "audio",
+            "min_duration_seconds": 5,
+            "max_duration_seconds": 180,
+            "local_input_only": True,
+        },
+        {
+            "suffix": ".mp3",
+            "expected_type": "audio",
+            "min_duration_seconds": 5,
+            "max_duration_seconds": 180,
+            "local_input_only": True,
+        },
+    ]
 
 
 def test_voice_clone_done_without_demo_stays_running(

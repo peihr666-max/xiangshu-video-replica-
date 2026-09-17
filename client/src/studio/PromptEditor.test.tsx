@@ -33,7 +33,13 @@ vi.mock("../api", () => ({
   createScriptVersion: api.script,
   compileGenerationPrompt: api.compile,
 }));
-function Harness({ scope = "user:project" }: { scope?: string }) {
+function Harness({
+  scope = "user:project",
+  rows,
+}: {
+  scope?: string;
+  rows?: number;
+}) {
   const [text, setText] = useState("原始提示词");
   return (
     <PromptEditor
@@ -41,6 +47,7 @@ function Harness({ scope = "user:project" }: { scope?: string }) {
       onChange={setText}
       scope={scope}
       context={{ route: "text_image", duration_seconds: 8 }}
+      rows={rows}
     />
   );
 }
@@ -53,6 +60,14 @@ const success: PromptOptimizeResult = {
   formatter_version: "v1",
   result: { prompt_text: "优化结果", warnings: [], validation_status: "valid" },
 };
+
+it("doubles the requested prompt editing rows", () => {
+  const view = render(<Harness />);
+  expect(screen.getByLabelText("提示词")).toHaveAttribute("rows", "16");
+
+  view.rerender(<Harness rows={5} />);
+  expect(screen.getByLabelText("提示词")).toHaveAttribute("rows", "10");
+});
 
 function FinalHarness({
   script = "新文案",

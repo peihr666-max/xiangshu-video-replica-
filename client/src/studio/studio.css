@@ -1884,13 +1884,6 @@ html:has(.studio-shell) {
   pointer-events: none;
 }
 
-.studio-creation-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-right: auto;
-  min-width: 0;
-}
 .studio-shell--creation .studio-topbar {
   position: relative;
   inset: auto;
@@ -1898,6 +1891,7 @@ html:has(.studio-shell) {
   height: auto;
   padding: 12px 24px;
   gap: 18px;
+  justify-content: flex-end;
   border-bottom: 1px solid var(--studio-border);
 }
 .studio-shell--creation .studio-global-search {
@@ -1928,29 +1922,29 @@ html:has(.studio-shell) {
   padding: 16px 24px;
 }
 @media (min-width: 1100px) {
-  .studio-shell--creation {
+  .studio-shell {
     --studio-sidebar: 88px;
   }
-  .studio-shell--creation .studio-sidebar {
+  .studio-shell .studio-sidebar {
     padding: 16px 6px;
   }
-  .studio-shell--creation .studio-brand .brand-identity__text,
-  .studio-shell--creation .studio-brand small,
-  .studio-shell--creation .studio-nav-label {
+  .studio-shell .studio-brand .brand-identity__text,
+  .studio-shell .studio-brand small,
+  .studio-shell .studio-nav-label {
     display: none;
   }
-  .studio-shell--creation .studio-new-button {
+  .studio-shell .studio-new-button {
     font-size: 0;
     min-height: 40px;
     margin-bottom: 12px;
   }
-  .studio-shell--creation .studio-new-button .studio-icon {
+  .studio-shell .studio-new-button .studio-icon {
     width: 20px;
   }
-  .studio-shell--creation .studio-nav-group {
+  .studio-shell .studio-nav-group {
     margin-bottom: 8px;
   }
-  .studio-shell--creation .studio-nav-group button {
+  .studio-shell .studio-nav-group button {
     flex-direction: column;
     gap: 4px;
     padding: 8px 2px;
@@ -1958,12 +1952,12 @@ html:has(.studio-shell) {
     text-align: center;
     min-height: 56px;
   }
-  .studio-shell--creation .studio-account-entry {
+  .studio-shell .studio-account-entry {
     flex-direction: column;
     padding: 8px 2px;
     gap: 4px;
   }
-  .studio-shell--creation .studio-account-name {
+  .studio-shell .studio-account-name {
     font-size: 12px;
     max-width: 72px;
   }

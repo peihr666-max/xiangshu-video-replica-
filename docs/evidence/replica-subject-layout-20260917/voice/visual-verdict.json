@@ -1,0 +1,17 @@
+{
+  "scope": "voice-result-layout-stability",
+  "score": 96,
+  "pass": true,
+  "evidence": {
+    "geometry": "measurements.json",
+    "screenshots": [
+      "1440-ready.png",
+      "390-ready.png"
+    ]
+  },
+  "findings": [
+    "1440/1024/390三档状态切换前后card高度、card位置与scrollTop一致",
+    "控制区桌面44px、手机100px；每6秒更新只影响当前声音",
+    "首次检查发现4px跳动，已修复通用flex覆盖与控件高度不一致"
+  ]
+}

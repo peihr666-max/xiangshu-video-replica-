@@ -13,6 +13,7 @@ type Props = ComponentProps<"video"> & {
   alt?: string;
   videoClassName?: string;
   onPosterError?: () => void;
+  onAspectRatioChange?: (ratio: number) => void;
   fallback?: ReactNode;
   overlay?: ReactNode;
 };
@@ -33,6 +34,7 @@ export function VideoPreview({
   children,
   frameRatio = src ? undefined : "adaptive",
   onLoadedMetadata,
+  onAspectRatioChange,
   ...videoProps
 }: Props) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -62,6 +64,24 @@ export function VideoPreview({
     },
     [ref],
   );
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (
+      !src ||
+      !video ||
+      video.readyState < 1 ||
+      video.currentSrc !== video.src ||
+      !video.videoWidth ||
+      !video.videoHeight
+    )
+      return;
+    const loadedRatio = video.videoWidth / video.videoHeight;
+    if (mediaRatio?.source === src && mediaRatio.ratio === loadedRatio) return;
+    // Cached media can finish loading before React attaches the metadata handler.
+    setMediaRatio({ source: src, ratio: loadedRatio });
+    onAspectRatioChange?.(loadedRatio);
+  }, [src, mediaRatio, onAspectRatioChange]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -182,11 +202,13 @@ export function VideoPreview({
             preload={videoProps.preload ?? "metadata"}
             onLoadedMetadata={(event) => {
               const video = event.currentTarget;
-              if (video.videoWidth > 0 && video.videoHeight > 0)
+              if (video.videoWidth > 0 && video.videoHeight > 0) {
+                onAspectRatioChange?.(video.videoWidth / video.videoHeight);
                 setMediaRatio({
                   source: src || "",
                   ratio: video.videoWidth / video.videoHeight,
                 });
+              }
               onLoadedMetadata?.(event);
             }}
           >
@@ -202,11 +224,13 @@ export function VideoPreview({
           referrerPolicy="no-referrer"
           onLoad={(event) => {
             const image = event.currentTarget;
-            if (image.naturalWidth > 0 && image.naturalHeight > 0)
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              onAspectRatioChange?.(image.naturalWidth / image.naturalHeight);
               setMediaRatio({
                 source: poster,
                 ratio: image.naturalWidth / image.naturalHeight,
               });
+            }
           }}
           onError={() => {
             setFailedPoster(poster);

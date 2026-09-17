@@ -1,0 +1,20 @@
+{
+  "verdict": "APPROVE",
+  "reviewer": "native code-reviewer / review_subject_layout",
+  "scope": "code, behavior, security and test adequacy",
+  "initial_findings": [
+    "source switch may reuse old decoded video ratio",
+    "new primary-subject contract missing from appearance fingerprints"
+  ],
+  "resolution": [
+    "currentSrc must equal resolved src before cached metadata reuse; RED to GREEN and nine browser cases passed",
+    "replacement_contract_version=3 in VIDEO_ANALYSIS and SCENE_LOOK fingerprints; old checkpoint PG regression passed"
+  ],
+  "remaining_findings": [],
+  "validation": [
+    "git diff --cached --check",
+    "frontend 225 targeted after review fixes",
+    "backend 58 plus PostgreSQL 5 after review fixes"
+  ],
+  "production_or_paid_calls": false
+}

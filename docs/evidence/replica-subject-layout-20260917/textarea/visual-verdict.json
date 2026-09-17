@@ -1,0 +1,35 @@
+{
+  "scope": "copy-and-prompt-textareas",
+  "score": 94,
+  "pass": true,
+  "differences": [
+    "文案与提示词多行输入区域按原有桌面和移动端规则约翻倍；单行标题与普通设置字段未扩大。",
+    "1024px 发布页初测发现双列最小宽度超过内容区，已在 1180px 以下切换为单列；1440px 仍保留双列。",
+    "数字人口播当前路由展示已生成的只读成片卡片，没有可编辑 textarea，因此只保留页面截图与无溢出证据。"
+  ],
+  "evidence": {
+    "geometry": "geometry.json",
+    "summary": "summary.json",
+    "publishing_before": "1024-publishing-overflow.json",
+    "publishing_after": "publishing-responsive-fixed.json",
+    "screenshots": [
+      "1440-copy.png",
+      "1024-copy.png",
+      "390-copy.png",
+      "1440-oral.png",
+      "1024-publishing-fixed.png",
+      "390-publishing-fixed.png"
+    ],
+    "measurements": {
+      "copy_desktop_primary_height_px": 224,
+      "copy_desktop_result_height_px": 360,
+      "replica_prompt_height_px": 256,
+      "video_prompt_height_px": 180,
+      "reference_prompt_height_px": 180,
+      "publishing_description_height_px": 128,
+      "publishing_1024_editor_width_px": 756,
+      "publishing_1024_textarea_width_px": 714
+    },
+    "horizontal_overflow_after_fix": false
+  }
+}

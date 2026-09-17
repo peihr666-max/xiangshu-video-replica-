@@ -40,6 +40,7 @@ describe("ScriptEditor 口播稿编辑（受控组件）", () => {
 
     expect(screen.getByRole("radio", { name: "原稿" })).toBeChecked();
     expect(screen.getByLabelText("口播稿内容")).toHaveValue(originalScript);
+    expect(screen.getByLabelText("口播稿内容")).toHaveAttribute("rows", "12");
   });
 
   it("选择原稿时上抛 onChooseSource（组合层负责重置文本）", () => {

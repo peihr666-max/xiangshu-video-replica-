@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   act,
   fireEvent,
@@ -529,6 +530,43 @@ describe("V1.4 workspace integration", () => {
     expect(sidebar?.closest("[class*='studio-route-']")).toBeNull();
   });
 
+  it("所有工作区在宽屏共用自动收窄的侧边栏", () => {
+    const studioStyles = readFileSync("src/studio/studio.css", "utf8");
+
+    expect(studioStyles).toMatch(
+      /@media \(min-width: 1100px\)[\s\S]*?\.studio-shell\s*\{\s*--studio-sidebar:\s*88px;/,
+    );
+    expect(studioStyles).toContain(".studio-shell .studio-sidebar");
+    expect(studioStyles).not.toContain(
+      ".studio-shell--creation .studio-sidebar",
+    );
+  });
+
+  it("视频创作页仅在侧边栏显示一次品牌，页头保留通用操作", () => {
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("replica")}
+      />,
+    );
+
+    const topbar = container.querySelector(".studio-topbar");
+    expect(topbar).not.toBeNull();
+    expect(within(topbar as HTMLElement).queryByAltText("众墅之家")).toBeNull();
+    expect(screen.getAllByAltText("众墅之家")).toHaveLength(1);
+    expect(
+      within(topbar as HTMLElement).getByRole("textbox", {
+        name: "搜索工作区",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(topbar as HTMLElement).getByRole("button", {
+        name: "用户档案",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("左下角与右上角使用同一个账号头像", () => {
     render(
       <StudioWorkspace
@@ -763,7 +801,8 @@ describe("V1.4 workspace integration", () => {
     const state = createState("video");
     render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
     await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: "尾帧 尾帧（可选）" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加尾帧" }));
+    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
     expect(
       await screen.findByRole("img", { name: "云端尾帧" }),
     ).toHaveAttribute("src", "https://signed.example/tail.png");

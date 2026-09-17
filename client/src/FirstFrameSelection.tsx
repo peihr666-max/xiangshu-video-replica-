@@ -604,7 +604,7 @@ export function FirstFrameSelection({
               !canGenerate
             }
             onChange={(event) => setPrompt(event.target.value)}
-            rows={5}
+            rows={10}
             value={prompt}
           />
         </label>

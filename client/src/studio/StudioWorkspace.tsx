@@ -1906,11 +1906,6 @@ export function StudioWorkspace({
         </aside>
         <main className={`studio-main studio-route-${state.page}`}>
           <div className="studio-topbar">
-            {creationWorkspace && (
-              <div className="studio-creation-brand">
-                <BrandIdentity />
-              </div>
-            )}
             <button
               type="button"
               aria-label="展开导航"

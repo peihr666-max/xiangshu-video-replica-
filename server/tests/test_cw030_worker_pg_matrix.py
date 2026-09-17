@@ -445,6 +445,33 @@ def test_independent_crash_after_claim_never_blind_resubmits(pg_state: str) -> N
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "shot",
+    [
+        {"subject": "主讲人", "person_count": 3},
+        {"subject": "主讲人"},
+    ],
+)
+def test_first_frame_generation_gate_accepts_multi_person_and_legacy_analysis(
+    pg_state: str, shot: dict[str, Any]
+) -> None:
+    from app.first_frames import require_readable_video_analysis
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO versions (id,project_id,kind,version_number,payload_json) "
+        "VALUES ('analysis-1','proj-1','analysis',1,%s)",
+        (json.dumps({"analysis": {"shots": [shot]}}),),
+    )
+
+    with pg_transaction() as raw:
+        require_readable_video_analysis(
+            BusinessConnection.postgres(raw),
+            project_id="proj-1",
+        )
+
+
 def _seed_image_task(
     dsn: str,
     *,
@@ -2399,6 +2426,67 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(
             conn, lease=lease, provider=ApilioImageProvider(api_key="test-key")
         )
     assert observed[-1] == ("9:16", replace_scene)
+
+
+def test_first_frame_replacement_contract_change_does_not_reuse_old_checkpoint(
+    pg_state, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from app.image_tasks import enqueue_first_frame_task, load_image_task_actor
+
+    _seed_base(pg_state)
+    current_fingerprint = {"value": "old-contract-fingerprint"}
+
+    def plan(*args, **kwargs):
+        return SimpleNamespace(
+            source_frame_selection_version_id="source-selection",
+            source_frame_asset_id="source-asset",
+            character_inputs=SimpleNamespace(reference_asset_ids=["scene"]),
+            project_appearance=SimpleNamespace(
+                fingerprint=current_fingerprint["value"],
+                source_analysis_version_id="analysis",
+            ),
+        )
+
+    monkeypatch.setattr("app.image_tasks.prepare_first_frame_generation", plan)
+    common = dict(
+        project_id="proj-1",
+        model="gpt-image-2",
+        prompt=None,
+        quantity=3,
+        character_version_id=None,
+        character_reference_selection_id=None,
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        actor = load_image_task_actor(conn, "u1")
+        old_task = enqueue_first_frame_task(
+            conn,
+            actor=actor,
+            idempotency_key="old-contract",
+            **common,
+        )
+    _exec(
+        pg_state,
+        "UPDATE first_frame_tasks SET status='FAILED',result_json=%s WHERE id=%s",
+        (_FIRST_FRAME_CHECKPOINT_JSON, str(old_task["id"])),
+    )
+
+    current_fingerprint["value"] = "primary-subject-contract-v3"
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        actor = load_image_task_actor(conn, "u1")
+        new_task = enqueue_first_frame_task(
+            conn,
+            actor=actor,
+            idempotency_key="primary-subject-contract-v3",
+            **common,
+        )
+
+    assert new_task["id"] != old_task["id"]
+    assert new_task["request_hash"] != old_task["request_hash"]
+    assert new_task["result_json"] is None
 
 
 def test_rewrite_instructions_and_extended_profile_contract():
