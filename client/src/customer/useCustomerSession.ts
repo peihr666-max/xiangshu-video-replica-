@@ -463,6 +463,11 @@ export function useCustomerSession(
       return;
     }
     const timer = window.setInterval(() => {
+      // MATERIAL-PERF-D（P1-5）：页面隐藏时不发心跳（既省请求，也避免后台
+      // 标签页维持在线表象）；恢复可见后由下一个 tick 续上。
+      if (document.hidden) {
+        return;
+      }
       const token = sessionTokenRef.current;
       if (token === null) {
         return;
