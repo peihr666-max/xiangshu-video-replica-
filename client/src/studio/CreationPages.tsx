@@ -44,6 +44,7 @@ import {
 } from "../api";
 import { CharacterSelection } from "../CharacterSelection";
 import { FirstFrameSelection } from "../FirstFrameSelection";
+import { isInsufficientCredits } from "../insufficientCredits";
 import { ShotCardEditor } from "../ShotCardEditor";
 import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
@@ -1221,6 +1222,7 @@ export function ReplicaPage() {
     updateData,
     navigate,
     notify,
+    openLive,
     saveDraft,
     user,
   } = useStudio();
@@ -1788,6 +1790,8 @@ export function ReplicaPage() {
       setAnalysisBusy(false);
       setStage("ready");
       notify(customerVisibleErrorMessage(cause, "AI 拆解失败，请稍后重试。"));
+      // 服务端已给出需要多少积分；把钱包侧栏一并打开，省掉用户自己找入口。
+      if (isInsufficientCredits(cause)) openLive("wallet");
     }
   };
 
