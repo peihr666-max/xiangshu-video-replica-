@@ -56,7 +56,7 @@ export function FirstFrameSelection({
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [model, setModel] = useState<FirstFrameModel>("gpt-image-2");
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const quantity = 3;
+  const quantity = 1;
   const [batchCredits, setBatchCredits] = useState<number | null>(null);
   const [pricingError, setPricingError] = useState("");
   useEffect(() => {
@@ -218,7 +218,10 @@ export function FirstFrameSelection({
           displayVersion.id === latest?.id;
         setSelectedAssetId((currentAssetId) => {
           if (canAutoSelect) {
-            return payload.candidates[0]?.asset_id ?? "";
+            // 单张流：最新生成的候选排在最后，默认预选它供用户查看确认。
+            return (
+              payload.candidates[payload.candidates.length - 1]?.asset_id ?? ""
+            );
           }
           return canPreserveSelection &&
             payload.candidates.some(
@@ -239,7 +242,7 @@ export function FirstFrameSelection({
         } else if (selection.version) {
           setStatus("已确认首帧与当前候选不一致，请重新确认最新候选。");
         } else if (canAutoSelect) {
-          setStatus("已自动预选第一张候选，请查看后单击确认。");
+          setStatus("已自动预选最新生成的候选，请查看后单击确认。");
         } else {
           setStatus("");
         }
@@ -610,11 +613,13 @@ export function FirstFrameSelection({
         </label>
       ) : null}
       <div className="source-frame-actions">
-        <p>生成3张，选择1张。去字幕，保留最终画面的实物文字。</p>
+        <p>
+          每次生成1张，不满意可再次生成；选定1张用于视频合成。去字幕，保留最终画面的实物文字。
+        </p>
         <p>
           {batchCredits === null
             ? pricingError || "正在读取本批费用…"
-            : `本批预计 ${batchCredits} 积分；再次生成按新一批计费。`}
+            : `本次预计 ${batchCredits} 积分；再次生成按新一次计费。`}
         </p>
         {simplified && (
           <label>
@@ -676,7 +681,7 @@ export function FirstFrameSelection({
           onClick={handleGenerate}
           type="button"
         >
-          {isSubmitting ? "正在生成" : payload ? "再生成3张" : "生成3张首帧"}
+          {isSubmitting ? "正在生成" : payload ? "再生成1张" : "生成1张首帧"}
         </button>
         <button
           className="secondary-button"

@@ -2355,6 +2355,158 @@ def test_first_frame_async_receipt_is_fenced_and_resumes_original_task(pg_state)
     assert json.loads(row["result_json"])["provider_submission"]["task_id"] == "vendor-1"
 
 
+def _seed_source_frame_asset(dsn: str, asset_id: str = "source-asset") -> None:
+    _exec(
+        dsn,
+        "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes,"
+        " content_type, created_by_user_id)"
+        " VALUES (%s, 'proj-1', 'source_frame', 'fake://cos/source.png', %s, 9,"
+        " 'image/png', 'u1')",
+        (asset_id, _SHA_A),
+    )
+
+
+def _single_shot_work(fingerprint: str, *, main_character_version_id: str = "char-v1"):
+    from types import SimpleNamespace
+
+    character_inputs = SimpleNamespace(
+        main_character_version_id=main_character_version_id,
+        character_reference_selection_id=None,
+        character_version_id=main_character_version_id,
+        reference_asset_ids=["scene"],
+        reference_asset_roles=["scene_image"],
+        character_snapshot={},
+        character_name="张工",
+    )
+    appearance = SimpleNamespace(
+        fingerprint=fingerprint,
+        source_timestamp_seconds=0,
+        appearance_source="SCENE_LOOK",
+        as_payload=lambda: {"fingerprint": fingerprint},
+    )
+    return SimpleNamespace(
+        project_id="proj-1",
+        actor=SimpleNamespace(id="u1"),
+        model="gpt-image-2",
+        effective_prompt="template",
+        source_frame_selection_version_id="sel-1",
+        source_frame_asset_id="source-asset",
+        character_inputs=character_inputs,
+        project_appearance=appearance,
+        aspect_ratio="9:16",
+        replace_scene=False,
+        quantity=1,
+    )
+
+
+def _candidate(asset_id: str) -> dict[str, object]:
+    return {
+        "asset_id": asset_id,
+        "storage_key": f"projects/proj-1/first-frames/{asset_id}.png",
+        "storage_uri": f"fake://cos/projects/proj-1/first-frames/{asset_id}.png",
+        "sha256": _SHA_A,
+        "size_bytes": 9,
+        "content_type": "image/png",
+        "quality": None,
+    }
+
+
+def _latest_first_frame_payload(dsn: str) -> dict[str, Any]:
+    row = _rows(
+        dsn,
+        "SELECT payload_json FROM versions WHERE project_id='proj-1'"
+        " AND kind='first_frame_candidates' ORDER BY version_number DESC LIMIT 1",
+    )[0]
+    return cast(dict[str, Any], json.loads(str(row["payload_json"])))
+
+
+def test_first_frame_single_shot_regen_accumulates_into_latest_candidates(pg_state, monkeypatch):
+    """单张产品流：每次付费任务交付 1 张；同输入绑定的再次生成把新候选
+    追加进最新候选版本（确认与 H3 围栏只看最新版本，历史图必须仍可选）。"""
+    from types import SimpleNamespace
+
+    from app import first_frames as ff
+    from app.first_frames import (
+        StoredFirstFrameCandidates,
+        complete_first_frame_generation,
+    )
+
+    _seed_base(pg_state)
+    _seed_source_frame_asset(pg_state)
+    work = _single_shot_work(_SHA_A)
+    provider = SimpleNamespace(provider_name="apilio")
+    monkeypatch.setattr(ff, "require_current_first_frame_inputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ff, "resolve_project_appearance_spec", lambda *args, **kwargs: work.project_appearance
+    )
+    monkeypatch.setattr(
+        ff, "apply_selected_scene_look", lambda *args, **kwargs: work.project_appearance
+    )
+
+    def complete(asset_id: str, *, override_work=None):
+        with pg_transaction() as raw:
+            return complete_first_frame_generation(
+                BusinessConnection.postgres(raw),
+                work=override_work or work,
+                provider=provider,
+                stored=StoredFirstFrameCandidates(
+                    candidates=[_candidate(asset_id)], created_assets=[]
+                ),
+            )
+
+    complete("ff-a1")
+    payload = _latest_first_frame_payload(pg_state)
+    assert [c["asset_id"] for c in payload["candidates"]] == ["ff-a1"]
+
+    complete("ff-a2")
+    payload = _latest_first_frame_payload(pg_state)
+    assert [c["asset_id"] for c in payload["candidates"]] == ["ff-a1", "ff-a2"]
+
+    # 输入绑定变化（换人物版本）→ 另起新池，不混入旧输入的候选。
+    stale_binding_work = _single_shot_work(_SHA_A, main_character_version_id="char-v2")
+    complete("ff-b1", override_work=stale_binding_work)
+    payload = _latest_first_frame_payload(pg_state)
+    assert [c["asset_id"] for c in payload["candidates"]] == ["ff-b1"]
+
+
+def test_first_frame_candidate_pool_is_capped_to_newest_six(pg_state, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import first_frames as ff
+    from app.first_frames import (
+        MAX_FIRST_FRAME_CANDIDATE_POOL,
+        StoredFirstFrameCandidates,
+        complete_first_frame_generation,
+    )
+
+    _seed_base(pg_state)
+    _seed_source_frame_asset(pg_state)
+    work = _single_shot_work(_SHA_A)
+    provider = SimpleNamespace(provider_name="apilio")
+    monkeypatch.setattr(ff, "require_current_first_frame_inputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ff, "resolve_project_appearance_spec", lambda *args, **kwargs: work.project_appearance
+    )
+    monkeypatch.setattr(
+        ff, "apply_selected_scene_look", lambda *args, **kwargs: work.project_appearance
+    )
+
+    for index in range(1, MAX_FIRST_FRAME_CANDIDATE_POOL + 3):
+        with pg_transaction() as raw:
+            complete_first_frame_generation(
+                BusinessConnection.postgres(raw),
+                work=work,
+                provider=provider,
+                stored=StoredFirstFrameCandidates(
+                    candidates=[_candidate(f"ff-c{index}")], created_assets=[]
+                ),
+            )
+    payload = _latest_first_frame_payload(pg_state)
+    candidates = [c["asset_id"] for c in payload["candidates"]]
+    assert len(candidates) == MAX_FIRST_FRAME_CANDIDATE_POOL
+    assert candidates == [f"ff-c{index}" for index in range(3, MAX_FIRST_FRAME_CANDIDATE_POOL + 3)]
+
+
 @pytest.mark.parametrize("replace_scene", [False, True])
 def test_first_frame_ratio_is_frozen_in_request_and_idempotency(
     pg_state, monkeypatch, replace_scene
