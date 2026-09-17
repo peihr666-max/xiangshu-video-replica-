@@ -46,14 +46,14 @@ jobs:
           - platform: macos-arm64
             runner: macos-15
             target: aarch64-apple-darwin
-            bundles: app,dmg
+            bundles: app
             bundle_dir: dmg
             config: src-tauri/tauri.macos.conf.json
             binary_arch: arm64
           - platform: macos-x86_64
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            bundles: app,dmg
+            bundles: app
             bundle_dir: dmg
             config: src-tauri/tauri.macos.conf.json
             binary_arch: x86_64
@@ -97,6 +97,20 @@ jobs:
             --config "$BUNDLE_CONFIG" --bundles "$BUNDLE_TYPES" \
             --target "$RUST_TARGET" --ci "${sign_args[@]}" \
             -- --locked --no-default-features
+      - name: Create macOS disk image
+        if: runner.os == 'macOS'
+        run: |
+          apps=(".cargo-target/$RUST_TARGET/release/bundle/macos/"*.app)
+          [[ ${#apps[@]} -eq 1 && -d "${apps[0]}" ]]
+          stage=$(mktemp -d "$RUNNER_TEMP/desktop-dmg.XXXXXX")
+          ditto "${apps[0]}" "$stage/$(basename "${apps[0]}")"
+          ln -s /Applications "$stage/Applications"
+          version=$(node -p 'require("./package.json").version')
+          output=".cargo-target/$RUST_TARGET/release/bundle/dmg"
+          mkdir -p "$output"
+          # Native image creation does not need a Finder automation session.
+          hdiutil create -volname "Video Replica $version" -srcfolder "$stage" \
+            -format UDZO "$output/VideoReplica_${version}_${PLATFORM}.dmg"
       - name: Verify macOS application and disk image
         if: runner.os == 'macOS'
         run: |
@@ -105,7 +119,7 @@ jobs:
           [[ ${#apps[@]} -eq 1 && -d "${apps[0]}" ]]
           [[ ${#images[@]} -eq 1 && -f "${images[0]}" ]]
           codesign --verify --deep --strict "${apps[0]}"
-          lipo -verify_arch "$BINARY_ARCH" "${apps[0]}/Contents/MacOS/video-replica-desktop"
+          lipo "${apps[0]}/Contents/MacOS/video-replica-desktop" -verify_arch "$BINARY_ARCH"
           hdiutil verify "${images[0]}"
       - name: Collect installer and provenance
         run: |

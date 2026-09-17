@@ -438,20 +438,22 @@ def test_desktop_installer_workflow_builds_three_internal_test_targets() -> None
     assert workflow.count("- platform:") == 3
     expected = {
         "windows-x86_64": ("windows-2025", "x86_64-pc-windows-msvc", "nsis"),
-        "macos-arm64": ("macos-15", "aarch64-apple-darwin", "app,dmg"),
-        "macos-x86_64": ("macos-15-intel", "x86_64-apple-darwin", "app,dmg"),
+        "macos-arm64": ("macos-15", "aarch64-apple-darwin", "app"),
+        "macos-x86_64": ("macos-15-intel", "x86_64-apple-darwin", "app"),
     }
     for platform, (runner, target, bundles) in expected.items():
         entry = _matrix_entry(workflow, platform)
         assert f"runner: {runner}" in entry
         assert f"target: {target}" in entry
-        assert f"bundles: {bundles}" in entry
+        assert f"bundles: {bundles}" in [line.strip() for line in entry.splitlines()]
         expected_config = (
             "src-tauri/tauri.customer.conf.json"
             if platform == "windows-x86_64"
             else "src-tauri/tauri.macos.conf.json"
         )
         assert f"config: {expected_config}" in entry
+    assert "hdiutil create" in workflow
+    assert 'ln -s /Applications "$stage/Applications"' in workflow
     assert "actions/upload-artifact@" in workflow
     assert "if-no-files-found: error" in workflow
     assert "retention-days: 7" in workflow

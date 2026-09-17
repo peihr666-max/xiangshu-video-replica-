@@ -44,3 +44,12 @@
 - 远程运行 URL、Artifact ID、下载校验及三门禁状态在本任务 PR 按实际运行结果登记；本提交不预先宣称远程通过。
 
 官方参考：[Runner 标签](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[macOS 签名](https://v2.tauri.app/distribute/sign/macos/)、[Artifact Action](https://github.com/actions/upload-artifact)、[手动运行要求](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)。
+
+## 首轮远程构建修正
+
+[首轮运行](https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/35185438049) 中 Mac arm64 已成功构建 app 与 DMG、通过代码签名校验，但架构校验的 `lipo` 参数顺序错误导致未上传。该 runner 的 Xcode 16.4 将文件名误作后续架构；按工具 usage 将输入文件移到 `-verify_arch` 前。本机真实 arm64 Mach-O 用修正顺序返回 0；本机较新工具同时接受旧顺序，不能冒充本地复现失败。远程失败日志和本地成功执行分别保留，只修正该命令，不移除任何验证步骤；重新提交后以最终运行结果为准。
+
+
+同轮 Windows 安装包已成功上传；Intel Mac 原生应用编译与 ad-hoc 签名成功，但 Tauri `bundle_dmg.sh` 返回失败且未提供内部错误。不能据此确认是 Finder 权限还是其它脚本问题。两种 Mac 改为 Tauri 仅生成已签名 app，再用系统 `ditto` 保留应用包内容、添加 Applications 快捷方式，使用 `hdiutil create -format UDZO` 封装磁盘镜像，避免依赖外部封装脚本；签名、架构和镜像校验仍是上传前硬门。未新增项目依赖。
+
+新增原生 DMG 工作流合同先红后绿（1 failed / 20 passed → 21 passed），actionlint、Ruff 与格式检查通过。本机从工作流提取并原样执行封装及验证两个步骤，使用真实已签名 arm64 app：DMG 创建、codesign、lipo 与 hdiutil 校验全部通过。Intel 以新提交的 GitHub 原生 runner 结果为准。
