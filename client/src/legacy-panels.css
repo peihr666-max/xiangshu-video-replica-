@@ -242,6 +242,7 @@
   gap: 10px;
   flex-wrap: wrap;
 }
+
 .flow-character-row label {
   display: flex;
   align-items: center;
@@ -3056,4 +3057,166 @@
   width: min(100%, 240px);
   aspect-ratio: 9 / 16;
   margin-inline: auto;
+}
+
+/* Keep native image proportions while bounding the height in the single-page flow. */
+.creation-replica .source-frame-current,
+.creation-replica .first-frame-current {
+  --image-preview-height: clamp(260px, 44dvh, 420px);
+}
+
+.creation-replica .source-frame-selection--compact,
+.creation-replica .first-frame-selection--compact {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.creation-replica .source-frame-summary h3,
+.creation-replica .first-frame-selection--compact > div:first-child {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.creation-replica .source-frame-summary {
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: var(--font-caption);
+}
+
+.creation-replica .source-frame-summary p {
+  margin: 0;
+}
+
+.creation-replica .source-frame-options .video-preview,
+.creation-replica .first-frame-options .video-preview {
+  --image-preview-height: 132px;
+}
+
+.creation-replica .first-frame-options,
+.creation-replica .source-frame-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.creation-replica .video-preview.video-preview > .video-preview__foreground {
+  object-fit: contain;
+}
+
+.creation-replica .source-frame-option > span:last-child {
+  min-width: 0;
+  padding: 0 6px;
+  overflow-wrap: anywhere;
+  font-size: var(--font-caption);
+}
+
+.creation-replica .first-frame-options .source-frame-option small {
+  display: none;
+}
+
+.creation-replica .first-frame-comparison summary,
+.creation-replica .first-frame-history summary {
+  cursor: pointer;
+  color: var(--studio-muted);
+  font-size: var(--font-label);
+}
+
+.creation-replica .first-frame-comparison .first-frame-options {
+  margin-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.creation-replica .first-frame-comparison .first-frame-options p {
+  grid-column: 1 / -1;
+}
+
+.creation-replica .first-frame-comparison figure {
+  min-width: 0;
+  margin: 0;
+}
+
+.creation-replica .source-frame-toolbar,
+.creation-replica .source-frame-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.creation-replica .source-frame-toolbar p,
+.creation-replica .source-frame-actions p {
+  width: 100%;
+  font-size: var(--font-caption);
+}
+
+.creation-replica .source-frame-actions label,
+.creation-replica .flow-character-row label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 150px;
+  font-size: var(--font-caption);
+}
+
+.creation-replica .flow-character-row select,
+.creation-replica .source-frame-actions select {
+  width: 100%;
+  min-width: 0;
+}
+
+.creation-replica .flow-character-row__preview {
+  width: 100%;
+  height: clamp(260px, 44dvh, 420px);
+  object-fit: contain;
+  border-radius: 8px;
+  background: var(--studio-bg);
+}
+
+@media (max-width: 640px) {
+  .creation-replica .first-frame-options,
+  .creation-replica .source-frame-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .creation-replica .source-frame-toolbar > button,
+  .creation-replica .source-frame-actions > button {
+    flex: 1 1 150px;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 380px) {
+  .creation-replica .first-frame-options,
+  .creation-replica .source-frame-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.creation-replica .replica-final-controls > label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+}
+
+.creation-replica .replica-final-controls input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  accent-color: var(--studio-gold);
+}
+
+/* The Studio entry does not load the old application's table wrapper styles. */
+.creation-replica .shot-table-wrap {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--studio-border);
+  border-radius: 8px;
 }

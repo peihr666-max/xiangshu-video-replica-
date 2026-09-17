@@ -593,10 +593,8 @@ describe("GenerationComposer", () => {
     expect(await screen.findByText("S01：自定义口播稿")).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("16:9"));
-    if (
-      !(screen.getByLabelText("确认采用以上文案") as HTMLInputElement).checked
-    )
-      fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    if (!(screen.getByLabelText("采用这份文案") as HTMLInputElement).checked)
+      fireEvent.click(screen.getByLabelText("采用这份文案"));
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
     await waitFor(() =>
       expect(api.compileGenerationPrompt).toHaveBeenCalledWith("project-1", {
@@ -928,10 +926,8 @@ describe("GenerationComposer", () => {
       name: "合成最终提示词",
     });
     expect(compileButton).toBeDisabled();
-    if (
-      !(screen.getByLabelText("确认采用以上文案") as HTMLInputElement).checked
-    )
-      fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    if (!(screen.getByLabelText("采用这份文案") as HTMLInputElement).checked)
+      fireEvent.click(screen.getByLabelText("采用这份文案"));
     expect(compileButton).toBeEnabled();
     const createButton = screen.getByRole("button", {
       name: "创建 1 个生成任务",
@@ -1074,10 +1070,8 @@ describe("GenerationComposer", () => {
 
     render(<WorkspaceHost />);
     const prompt = await screen.findByLabelText("视频生成提示词内容");
-    if (
-      !(screen.getByLabelText("确认采用以上文案") as HTMLInputElement).checked
-    )
-      fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    if (!(screen.getByLabelText("采用这份文案") as HTMLInputElement).checked)
+      fireEvent.click(screen.getByLabelText("采用这份文案"));
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
 
     expect(prompt).not.toHaveAttribute("readonly");

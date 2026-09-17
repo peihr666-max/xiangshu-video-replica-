@@ -2417,10 +2417,9 @@ describe("AnalysisWorkspace workflow gates", () => {
       { timeout: 3000 },
     );
 
-    first.unmount();
-
-    // 跨账号隔离：employee_2 不得看到 employee_1 的草稿
-    const secondView = render(
+    // 跨账号隔离：同一工作区切换为 employee_2 时，不得短暂
+    // 展示或将 employee_1 的内容防抖写入新账号的草稿键。
+    first.rerender(
       <AnalysisWorkspace
         currentUserId="employee_2"
         onAnalysisReady={vi.fn()}
@@ -2445,7 +2444,7 @@ describe("AnalysisWorkspace workflow gates", () => {
       screen.queryByText("已恢复上次未保存的本地草稿，请确认后保存。"),
     ).not.toBeInTheDocument();
 
-    secondView.unmount();
+    first.unmount();
     renderReadyWorkspace(vi.fn());
     const textarea = (await screen.findByLabelText(
       "口播稿内容",

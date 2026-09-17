@@ -1513,3 +1513,7 @@ REVIEW / AUTOMATED_VERIFIED（本地）：最终提示词后置、确认文案�
 ## 2026-09-17 PUBLISH-LOGIN-RECOVERY-20260917
 
 Mac 桌面复用已有认证云端扫码及加密保存；Windows 读取失败暂停后，打开官方窗口恢复当前会话检测。后续用户反馈抖音手机确认仍不保存，追加抖音成功码兼容、迟到失败不覆盖、同源后台主动身份核验及取消清理回归。各缺陷先红后绿，完整静态门通过（前端 1646 项），最终账号相关 103 项、后端全量 2508 passed / 1 既有 skip、两轮独立复审通过，AUTOMATED_VERIFIED。同版 Mac 视频号添加成功由用户实测；未执行真实发布，抖音服务端修复尚未部署；[独立证据](evidence/PUBLISH-LOGIN-RECOVERY-20260917.md)。
+
+## 2026-09-17 REPLICA-SIMPLE-FLOW-20260917
+
+REVIEW_READY / 本地自动化通过，待 PR 评审及合并。Owner Codex 会话 `01a0ad07-554c-7a13-b90b-309b3aaef984`；Reviewer 为独立代理交叉复核和主执行者整合自检。基线 `origin/main@3932d528`，分支 `feat/replica-simple-flow-20260917`，独立 worktree `.worktrees/REPLICA-SIMPLE-FLOW-20260917`；开工已 fetch 并核对远程分支、开放 PR、工作树和共享 claim。范围：Studio 三步复刻、文案后置、分镜编辑整合、单场景参考、去字幕而保留实体文字、切镜候选、MiniMax 结构和中文默认作品名。隔离预览 5227、专项 PG 5547、四片 PG 5551—5554。不核销旧任务验收；未付费调用、合并或部署。详见[独立证据](evidence/REPLICA-SIMPLE-FLOW-20260917.md)。

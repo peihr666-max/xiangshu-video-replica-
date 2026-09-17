@@ -415,14 +415,14 @@ describe("ProjectDetailFlow", () => {
     expect(screen.queryByRole("button", { name: "AI 二创改写" })).toBeNull();
     expect(screen.queryByRole("button", { name: "使用原文案" })).toBeNull();
     // 第二段保留角色入口，但源画面技术字段由后台自动处理并默认隐藏。
-    const roleSelect = await screen.findByLabelText("角色版本");
+    const roleSelect = await screen.findByLabelText("人物场景形象");
     expect(roleSelect).toHaveValue("cv-1");
     expect(
       screen.getByRole("option", {
         name: /林夏 · 场景：田园博主 · V1/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("源画面自动处理")).toBeInTheDocument();
+    expect(screen.getByText("原视频画面")).toBeInTheDocument();
     expect(screen.getByText("已确认")).toBeInTheDocument();
     expect(screen.queryByLabelText("人物朝向")).toBeNull();
     expect(screen.queryByLabelText("人物景别")).toBeNull();
@@ -568,14 +568,12 @@ describe("ProjectDetailFlow", () => {
       />,
     );
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "重新自动取帧" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "重新取帧" }));
     await waitFor(() =>
       expect(api.extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
         "ref-1",
-        [6, 18, 30, 42, 54],
+        [0, 18, 30, 42, 54],
       ),
     );
     expect(screen.getByText(/15 秒成片建议约 60–75 字/)).toBeInTheDocument();
@@ -591,7 +589,7 @@ describe("ProjectDetailFlow", () => {
       />,
     );
 
-    const roleSelect = await screen.findByLabelText("角色版本");
+    const roleSelect = await screen.findByLabelText("人物场景形象");
     // 等版本列表加载完成且下拉可用后再交互（恢复/加载窗口内 select 禁用）。
     await waitFor(() =>
       expect(
@@ -822,8 +820,12 @@ describe("ProjectDetailFlow", () => {
       fireEvent.change(await screen.findByLabelText("自定义文案"), {
         target: { value: "这栋乡下别墅真让人心动。" },
       });
-      fireEvent.click(await screen.findByLabelText("确认采用以上文案"));
-      fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+      fireEvent.click(await screen.findByLabelText("采用这份文案"));
+      const composeButton = await screen.findByRole("button", {
+        name: "合成最终提示词",
+      });
+      await waitFor(() => expect(composeButton).toBeEnabled());
+      fireEvent.click(composeButton);
       await waitFor(() =>
         expect(api.compileGenerationPrompt).toHaveBeenCalledOnce(),
       );
@@ -994,7 +996,7 @@ describe("ProjectDetailFlow", () => {
     );
 
     const generateButton = await screen.findByRole("button", {
-      name: "生成3张置换首帧",
+      name: "生成3张首帧",
     });
     await waitFor(() => expect(generateButton).toBeEnabled());
     workspaceBusy.mockClear();
@@ -1007,8 +1009,8 @@ describe("ProjectDetailFlow", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "返回项目列表" })).toBeEnabled();
     expect(workspaceBusy).not.toHaveBeenCalledWith(true);
-    expect(screen.getByLabelText("角色版本")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "重新自动取帧" })).toBeDisabled();
+    expect(screen.getByLabelText("人物场景形象")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新取帧" })).toBeDisabled();
     expect(screen.getByText(/生成结束前暂不能更改/)).toBeInTheDocument();
 
     await act(async () => {

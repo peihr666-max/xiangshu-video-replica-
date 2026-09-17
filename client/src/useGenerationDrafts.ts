@@ -134,6 +134,23 @@ export function useGenerationDrafts({
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  // Effects start after render. Track the resolved input set so an account or
+  // project switch cannot expose or persist the previous context for one frame.
+  const loadContext = JSON.stringify([
+    characterVersionId,
+    currentUserId,
+    durationSeconds,
+    firstFrameAssetId,
+    firstFrameSelectionVersionId,
+    identityId ?? null,
+    originalScript,
+    projectId,
+    referenceSelectionId,
+    shotCardVersionId,
+    sourceAssetId,
+  ]);
+  const [loadedContext, setLoadedContext] = useState("");
+  const contextLoading = isLoading || loadedContext !== loadContext;
   const [recoveryRecord, setRecoveryRecord] =
     useState<IdempotencyRecord | null>(null);
   const [busyAction, setBusyAction] = useState<GenerationBusyAction>(null);
@@ -389,6 +406,7 @@ export function useGenerationDrafts({
       })
       .finally(() => {
         if (active) {
+          setLoadedContext(loadContext);
           setIsLoading(false);
         }
       });
@@ -406,6 +424,7 @@ export function useGenerationDrafts({
     firstFrameAssetId,
     firstFrameSelectionVersionId,
     identityId,
+    loadContext,
     originalScript,
     projectId,
     referenceSelectionId,
@@ -417,7 +436,7 @@ export function useGenerationDrafts({
   // 仅在成功还原后、且文本相对服务端真相有差异时写入——保存/编译后的
   // 等值回写、pending timer 复活都被这里挡掉；显式保存/编译成功仍会主动清除。
   useEffect(() => {
-    if (isLoading || readOnly || !draftHydrated) {
+    if (contextLoading || readOnly || !draftHydrated) {
       return;
     }
     const scriptChanged =
@@ -438,8 +457,8 @@ export function useGenerationDrafts({
     };
   }, [
     currentUserId,
+    contextLoading,
     draftHydrated,
-    isLoading,
     projectId,
     readOnly,
     scriptSource,
@@ -1220,7 +1239,7 @@ export function useGenerationDrafts({
     recoveryRecord,
     recoveryRecordConflicts,
     // 加载与反馈
-    isLoading,
+    isLoading: contextLoading,
     error,
     message,
     busyAction,

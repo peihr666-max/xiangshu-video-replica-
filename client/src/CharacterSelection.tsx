@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   chooseProjectMainCharacterVersion,
+  getAssetDownloadUrl,
   getProjectMainCharacter,
   listProjectCharacterVersions,
   type ProjectCharacterAssetOption,
@@ -55,6 +56,14 @@ export function CharacterSelection({
   const [guidance, setGuidance] = useState("");
   const [restoredEmpty, setRestoredEmpty] = useState(false);
   const [isAutoSelecting, setIsAutoSelecting] = useState(false);
+  const [scenePreview, setScenePreview] = useState<{
+    contextKey: string;
+    requestId: number;
+    url: string;
+  } | null>(null);
+  const [scenePreviewErrorContext, setScenePreviewErrorContext] = useState<
+    string | null
+  >(null);
   const autoSelectProjectRef = useRef<string | null>(null);
   // 回调走 ref 转发：生产接线中 busy 上报会让父级重渲染并产生新的
   // 回调引用，若进入自动选择 effect 的依赖面会触发 cleanup 中止
@@ -62,6 +71,8 @@ export function CharacterSelection({
   const onBusyChangeRef = useRef(onBusyChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onVersionChangeRef = useRef(onVersionChange);
+  const scenePreviewRequestIdRef = useRef(0);
+  const scenePreviewContextRef = useRef("");
 
   useEffect(() => {
     onBusyChangeRef.current = onBusyChange;
@@ -327,6 +338,53 @@ export function CharacterSelection({
   const selectedOption = versions.find(
     (version) => version.character_version_id === selectedVersionId,
   );
+  const sceneAssets =
+    selectedOption?.assets ??
+    currentSelection?.character_snapshot.published_assets;
+  const scenePreviewAssetId =
+    sceneAssets?.find((asset) => asset.view_type === "FRONT_FULL")?.asset_id ??
+    sceneAssets?.[0]?.asset_id;
+  const scenePreviewContext = `${projectId}\0${scenePreviewAssetId ?? ""}`;
+  scenePreviewContextRef.current = scenePreviewContext;
+  const loadScenePreview = useCallback(() => {
+    const requestId = scenePreviewRequestIdRef.current + 1;
+    scenePreviewRequestIdRef.current = requestId;
+    const requestedContext = scenePreviewContext;
+    if (!sceneOnly || !scenePreviewAssetId) {
+      setScenePreview(null);
+      setScenePreviewErrorContext(null);
+      return;
+    }
+    setScenePreview(null);
+    setScenePreviewErrorContext(null);
+    void getAssetDownloadUrl(scenePreviewAssetId)
+      .then((result) => {
+        if (
+          scenePreviewRequestIdRef.current === requestId &&
+          scenePreviewContextRef.current === requestedContext
+        ) {
+          setScenePreview({
+            contextKey: requestedContext,
+            requestId,
+            url: result.url,
+          });
+        }
+      })
+      .catch(() => {
+        if (
+          scenePreviewRequestIdRef.current === requestId &&
+          scenePreviewContextRef.current === requestedContext
+        ) {
+          setScenePreviewErrorContext(requestedContext);
+        }
+      });
+  }, [sceneOnly, scenePreviewAssetId, scenePreviewContext]);
+  useEffect(() => {
+    loadScenePreview();
+    return () => {
+      scenePreviewRequestIdRef.current += 1;
+    };
+  }, [loadScenePreview]);
   const currentIdentityId = currentSelection?.character_snapshot.identity?.id;
   const currentPersonaId = currentSelection?.character_snapshot.persona_id;
   const currentVersionNumber =
@@ -361,17 +419,36 @@ export function CharacterSelection({
     const hasCurrentOption = inlineVersions.some(
       (version) => version.character_version_id === selectedVersionId,
     );
+    const visibleScenePreview =
+      scenePreview?.contextKey === scenePreviewContext ? scenePreview : null;
+    const scenePreviewError = scenePreviewErrorContext === scenePreviewContext;
     return (
       <section className="flow-character-row" aria-label="角色">
-        {sceneOnly ? (
-          <p>
-            外观、服饰与配饰沿用所选场景形象；原视频的背景、姿态和构图保持不变。
-          </p>
+        {sceneOnly && visibleScenePreview ? (
+          <img
+            key={`${visibleScenePreview.contextKey}\0${visibleScenePreview.url}`}
+            className="flow-character-row__preview"
+            src={visibleScenePreview.url}
+            alt="已选场景图"
+            onError={() => {
+              if (
+                scenePreviewRequestIdRef.current !==
+                  visibleScenePreview.requestId ||
+                scenePreviewContextRef.current !==
+                  visibleScenePreview.contextKey
+              ) {
+                return;
+              }
+              scenePreviewRequestIdRef.current += 1;
+              setScenePreview(null);
+              setScenePreviewErrorContext(visibleScenePreview.contextKey);
+            }}
+          />
         ) : null}
         <label>
-          角色
+          {sceneOnly ? "人物场景" : "角色"}
           <select
-            aria-label="角色版本"
+            aria-label={sceneOnly ? "人物场景形象" : "角色版本"}
             disabled={readOnly || isRestoring || isSaving || isAutoSelecting}
             onChange={(event) => void handleInlineChange(event.target.value)}
             value={selectedVersionId}
@@ -383,7 +460,11 @@ export function CharacterSelection({
             ) : null}
             {isRestoring || (!hasCurrentOption && !inlineVersions.length) ? (
               <option value="">
-                {isRestoring ? "恢复中…" : "暂无可选角色"}
+                {isRestoring
+                  ? "恢复中…"
+                  : sceneOnly
+                    ? "暂无可用场景形象"
+                    : "暂无可选角色"}
               </option>
             ) : null}
             {selectedVersionId && !hasCurrentOption ? (
@@ -404,6 +485,23 @@ export function CharacterSelection({
             ))}
           </select>
         </label>
+        {sceneOnly && !isRestoring && inlineVersions.length === 0 ? (
+          <span className="status-note" role="status">
+            请到人物库创建并发布人物场景形象。
+          </span>
+        ) : null}
+        {sceneOnly && scenePreviewError ? (
+          <span className="settings-error" role="alert">
+            场景图预览加载失败。
+            <button
+              className="secondary-button"
+              onClick={() => loadScenePreview()}
+              type="button"
+            >
+              重试预览
+            </button>
+          </span>
+        ) : null}
         {newerVersion && typeof currentVersionNumber === "number" ? (
           <span className="character-version-update" role="status">
             <span>

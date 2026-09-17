@@ -237,6 +237,9 @@ export type StudioDraft = {
   originalImageId?: string;
   imageId?: string;
   firstFrameId?: string;
+  /** 已确认源画面，用于判断是否需要填写中段帧开场衔接。 */
+  sourceFrameSelectionVersionId?: string;
+  sourceFrameTimestampSeconds?: number;
   /** 人物置换流程交接的已确认首帧版本。 */
   firstFrameSelectionVersionId?: string;
   tailFrameId?: string;

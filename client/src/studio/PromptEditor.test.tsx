@@ -21,16 +21,14 @@ const api = vi.hoisted(() => ({
   session: vi.fn(() => true),
   compile: vi.fn(),
   script: vi.fn(),
+  latestPrompt: vi.fn(async () => ({ version: null, stale: false })),
 }));
 vi.mock("../api", () => ({
   createPromptOptimization: api.create,
   getPromptOptimization: api.get,
   capturePromptSession: () => api.session,
   customerVisibleErrorMessage: (_error: unknown, fallback: string) => fallback,
-  getLatestGenerationPrompt: vi.fn(async () => ({
-    version: null,
-    stale: false,
-  })),
+  getLatestGenerationPrompt: api.latestPrompt,
   getLatestProjectShotCards: vi.fn(async () => ({ id: "shots" })),
   createScriptVersion: api.script,
   compileGenerationPrompt: api.compile,
@@ -60,16 +58,25 @@ function FinalHarness({
   script = "新文案",
   frame = "frame",
   duration = 4,
+  sourceDuration = 4,
+  sourceFrameTimestamp = 0,
+  restoreEnabled = true,
 }: {
   script?: string;
   frame?: string;
   duration?: number;
+  sourceDuration?: number;
+  sourceFrameTimestamp?: number;
+  restoreEnabled?: boolean;
 }) {
   const [text, setText] = useState("");
   const [snapshot, setSnapshot] = useState<FinalReplicaSnapshot | null>(null);
   return (
     <>
       <ReplicaFinalPromptControls
+        sourceDuration={sourceDuration}
+        sourceFrameTimestamp={sourceFrameTimestamp}
+        restoreEnabled={restoreEnabled}
         input={{
           projectId: "project",
           scriptText: script,
@@ -123,15 +130,21 @@ describe("最终提示词后置", () => {
       id: "final",
       payload: { prompt_text: "最终稿" },
     });
+    api.latestPrompt.mockResolvedValue({ version: null, stale: false });
+  });
+  it("审核示例不读取真实历史终稿", async () => {
+    render(<FinalHarness restoreEnabled={false} />);
+    await Promise.resolve();
+    expect(api.latestPrompt).not.toHaveBeenCalled();
   });
   it("确认文案和首帧后才合成；改变时长使旧稿失效且保留编辑", async () => {
     const view = render(<FinalHarness frame="" />);
-    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    fireEvent.click(screen.getByLabelText("采用这份文案"));
     expect(
       screen.getByRole("button", { name: "合成最终提示词" }),
     ).toBeDisabled();
     view.rerender(<FinalHarness />);
-    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    fireEvent.click(screen.getByLabelText("采用这份文案"));
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
     await waitFor(() =>
       expect(screen.getByLabelText("最终正文")).toHaveValue("最终稿"),
@@ -145,13 +158,13 @@ describe("最终提示词后置", () => {
       target: { value: "人工编辑" },
     });
     view.rerender(<FinalHarness duration={15} />);
-    expect(screen.getByText(/最终稿待合成或更新/)).toBeInTheDocument();
+    expect(screen.getByText(/待合成/)).toBeInTheDocument();
     expect(screen.getByLabelText("最终正文")).toHaveValue("人工编辑");
     expect(api.compile).toHaveBeenCalledOnce();
   });
   it("明确无口播会保存空脚本，不把说明文字当作台词", async () => {
     render(<FinalHarness script="" />);
-    fireEvent.click(screen.getByLabelText("确认本视频无口播"));
+    fireEvent.click(screen.getByLabelText("本视频无口播"));
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
     await waitFor(() => expect(api.compile).toHaveBeenCalledOnce());
     expect(api.script).toHaveBeenCalledWith("project", {
@@ -168,7 +181,7 @@ describe("最终提示词后置", () => {
       }),
     );
     render(<FinalHarness />);
-    fireEvent.click(screen.getByLabelText("确认采用以上文案"));
+    fireEvent.click(screen.getByLabelText("采用这份文案"));
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
     await waitFor(() => expect(api.compile).toHaveBeenCalledOnce());
     fireEvent.change(screen.getByLabelText("最终正文"), {
@@ -180,6 +193,23 @@ describe("最终提示词后置", () => {
     expect(screen.getByLabelText("最终正文")).toHaveValue("继续编辑");
     fireEvent.click(screen.getByRole("button", { name: "采用这份最终稿" }));
     expect(screen.getByLabelText("最终正文")).toHaveValue("迟到新稿");
+  });
+  it("只在时长压缩时要求确认，中段帧才直接显示开场衔接", () => {
+    const view = render(<FinalHarness sourceDuration={8} />);
+    fireEvent.click(screen.getByLabelText("采用这份文案"));
+    expect(
+      screen.getByLabelText("将 8.0 秒内容压缩到 4 秒"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "合成最终提示词" }),
+    ).toBeDisabled();
+    expect(screen.queryByLabelText("开场衔接")).toBeNull();
+
+    view.rerender(
+      <FinalHarness sourceDuration={4} sourceFrameTimestamp={1.2} />,
+    );
+    expect(screen.queryByLabelText(/压缩/)).toBeNull();
+    expect(screen.getByLabelText("开场衔接")).toBeInTheDocument();
   });
 });
 

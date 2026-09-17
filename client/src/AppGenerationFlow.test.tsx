@@ -1,21 +1,29 @@
-import {
-  act,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-} from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { createState } from "./studio/state";
+
+const studioLive = vi.hoisted(() => ({
+  loadProjectDraft: vi.fn(),
+}));
+
+vi.mock("./studio/live", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  ...studioLive,
+}));
 
 const batch = {
   id: "batch-created-from-project",
   project_id: "project-1",
+  project_name: "夏日咖啡馆口播复刻",
+  display_name: "夏日咖啡馆复刻成片",
+  creation_kind: "replica",
   prompt_version_id: "prompt-1",
   status: "SUCCEEDED",
   quantity: 1,
   stale: false,
+  created_at: "2026-09-17T08:00:00Z",
   progress: {
     total_count: 1,
     terminal_count: 1,
@@ -60,6 +68,12 @@ function createAppFetchMock() {
         ],
       });
     }
+    if (url.includes("/api/generation-batches?")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ items: [batch], next_cursor: null, total: 1 }),
+      });
+    }
     if (url.endsWith(`/api/generation-batches/${batch.id}`)) {
       return Promise.resolve({ ok: true, json: async () => batch });
     }
@@ -67,91 +81,87 @@ function createAppFetchMock() {
   });
 }
 
-async function openProjectAnalysisFlow() {
+async function openCanonicalReplica(
+  entry:
+    | `打开项目 ${string}`
+    | "生成视频"
+    | "查看流程" = "打开项目 夏日咖啡馆口播复刻",
+) {
   // 首页“上传视频”已是本机文件上传图标；无来源时进入已实现项目区的
-  // 入口是“开始复刻”，再打开真实项目分析流。
+  // 入口是“开始复刻”。项目标题、生成和查看入口现在都汇入同一 Replica。
   await screen.findByRole("heading", {
     level: 1,
     name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
   });
   fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-  fireEvent.click(
-    await screen.findByRole("button", {
-      name: "打开项目 夏日咖啡馆口播复刻",
-    }),
-  );
-  await screen.findByRole("button", { name: "模拟一键生成完成" });
+  fireEvent.click(await screen.findByRole("button", { name: entry }));
+  await screen.findByRole("heading", { name: "1 视频拆解" });
 }
 
-async function openProjectGenerationFlow() {
-  await openProjectAnalysisFlow();
-  fireEvent.click(screen.getByRole("button", { name: "模拟一键生成完成" }));
-}
+describe("App canonical replica entry", () => {
+  beforeEach(() => {
+    const draft = createState("replica").draft;
+    draft.projectId = "project-1";
+    draft.sourceId = "reference-1";
+    draft.script.title = "夏日咖啡馆口播复刻";
+    studioLive.loadProjectDraft.mockReset();
+    studioLive.loadProjectDraft.mockResolvedValue({ draft, errors: [] });
+  });
 
-// V1.4 一键动线交接契约：工作区内部「开始生成 → 四步流水线 →
-// onBatchCreated」由 AnalysisWorkspace.test.tsx（P0-04 用例）覆盖；
-// 本套件验证 App 层交接段——onBatchCreated 后自动打开任务记录
-// （无需粘贴 Batch ID）与 busy 阻断导航，两层接力证明
-// 「从点击到任务记录页用户操作仅 1 次」。
-vi.mock("./AnalysisWorkspace", () => ({
-  AnalysisWorkspace: ({
-    onBatchCreated,
-    onWorkspaceBusyChange,
-  }: {
-    onBatchCreated: (value: unknown) => void;
-    onWorkspaceBusyChange?: (isBusy: boolean) => void;
-  }) => (
-    <div>
-      <button onClick={() => onBatchCreated(batch)} type="button">
-        模拟一键生成完成
-      </button>
-      <button onClick={() => onWorkspaceBusyChange?.(true)} type="button">
-        模拟上游写入开始
-      </button>
-      <button onClick={() => onWorkspaceBusyChange?.(false)} type="button">
-        模拟上游写入完成
-      </button>
-    </div>
-  ),
-}));
-
-describe("App generation handoff", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     window.localStorage.clear();
     window.location.hash = "";
   });
 
-  it("opens the created batch task record without asking for a pasted batch id", async () => {
+  it("项目标题入口进入统一复刻页，并保留真实任务记录入口", async () => {
     window.localStorage.clear();
     window.location.hash = "";
     const fetchMock = createAppFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
-    await openProjectGenerationFlow();
+    await openCanonicalReplica();
 
+    expect(window.location.hash).toBe("#studio/replica");
     expect(
-      await screen.findByRole("region", { name: "任务记录" }),
+      screen.queryByRole("button", { name: "模拟一键生成完成" }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "任务中心" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看结果" }));
+    expect(
+      await screen.findByRole("heading", { name: "夏日咖啡馆复刻成片" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
-    expect(window.location.hash).toBe("");
-    expect(window.localStorage.getItem("generation.batchId:employee_1")).toBe(
-      batch.id,
-    );
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        `http://127.0.0.1:8000/api/generation-batches/${batch.id}`,
-        expect.any(Object),
-      ),
+    expect(window.location.hash).toContain(
+      `#studio/task-detail/generation_batch/${batch.id}`,
     );
   });
 
-  it("opens the created batch when browser storage is unavailable", async () => {
+  it.each(["生成视频", "查看流程"] as const)(
+    "%s 入口也进入同一个复刻页",
+    async (entry) => {
+      window.localStorage.clear();
+      window.location.hash = "";
+      vi.stubGlobal("fetch", createAppFetchMock());
+
+      render(<App />);
+      await openCanonicalReplica(entry);
+
+      expect(window.location.hash).toBe("#studio/replica");
+      expect(
+        screen.getByRole("heading", { name: "2 首帧置换" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: "3 文案与生成" }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("浏览器存储不可用时仍能进入统一复刻页", async () => {
     window.localStorage.clear();
     window.location.hash = "";
-    const fetchMock = createAppFetchMock();
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", createAppFetchMock());
     const storageWrite = vi
       .spyOn(Storage.prototype, "setItem")
       .mockImplementation(() => {
@@ -159,81 +169,12 @@ describe("App generation handoff", () => {
       });
 
     render(<App />);
-    await openProjectGenerationFlow();
+    await openCanonicalReplica();
 
+    expect(window.location.hash).toBe("#studio/replica");
     expect(
-      await screen.findByRole("region", { name: "任务记录" }),
+      screen.getByRole("heading", { name: "3 文案与生成" }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
-    expect(window.location.hash).toBe("");
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        `http://127.0.0.1:8000/api/generation-batches/${batch.id}`,
-        expect.any(Object),
-      ),
-    );
     storageWrite.mockRestore();
-  });
-
-  it("blocks sidebar and browser navigation while the analysis workspace is busy", async () => {
-    window.localStorage.clear();
-    window.location.hash = "";
-    vi.stubGlobal("fetch", createAppFetchMock());
-
-    render(<App />);
-    await openProjectAnalysisFlow();
-    fireEvent.click(screen.getByRole("button", { name: "模拟上游写入开始" }));
-
-    // 新壳保留导航按钮的可见性，但 navigate 会读取忙碌锁；点击后必须
-    // 仍留在真实 AnalysisWorkspace，而不能切进任务中心。
-    expect(screen.getByRole("button", { name: "任务中心" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "任务中心" }));
-    expect(
-      screen.getByRole("button", { name: "模拟上游写入完成" }),
-    ).toBeInTheDocument();
-    expect(window.location.hash).toBe("");
-
-    await act(async () => {
-      window.history.replaceState(null, "", "#tasks");
-      window.dispatchEvent(new HashChangeEvent("hashchange"));
-    });
-    expect(
-      screen.getByRole("button", { name: "模拟上游写入完成" }),
-    ).toBeInTheDocument();
-
-    await act(async () => {
-      window.history.replaceState(null, "", "#characters");
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    });
-    expect(
-      screen.getByRole("button", { name: "模拟上游写入完成" }),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "模拟上游写入完成" }));
-    expect(screen.getByRole("button", { name: "任务中心" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "任务中心" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "历史任务与下载" }),
-    );
-    expect(
-      await screen.findByRole("region", { name: "任务记录" }),
-    ).toBeInTheDocument();
-  });
-
-  it("allows the completed paid batch handoff to leave a busy analysis workspace", async () => {
-    window.localStorage.clear();
-    window.location.hash = "";
-    vi.stubGlobal("fetch", createAppFetchMock());
-
-    render(<App />);
-    await openProjectAnalysisFlow();
-    fireEvent.click(screen.getByRole("button", { name: "模拟上游写入开始" }));
-    fireEvent.click(screen.getByRole("button", { name: "模拟一键生成完成" }));
-
-    expect(
-      await screen.findByRole("region", { name: "任务记录" }),
-    ).toBeInTheDocument();
-    expect(window.location.hash).toBe("");
-    expect(screen.getByLabelText("Batch ID")).toHaveValue(batch.id);
   });
 });

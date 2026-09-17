@@ -11,21 +11,7 @@ import {
   scriptRewriteIdempotencyKey,
   shouldClearScriptRewriteIdempotencyKey,
 } from "./scriptRewrite";
-import { Button, Field, Hint, Icon, Panel, Tabs } from "./ui";
-
-export function ReplicaWorkflowNavigation() {
-  const { state, navigate } = useStudio();
-  return (
-    <Tabs
-      value={state.page}
-      items={[
-        { id: "replica", label: "01 内容配置" },
-        { id: "replacement", label: "02 首帧置换" },
-      ]}
-      onChange={(page) => navigate(page as "replica" | "replacement")}
-    />
-  );
-}
+import { Button, Hint, Icon, Panel } from "./ui";
 
 export function ReplicaNarration() {
   const { state, user, review, patchDraft } = useStudio();
@@ -147,9 +133,7 @@ export function ReplicaNarration() {
   return (
     <Panel className="creation-replica-narration">
       <div className="creation-panel-title-row">
-        <span>
-          <b className="creation-step-number">01</b> 提取文案与修改口播
-        </span>
+        <span>口播文案</span>
         <Button
           variant="outline"
           disabled={
@@ -165,31 +149,27 @@ export function ReplicaNarration() {
           {busy ? "AI 改写中…" : "AI 改写"}
         </Button>
       </div>
-      <Field label="口播文案 · 可直接编辑">
-        <textarea
-          aria-label="口播文案"
-          className="creation-textarea"
-          rows={5}
-          readOnly={readOnly}
-          value={draft.script.text}
-          onChange={(event) => {
-            if (!readOnly)
-              patchDraft({
-                script: {
-                  ...draft.script,
-                  text: event.target.value,
-                  confirmed: false,
-                },
-                scriptEdited: true,
-              });
-          }}
-          placeholder="完成拆解后，原视频口播文案会出现在这里。"
-        />
-      </Field>
+      <textarea
+        aria-label="口播文案"
+        className="creation-textarea"
+        rows={5}
+        readOnly={readOnly}
+        value={draft.script.text}
+        onChange={(event) => {
+          if (!readOnly)
+            patchDraft({
+              script: {
+                ...draft.script,
+                text: event.target.value,
+                confirmed: false,
+              },
+              scriptEdited: true,
+            });
+        }}
+        placeholder="完成拆解后，原视频口播文案会出现在这里。"
+      />
       <div className="creation-panel-title-row">
-        <Hint>
-          {message || "提取原文后在此编辑，AI 改写完成后直接替换框内文案。"}
-        </Hint>
+        {message && <Hint>{message}</Hint>}
         {undo?.key === key && undo.after === draft.script.text && (
           <Button
             variant="quiet"
