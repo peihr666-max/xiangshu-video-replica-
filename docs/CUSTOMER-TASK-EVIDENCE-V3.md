@@ -1,5 +1,9 @@
 # Customer Edition Task Evidence Record V3
 
+## DESKTOP-ACTIONS-20260917
+
+GitHub Actions 三平台桌面安装包与可下载 Artifact；复用现有 Tauri、API 校验与内测渠道，不改原三门禁。范围、先红后绿、构建与下载证据见[独立记录](evidence/DESKTOP-ACTIONS-20260917.md)；当前 AUTOMATED_VERIFIED（前端 1674 passed、后端 2540 passed / 1 既有 skip、21 项构建合同、独立评审通过）；远程构建待执行，未合并或部署。
+
 > 2026-09-17 PRELAUNCH-REMEDIATION：上线评审 R02—R06 修复通过本地完整质量门与失败补验；R01/#130、R07/#129、R08/#126 已合入主线并整合。已提交 [PR #131](https://github.com/peihr666-max/xiangshu-video-replica-/pull/131)。仅代码修复，不变更生产验收等级。见[独立证据](evidence/PRELAUNCH-REMEDIATION-20260917.md)。
 
 ## 2026-09-15 MATERIAL-CACHE / R90 浏览器持久缓存

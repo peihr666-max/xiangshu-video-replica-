@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import subprocess
 import tomllib
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -232,3 +237,238 @@ def test_verify_customer_bundle_asserts_admin_base_stylesheet_marker() -> None:
     assert script.index("runAdminBaseStylesheetControl();") < script.index(
         "const nameHits = checkForbiddenFileNames(relPaths)"
     )
+
+
+def _run_desktop_artifact_collector(
+    platform: str,
+    bundle_dir: Path,
+    output_dir: Path,
+    api_base_url: str = "https://api.example.com",
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["VITE_API_BASE_URL"] = api_base_url
+    return subprocess.run(
+        [
+            "node",
+            str(REPO_ROOT / "scripts/release/collect-desktop-artifacts.mjs"),
+            platform,
+            str(bundle_dir),
+            str(output_dir),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("platform", "suffix", "signature"),
+    [
+        ("windows-x86_64", ".exe", "unsigned"),
+        ("macos-arm64", ".dmg", "ad-hoc/unnotarized"),
+        ("macos-x86_64", ".dmg", "ad-hoc/unnotarized"),
+    ],
+)
+def test_desktop_artifact_collector_archives_one_installer_with_provenance(
+    tmp_path: Path,
+    platform: str,
+    suffix: str,
+    signature: str,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    output_dir = tmp_path / "output"
+    bundle_dir.mkdir()
+    installer = bundle_dir / f"video-replica-{platform}{suffix}"
+    payload = f"installer:{platform}".encode()
+    installer.write_bytes(payload)
+
+    result = _run_desktop_artifact_collector(platform, bundle_dir, output_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert (output_dir / installer.name).read_bytes() == payload
+    digest = hashlib.sha256(payload).hexdigest()
+    assert (output_dir / "SHA256SUMS.txt").read_text(encoding="utf-8") == (
+        f"{digest}  {installer.name}\n"
+    )
+    assert (output_dir / "RELEASE-CHANNEL.txt").read_text(encoding="utf-8") == (
+        "internal-test-unsigned\n"
+    )
+    manifest = json.loads((output_dir / "manifest.json").read_text(encoding="utf-8"))
+    package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
+    source_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert manifest["version"] == package["version"]
+    assert manifest["platform"] == platform
+    assert manifest["source_sha"] == source_sha
+    assert manifest["api_base_url"] == "https://api.example.com"
+    assert manifest["signature"] == signature
+    assert manifest["artifact"] == installer.name
+    assert manifest["sha256"] == digest
+
+
+@pytest.mark.parametrize(
+    ("platform", "api_base_url", "installer_names", "expected_error"),
+    [
+        (
+            "windows-x86_64",
+            "https://api.example.com",
+            [],
+            "exactly one non-empty .exe installer",
+        ),
+        (
+            "windows-x86_64",
+            "https://api.example.com",
+            ["one.exe", "two.exe"],
+            "exactly one non-empty .exe installer",
+        ),
+        (
+            "linux-x86_64",
+            "https://api.example.com",
+            ["one.exe"],
+            "unsupported platform",
+        ),
+        (
+            "constructor",
+            "https://api.example.com",
+            ["one.exe"],
+            "unsupported platform",
+        ),
+        (
+            "__proto__",
+            "https://api.example.com",
+            ["one.exe"],
+            "unsupported platform",
+        ),
+        (
+            "macos-arm64",
+            "http://localhost:8000",
+            ["one.dmg"],
+            "VITE_API_BASE_URL must be a routable",
+        ),
+    ],
+)
+def test_desktop_artifact_collector_rejects_invalid_input(
+    tmp_path: Path,
+    platform: str,
+    api_base_url: str,
+    installer_names: list[str],
+    expected_error: str,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    output_dir = tmp_path / "output"
+    bundle_dir.mkdir()
+    for name in installer_names:
+        (bundle_dir / name).write_bytes(b"installer")
+
+    result = _run_desktop_artifact_collector(platform, bundle_dir, output_dir, api_base_url)
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert not output_dir.exists() or not any(output_dir.iterdir())
+
+
+def test_desktop_artifact_collector_does_not_overwrite_existing_output(
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    output_dir = tmp_path / "output"
+    bundle_dir.mkdir()
+    output_dir.mkdir()
+    (bundle_dir / "installer.dmg").write_bytes(b"new installer")
+    sentinel = output_dir / "existing.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    result = _run_desktop_artifact_collector("macos-arm64", bundle_dir, output_dir)
+
+    assert result.returncode != 0
+    assert "output directory must be empty" in result.stderr
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert sorted(path.name for path in output_dir.iterdir()) == ["existing.txt"]
+
+
+def test_desktop_artifact_collector_rejects_an_empty_installer(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "bundle"
+    output_dir = tmp_path / "output"
+    bundle_dir.mkdir()
+    (bundle_dir / "empty.exe").touch()
+
+    result = _run_desktop_artifact_collector("windows-x86_64", bundle_dir, output_dir)
+
+    assert result.returncode != 0
+    assert "exactly one non-empty .exe installer" in result.stderr
+    assert not output_dir.exists()
+
+
+def _matrix_entry(workflow: str, platform: str) -> str:
+    lines = workflow.splitlines()
+    start = next(
+        index for index, line in enumerate(lines) if line.strip() == f"- platform: {platform}"
+    )
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start + 1)
+            if line.strip().startswith("- platform:")
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
+def test_desktop_installer_workflow_builds_three_internal_test_targets() -> None:
+    workflow_path = REPO_ROOT / ".github/workflows/desktop-build.yml"
+
+    assert workflow_path.exists()
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert workflow.startswith("name: Desktop installers\n")
+    assert "workflow_dispatch:" in workflow
+    assert "push:" in workflow
+    push_config = workflow.split("\n  push:\n", 1)[1].split("\n\npermissions:", 1)[0]
+    assert "main" in push_config
+    assert "feat/desktop-actions-20260917" in push_config
+    assert "pull_request:" not in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert workflow.count("- platform:") == 3
+    expected = {
+        "windows-x86_64": ("windows-2025", "x86_64-pc-windows-msvc", "nsis"),
+        "macos-arm64": ("macos-15", "aarch64-apple-darwin", "app,dmg"),
+        "macos-x86_64": ("macos-15-intel", "x86_64-apple-darwin", "app,dmg"),
+    }
+    for platform, (runner, target, bundles) in expected.items():
+        entry = _matrix_entry(workflow, platform)
+        assert f"runner: {runner}" in entry
+        assert f"target: {target}" in entry
+        assert f"bundles: {bundles}" in entry
+        expected_config = (
+            "src-tauri/tauri.customer.conf.json"
+            if platform == "windows-x86_64"
+            else "src-tauri/tauri.macos.conf.json"
+        )
+        assert f"config: {expected_config}" in entry
+    assert "actions/upload-artifact@" in workflow
+    assert "if-no-files-found: error" in workflow
+    assert "retention-days: 7" in workflow
+    assert "output/desktop/${{ matrix.platform }}" in workflow
+    for filename in ("manifest.json", "SHA256SUMS.txt", "RELEASE-CHANNEL.txt"):
+        assert filename in workflow
+    assert "contents: write" not in workflow
+    assert "softprops/action-gh-release" not in workflow
+    assert "gh release" not in workflow
+
+
+def test_macos_tauri_overlay_builds_dmg_without_distribution_signing() -> None:
+    config_path = REPO_ROOT / "client/src-tauri/tauri.macos.conf.json"
+
+    assert config_path.exists()
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["bundle"]["targets"] == ["app", "dmg"]
+    assert config["bundle"]["macOS"]["signingIdentity"] == "-"
+    assert config["bundle"]["icon"] == ["icons/icon.icns"]
+    assert config["bundle"]["resources"] == []
