@@ -1,7 +1,7 @@
 """CW-063 — h3_extended_modes_enabled admin toggle route tests.
 
 Dedicated PG database (cw063_h3_extended_modes_test) migrated to head,
-mirroring ``test_admin_rate_routes``. Covers: default-off read, the shared
+mirroring ``test_admin_audit_routes``. Covers: default-off read, the shared
 admin write contract (idempotency key / confirm / reason), auditor
 read-only enforcement, idempotent replay, upsert on empty runtime_settings,
 and the audit trail (setting='h3_extended_modes' + reason + request id).
@@ -81,8 +81,8 @@ def h3_app(monkeypatch: pytest.MonkeyPatch, h3_pg_dsn: str) -> Iterator[FastAPI]
     # the singleton before repointing DATABASE_URL_ENV and again on teardown.
     # Without this the cw063 pool — whose database the module-scoped h3_pg_dsn
     # fixture drops at teardown — leaks into every later pool consumer in the
-    # same shard process (seen as test_admin_rate_routes hitting a dropped
-    # database). Matches the standalone-suite convention used by
+    # same shard process (first seen as a later admin-route suite hitting a
+    # dropped database). Matches the standalone-suite convention used by
     # test_wallet_billing_service / test_oral_domain / test_postgres_migrations.
     close_pg_pool()
     monkeypatch.setenv(DATABASE_URL_ENV, h3_pg_dsn)
