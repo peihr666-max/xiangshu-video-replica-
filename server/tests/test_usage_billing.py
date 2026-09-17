@@ -751,6 +751,27 @@ def test_preexisting_unknown_balance_is_not_relabelled_as_new_cash(client, route
         )
 
 
+def test_unmetered_charge_predicate_stays_a_constant_safe_to_interpolate() -> None:
+    """The one SQL fragment this module builds by interpolation must stay inert.
+
+    ruff's ``S`` ruleset is not enabled here, so S608 never inspects the two
+    f-string queries in ``billing_reports``. Pin the properties that make the
+    interpolation safe instead of relying on a linter that does not run:
+    the fragment takes exactly one placeholder, and a literal ``%`` would be
+    re-parsed by psycopg as a parameter marker once embedded next to ``%s``.
+    """
+    from string import Formatter
+
+    from app.billing_reports import UNMETERED_DELIVERED_CHARGE
+
+    placeholders = {name for _, name, _, _ in Formatter().parse(UNMETERED_DELIVERED_CHARGE) if name}
+    assert placeholders == {"calls"}
+    assert "%" not in UNMETERED_DELIVERED_CHARGE
+    # Both call sites pass a fixed column reference, never caller input.
+    for column in ("c.attempt_count", "c.calls"):
+        assert "%" not in UNMETERED_DELIVERED_CHARGE.format(calls=column)
+
+
 def test_delivered_charge_without_provider_attempt_is_unknown_cost_not_free(client, route_state):
     """A delivered paid request ran a provider call; recording none proves nothing.
 
