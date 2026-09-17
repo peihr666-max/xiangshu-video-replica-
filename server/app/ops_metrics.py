@@ -18,8 +18,9 @@ from fastapi import HTTPException, Request, Response
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import PlainTextResponse
 
+from app.auth_headers import bearer_token as _bearer_token
+
 REQUEST_ID_HEADER = "X-Request-Id"
-AUTHORIZATION_HEADER = "Authorization"
 METRICS_TOKEN_FILE_ENV = "VIDEO_REPLICA_METRICS_TOKEN_FILE"
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 MAX_REQUEST_ID_LENGTH = 128
@@ -594,17 +595,6 @@ def _load_metrics_token() -> str:
             },
         )
     return token
-
-
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get(AUTHORIZATION_HEADER, "").strip()
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0] != "Bearer":
-        return None
-    token = parts[1].strip()
-    return token or None
 
 
 def _escape_label(value: str) -> str:

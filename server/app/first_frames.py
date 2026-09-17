@@ -28,6 +28,7 @@ from app.character_reference_matching import (
 )
 from app.characters import character_is_available, get_project_main_character, read_character
 from app.db_portable import BusinessConnection
+from app.net_safety import FAKE_IP_NETWORK
 from app.permissions import (
     require_asset_access,
     require_not_auditor,
@@ -49,7 +50,8 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
 )
-from app.viral_media import ViralMediaError, _pinned_connection
+from app.viral_media import ViralMediaError
+from app.viral_media import pinned_connection as _pinned_connection
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,6 @@ MAX_FIRST_FRAME_CANDIDATES = 3
 APILIO_DEFAULT_BASE_URL = "https://api.apilio.ai"
 APILIO_IMAGE_EDIT_PATH = "/v1/images/edits"
 APILIO_OUTPUT_HOSTS = frozenset({"files.closeai.fans"})
-APILIO_PROXY_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_QUALITY_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_QUALITY_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
@@ -1249,7 +1250,7 @@ def require_safe_provider_download_url(value: str) -> tuple[str, tuple[str, ...]
     trusted_output_host = hostname.lower() in APILIO_OUTPUT_HOSTS
     for address in addresses:
         ip = ipaddress.ip_address(address[4][0])
-        proxy_fake_ip = trusted_output_host and ip in APILIO_PROXY_FAKE_IP_NETWORK
+        proxy_fake_ip = trusted_output_host and ip in FAKE_IP_NETWORK
         if not ip.is_global and not proxy_fake_ip:
             raise ImageProviderFailed("Apilio output URL must resolve to a public address")
     return hostname, tuple(dict.fromkeys(str(address[4][0]) for address in addresses))

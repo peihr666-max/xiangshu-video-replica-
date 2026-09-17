@@ -29,6 +29,7 @@ from app.admin_write_contract import (
 from app.auth import Database, Role
 from app.billing_catalog import SERVICES
 from app.control_auth import ControlUser
+from app.csv_export import spreadsheet_safe_cell
 from app.db_portable import BusinessConnection
 from app.ops_metrics import get_or_create_request_id
 from app.permissions import write_audit
@@ -1802,7 +1803,7 @@ def _csv_response(
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow(headers)
     for row in rows:
-        writer.writerow([_spreadsheet_safe_cell(row[index]) for index in range(len(headers))])
+        writer.writerow([spreadsheet_safe_cell(row[index]) for index in range(len(headers))])
     return Response(
         content="\ufeff" + output.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -1822,9 +1823,3 @@ def _csv_response(
             ),
         },
     )
-
-
-def _spreadsheet_safe_cell(value: object) -> object:
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
-        return f"'{value}"
-    return value
