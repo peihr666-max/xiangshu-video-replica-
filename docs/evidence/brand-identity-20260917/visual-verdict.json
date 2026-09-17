@@ -1,0 +1,17 @@
+{
+  "task": "BRAND-IDENTITY-20260917",
+  "iteration": 2,
+  "status": "pass",
+  "method": "manual browser screenshot and DOM geometry; visual-verdict skill not installed",
+  "checks": {
+    "workbench_1280": "logo 64x64; company 24px; brand width170; sidebar224 no clipping",
+    "navigation_390": "expanded drawer brand visible no clipping",
+    "center_1280": "same shared component and gold logo",
+    "center_390": "document width390 matches viewport; header wraps navigation",
+    "creation_960": "brand/header no overlapping controls",
+    "creation_1280": "compact sidebar brand64 fits71 content; name hidden only in rail",
+    "desktop_icons": "shared logo paths; outlined company100/software112 text; 64/128 readable on light background; alpha-safe bounds verified"
+  },
+  "evidence_directory": "docs/evidence/brand-identity-20260917",
+  "account_data": "synthetic preview only; no real session/API calls"
+}

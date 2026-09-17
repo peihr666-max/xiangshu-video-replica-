@@ -25,6 +25,7 @@ import {
   listMaterials,
   type Project,
 } from "../api";
+import { BrandIdentity } from "../BrandIdentity";
 import { CustomerCenterPage } from "../customer/CustomerCenterPage";
 import { SettingsPanel } from "../SettingsPanel";
 import type { WorkspaceShellProps } from "../workspace-shell";
@@ -1853,10 +1854,7 @@ export function StudioWorkspace({
               navigate("workbench");
             }}
           >
-            <span>
-              <img src="/studio/logo-mark.svg" alt="众墅之家" />
-              <b>众墅之家｜AI 即创</b>
-            </span>
+            <BrandIdentity />
             <small>乡墅爆款视频创作平台</small>
           </button>
           <Button
@@ -1910,8 +1908,7 @@ export function StudioWorkspace({
           <div className="studio-topbar">
             {creationWorkspace && (
               <div className="studio-creation-brand">
-                <img src="/studio/logo-mark.svg" alt="" />
-                <strong>众墅之家｜AI 即创</strong>
+                <BrandIdentity />
               </div>
             )}
             <button

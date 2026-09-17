@@ -53,3 +53,7 @@
 同轮 Windows 安装包已成功上传；Intel Mac 原生应用编译与 ad-hoc 签名成功，但 Tauri `bundle_dmg.sh` 返回失败且未提供内部错误。不能据此确认是 Finder 权限还是其它脚本问题。两种 Mac 改为 Tauri 仅生成已签名 app，再用系统 `ditto` 保留应用包内容、添加 Applications 快捷方式，使用 `hdiutil create -format UDZO` 封装磁盘镜像，避免依赖外部封装脚本；签名、架构和镜像校验仍是上传前硬门。未新增项目依赖。
 
 新增原生 DMG 工作流合同先红后绿（1 failed / 20 passed → 21 passed），actionlint、Ruff 与格式检查通过。本机从工作流提取并原样执行封装及验证两个步骤，使用真实已签名 arm64 app：DMG 创建、codesign、lipo 与 hdiutil 校验全部通过。Intel 以新提交的 GitHub 原生 runner 结果为准。
+
+## 主线同步
+
+构建期间品牌 PR #136 合入 main，最新主线为 `80fee758da1632d86dfaaad566c3ac3fa9290f8a`。本任务正常合并该已发布主线，任务账本头部仅冲突一次，保留两条独立任务记录；不改写品牌内容。最终三平台包使用包含该主线的提交重新构建，旧轮产物不作为最终交付。
