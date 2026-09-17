@@ -7216,6 +7216,8 @@ export interface components {
       content_type: string | null;
       /** Error Code */
       error_code: string | null;
+      /** Thumbnail Url */
+      thumbnail_url?: string | null;
     };
     /** DownloadUrlsResponse */
     DownloadUrlsResponse: {
@@ -7916,6 +7918,8 @@ export interface components {
       composite: boolean;
       /** Preview Asset Id */
       preview_asset_id?: string | null;
+      /** Thumbnail Key */
+      thumbnail_key?: string | null;
       /** Character Views */
       character_views?: components["schemas"]["MaterialCharacterView"][];
       /** Allowed Uses */

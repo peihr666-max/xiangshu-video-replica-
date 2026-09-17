@@ -19,6 +19,7 @@ from app.materials import (
     MaterialUpdateRequest,
     MaterialUploadIntentRequest,
     MaterialUploadIntentResponse,
+    attach_video_thumbnail,
     create_material_upload_intent,
     hide_material,
     list_materials,
@@ -150,7 +151,21 @@ def complete_upload(
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
     with db.write() as (conn, actor):
-        return persist_material_upload(conn, actor=actor, probed=probed, storage=storage)
+        item = persist_material_upload(conn, actor=actor, probed=probed, storage=storage)
+    # MATERIAL-THUMBS-B：缩略图落存储与记键在写事务之外（dedup 后的最终对象键
+    # 以持久化结果为准）；失败只损失缩略图，不影响上传结果。
+    if probed.thumbnail_jpeg is not None:
+        try:
+            with db.write() as (conn, actor):
+                attach_video_thumbnail(
+                    conn,
+                    asset_id=str(item.asset_id),
+                    thumbnail_jpeg=probed.thumbnail_jpeg,
+                    storage=storage,
+                )
+        except StorageBackendUnavailable:
+            pass
+    return item
 
 
 @router.patch("/{material_id}", response_model=MaterialItem)

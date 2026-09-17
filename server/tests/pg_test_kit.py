@@ -181,6 +181,10 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # 批量 download-urls 安全/语义矩阵 (test_material_perf_batch_urls.py),
         # migrated to alembic head and truncated per test.
         "matperf_a_batch_urls_test",
+        # MATERIAL-THUMBS-B-20260917 视频素材缩略图：dedicated database for the
+        # 缩略图键/批量缩略图签名矩阵 (test_material_thumbs.py), migrated to
+        # alembic head and truncated per test.
+        "matthumbs_test",
     }
 )
 

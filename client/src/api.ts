@@ -4624,16 +4624,23 @@ export async function getMaterialCachedPreview(
   );
 }
 
-/** 批量预览解析（MATERIAL-PERF-A P0-2）：一次批量授权 + 逐条本机缓存判定，
- * 替代素材库网格的逐瓦片 N+1 授权请求。返回以请求 id 为键；授权失败或被
- * 拒绝的 id 不出现在结果中，由调用方按失败处理。 */
-export async function getMaterialCachedPreviews(
+/** 批量预览解析结果：previews 键为请求 id；thumbnails 仅为带缩略图键的视频
+ * 资产（MATERIAL-THUMBS-B，7 天有效签名 URL），其余 id 不出现在 thumbnails。 */
+export type MaterialBatchPreviews = {
+  previews: Record<string, MaterialCachedPreview>;
+  thumbnails: Record<string, string>;
+};
+
+/** 批量预览解析（MATERIAL-PERF-A P0-2 + MATERIAL-THUMBS-B P0-3）：一次批量授权
+ * + 逐条本机缓存判定，替代素材库网格的逐瓦片 N+1 授权请求。授权失败或被
+ * 拒绝的 id 不出现在 previews/thumbnails 中，由调用方按失败处理。 */
+export async function getMaterialBatchPreviews(
   userId: string,
   entries: { id: string; populate: boolean }[],
   options: { signal?: AbortSignal } = {},
-): Promise<Record<string, MaterialCachedPreview>> {
+): Promise<MaterialBatchPreviews> {
   const unique = [...new Set(entries.map((entry) => entry.id).filter(Boolean))];
-  if (!unique.length) return {};
+  if (!unique.length) return { previews: {}, thumbnails: {} };
   const contexts = new Map<string, MaterialCacheContext>();
   const generations = new Map<string, string | null>();
   const populateById = new Map<string, boolean>(
@@ -4659,9 +4666,11 @@ export async function getMaterialCachedPreviews(
   );
   requireMaterialContext(materialCacheContext(userId, options.signal));
   const results: Record<string, MaterialCachedPreview> = {};
+  const thumbnails: Record<string, string> = {};
   for (const item of authorized.items) {
     const context = contexts.get(item.asset_id);
     if (!context || !item.url) continue;
+    if (item.thumbnail_url) thumbnails[item.asset_id] = item.thumbnail_url;
     const metadata: MaterialAssetMetadata = {
       id: item.asset_id,
       project_id: null,
@@ -4679,7 +4688,17 @@ export async function getMaterialCachedPreviews(
       populateById.get(item.asset_id) ?? false,
     );
   }
-  return results;
+  return { previews: results, thumbnails };
+}
+
+/** 兼容包装（MATERIAL-PERF-A 语义）：只要预览映射、不带缩略图。 */
+export async function getMaterialCachedPreviews(
+  userId: string,
+  entries: { id: string; populate: boolean }[],
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, MaterialCachedPreview>> {
+  const { previews } = await getMaterialBatchPreviews(userId, entries, options);
+  return previews;
 }
 
 export async function getMaterialCacheUsage(

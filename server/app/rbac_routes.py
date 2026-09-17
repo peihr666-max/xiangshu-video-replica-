@@ -59,6 +59,9 @@ from app.storage import (
 
 router = APIRouter(prefix="/api", tags=["rbac"])
 DOWNLOAD_URL_EXPIRES_IN = timedelta(minutes=15)
+# MATERIAL-THUMBS-B：缩略图是原对象的派生小图，签名可放宽到 7 天，
+# 让浏览器跨页/跨会话命中本地缓存（瓦片不再每次进素材库重新签名）。
+THUMBNAIL_URL_EXPIRES_IN = timedelta(days=7)
 CHARACTER_CACHE_KINDS = frozenset(
     {
         "character_contact_sheet",
@@ -1023,6 +1026,8 @@ class DownloadUrlItem(BaseModel):
     size_bytes: int | None = None
     content_type: str | None = None
     error_code: str | None = None
+    # MATERIAL-THUMBS-B：带缩略图键的视频资产额外签出的 7 天缩略图 URL。
+    thumbnail_url: str | None = None
 
 
 class DownloadUrlsResponse(BaseModel):
@@ -1067,6 +1072,7 @@ def create_download_urls(
                     )
                 )
                 continue
+            thumbnail_url = _signed_thumbnail_url(conn, actor=actor, row=row, asset_id=asset_id)
             items.append(
                 DownloadUrlItem(
                     asset_id=asset_id,
@@ -1076,9 +1082,58 @@ def create_download_urls(
                     content_type=(
                         str(row["content_type"]) if row["content_type"] is not None else None
                     ),
+                    thumbnail_url=thumbnail_url,
                 )
             )
     return DownloadUrlsResponse(items=items)
+
+
+def _signed_thumbnail_url(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    row: sqlite3.Row,
+    asset_id: str,
+) -> str | None:
+    """MATERIAL-THUMBS-B：为带缩略图键的视频签出 7 天缩略图对象 URL。
+
+    属主校验已在 ``_grant_download_for_asset`` 完成；此处只读元数据派生键，
+    签名走与原视频完全相同的通道。无键/非视频/存储异常一律 None。
+    """
+    if row["content_type"] is None or not str(row["content_type"]).startswith("video/"):
+        return None
+    try:
+        metadata = json.loads(str(row["metadata_json"] or "{}"))
+    except (TypeError, ValueError):
+        return None
+    thumbnail_key = metadata.get("thumbnail_key") if isinstance(metadata, dict) else None
+    if not isinstance(thumbnail_key, str) or not thumbnail_key:
+        return None
+    try:
+        storage_for_asset(conn, str(row["storage_uri"]))
+        secret = settings_encryption_key()
+        expires_at = str(int(time.time()) + int(THUMBNAIL_URL_EXPIRES_IN.total_seconds()))
+        session_epoch = signed_asset_session_epoch(conn, actor)
+        signature = local_download_signature(
+            thumbnail_key,
+            expires_at,
+            user_id=actor.id,
+            asset_id=asset_id,
+            session_epoch=session_epoch,
+            secret=secret,
+        )
+        query = urlencode(
+            {
+                "expires": expires_at,
+                "user_id": actor.id,
+                "asset_id": asset_id,
+                "session_epoch": session_epoch,
+                "sig": signature,
+            }
+        )
+        return f"/api/assets/signed-objects/{quote(thumbnail_key, safe='/')}?{query}"
+    except StorageBackendUnavailable:
+        return None
 
 
 @router.post("/assets/{asset_id}/cached-url", response_model=DownloadUrlResponse)
