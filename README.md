@@ -2,6 +2,16 @@
 
 阅读入口：[开发导航与代码地图](docs/development/README.md) · [文档索引](docs/README.md) · [设计资料](docs/design/README.md) · [编辑器工作区](video-replica.code-workspace)。
 
+## GitHub 自动编译桌面安装包
+
+[Desktop installers](https://github.com/peihr666-max/xiangshu-video-replica-/actions/workflows/desktop-build.yml) 生成三个可下载的测试安装包：Windows x64 `.exe`、Apple Silicon Mac `.dmg`、Intel Mac `.dmg`。打开成功的工作流运行，在 **Artifacts** 中下载对应平台的 ZIP，解压后安装；每份同时包含 `manifest.json`、`SHA256SUMS.txt` 与渠道标记，保留 7 天。下载需要有仓库访问权限的 GitHub 登录状态。
+
+工作流合入 `main` 后，桌面源码、依赖或打包配置更新会自动构建，也可通过 **Run workflow** 选择分支并填写 HTTPS API 根地址。默认连接 `https://video.zszhj.cn`；此地址经过现有客户构建校验，不包含账号凭据。首次审阅通过 `feat/desktop-actions-20260917` 分支 push 运行，未合入前不声称默认分支的自动打包已启用。
+
+这些安装包为 `internal-test-unsigned`：Windows 未做 Authenticode 签名，Mac 使用 ad-hoc 签名且未 Apple 公证。Mac 首次打开可能需要在“系统设置 → 隐私与安全性”中允许；正式签名发行沿用[桌面升级与签名发布手册](docs/客户版桌面升级与签名发布手册.md)。工作流只上传构建产物，不创建公开 Release，也不部署服务端。自动编译成功与真实平台扫码/发布验收分别记录，详见[本次构建证据](docs/evidence/DESKTOP-ACTIONS-20260917.md)。
+
+参考：[GitHub Runner 平台](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)、[Tauri macOS ad-hoc 签名](https://v2.tauri.app/distribute/sign/macos/#ad-hoc-signing)、[GitHub 构建产物](https://github.com/actions/upload-artifact)。
+
 > 当前执行清单已更新为[本地实现去重V3](outputs/customer-cloud-convergence-analysis-2026-09-08/v3/客户版收敛剩余任务清单与验收完工标准-V3.md)：57项剩余排程，复用既有代码；原60项及CW-006/008/011保留追溯，当前状态仅见任务账本§18。此更新不代表代码或数据迁移已完成。
 
 > 2026-09-08 PostgreSQL 全面统一增量：用户已确定开发、业务数据库测试、CI、staging、生产均使用 PostgreSQL；SQLite 仅限精确登记的离线历史输入、归档与兼容工具。
