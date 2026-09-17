@@ -1,5 +1,7 @@
 # Customer Edition Task Evidence Record V3
 
+> 2026-09-17 BRAND-CORRECTION：首排恢复横排，Logo/文字/间距按原基线放大20%；欢迎页接入共享组件，修复无尺寸约束巨图；桌面图标仅补纯黑底。回归先红后绿，静态门1676前端与PG2527通过/1既有skip，独立评审APPROVE。已打开本地示例预览，未合并或部署。见[独立证据](evidence/BRAND-CORRECTION-20260917.md)。
+
 ## DESKTOP-ACTIONS-20260917
 
 GitHub Actions 三平台桌面安装包与可下载 Artifact；复用现有 Tauri、API 校验与内测渠道，不改原三门禁。范围、先红后绿、构建与下载证据见[独立记录](evidence/DESKTOP-ACTIONS-20260917.md)；当前 AUTOMATED_VERIFIED（前端 1674 passed、后端 2540 passed / 1 既有 skip、21 项构建合同、独立评审通过）；远程构建待执行，未合并或部署。

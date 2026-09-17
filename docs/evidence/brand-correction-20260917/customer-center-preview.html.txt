@@ -1,0 +1,21 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>品牌验收：用户中心（模拟账户）</title></head><body><div id="root"></div><script type="module">
+import RefreshRuntime from '/@react-refresh';
+RefreshRuntime.injectIntoGlobalHook(window);
+window.$RefreshReg$ = () => {};
+window.$RefreshSig$ = () => (type) => type;
+window.__vite_plugin_react_preamble_installed__ = true;
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+const {CustomerCenterPage} = await import('/src/customer/CustomerCenterPage.tsx');
+const {StudioContext} = await import('/src/studio/context.tsx');
+await import('/src/customer/customer-access.css');
+await import('/src/studio/studio.css');
+const user = {id:'brand-preview',username:'品牌预览',display_name:'品牌预览'};
+const account = {profile:{user_id:'preview-account',username:user.username,display_name:user.display_name,joined_at:'2026-09-17T00:00:00Z'},profileLoadError:'',store:{loadSessionToken:async()=> 'preview-only'},onSessionExpired(){},onLogout:async()=>{},onRefreshProfile:async()=>{},onUpdateProfile:async()=>{},onProfileUpdated(){}};
+window.fetch = async(input) => {
+ const path = String(input);
+ const body = path.includes('center-summary') ? {user_id:'preview-account',available_credits:1000,reserved_credits:0,total_consumed_credits:0,active_tokens:1} : path.includes('api-keys') ? {items:[{id:'preview-key',is_default:true,label:'默认 Token',key_prefix:'preview',credential_version:1,total_consumed_credits:0,created_at:'2026-09-17T00:00:00Z'}],total:1} : {enabled:true};
+ return Response.json(body);
+};
+createRoot(document.getElementById('root')).render(React.createElement(StudioContext.Provider,{value:{user,navigate(){},notify(){}}},React.createElement(CustomerCenterPage,{account})));
+</script></body></html>

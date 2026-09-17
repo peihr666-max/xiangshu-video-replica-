@@ -113,3 +113,11 @@
 最终交互补验：参考素材预览关闭按钮与 Escape 均将焦点返回原缩略卡，`preventScroll` 保持滚动位置；1440/390 两档无横向溢出或控制台错误。该评审 LOW 已修复，新增专项 2 passed，Biome 与 TypeScript 通过。
 
 独立最终评审：**APPROVE，0 剩余问题**；追加反馈全范围及最后焦点修复均已复核，见 [评审记录](replica-subject-layout-20260917/feedback-code-review.json)。
+
+## 当前主线同步与远程验证
+
+最终功能提交 `b1117919` 的 [CI 35197192700](https://github.com/peihr666-max/xiangshu-video-replica-/actions/runs/35197192700) 全部通过：前端1716、PG2580/1既有skip、浏览器E2E 4、Linux Rust 20、Windows Rust 27，客户/管理端构建与Windows NSIS成功。秘密扫描通过；依赖审计按既有门禁阈值通过，但保留 Vitest / @vitest/mocker 共2项中等级告警（GHSA-82fw-gwwq-j7x9），本次没有依赖变化，不做跨范围强制升级。
+
+验证期间品牌修正 #138 已进入 main `023da4a2`，同步到本分支。唯一冲突为任务账本头部与末尾的独立新增记录，逐条保留两任务真实历史；公共 studio.css 自动合并，品牌字号与本任务侧栏段互不覆盖。没有更改供应商或数据库行为。同步后重新核验静态门，远程最终head检查以PR实时状态为准。
+
+同步后完整静态门全部通过，前端107文件/1717项；独立合并评审APPROVE、0问题。1440侧栏88px、390展开265px，品牌组件全页仅1处且内容区0处；两档参考素材上下顺序、单击预览和关闭焦点归还均通过，无溢出或控制台错误，见 [同步视觉复验](replica-subject-layout-20260917/main-sync/visual-verdict.json)。

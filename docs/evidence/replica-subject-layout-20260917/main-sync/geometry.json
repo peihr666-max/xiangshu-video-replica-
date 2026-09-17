@@ -1,0 +1,92 @@
+{
+  "390": {
+    "ordered": true,
+    "uploadBox": {
+      "x": 16,
+      "y": 288,
+      "width": 358,
+      "height": 208
+    },
+    "previewBox": {
+      "x": 16,
+      "y": 583.5,
+      "width": 358,
+      "height": 96
+    },
+    "dialogVisible": true,
+    "focusReturned": true,
+    "overflow": false,
+    "initial": {
+      "totalBrandIdentities": 1,
+      "sidebarBrandIdentities": 1,
+      "contentBrandIdentities": 0,
+      "sidebarBox": {
+        "x": -265,
+        "y": 0,
+        "width": 265,
+        "height": 1000
+      },
+      "brandDisplay": "inline-flex",
+      "brandFlexDirection": "row",
+      "brandTextDisplay": "flex",
+      "logoNatural": {
+        "alt": "众墅之家",
+        "width": 50.390625,
+        "height": 43.1875
+      }
+    },
+    "mobileOpen": {
+      "sidebarBox": {
+        "x": 0,
+        "y": 0,
+        "width": 265,
+        "height": 1000
+      },
+      "brandTextDisplay": "flex",
+      "brandFlexDirection": "row",
+      "horizontalLockup": true,
+      "sidebarVisible": true
+    },
+    "consoleErrors": []
+  },
+  "1440": {
+    "ordered": true,
+    "uploadBox": {
+      "x": 108,
+      "y": 249,
+      "width": 655.765625,
+      "height": 208
+    },
+    "previewBox": {
+      "x": 108,
+      "y": 544.5,
+      "width": 655.765625,
+      "height": 96
+    },
+    "dialogVisible": true,
+    "focusReturned": true,
+    "overflow": false,
+    "initial": {
+      "totalBrandIdentities": 1,
+      "sidebarBrandIdentities": 1,
+      "contentBrandIdentities": 0,
+      "sidebarBox": {
+        "x": 0,
+        "y": 0,
+        "width": 88,
+        "height": 1000
+      },
+      "brandDisplay": "inline-flex",
+      "brandFlexDirection": "row",
+      "brandTextDisplay": "none",
+      "logoNatural": {
+        "alt": "众墅之家",
+        "width": 50.390625,
+        "height": 43.1875
+      }
+    },
+    "mobileOpen": null,
+    "consoleErrors": []
+  },
+  "pass": true
+}

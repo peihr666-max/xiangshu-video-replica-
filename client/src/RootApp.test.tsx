@@ -161,6 +161,23 @@ describe("RootApp", () => {
     ).toBe(false);
   });
 
+  it("keeps the welcome logo bounded and consistent after login", async () => {
+    vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
+    render(<RootApp path="/" />);
+    await screen.findByRole("heading", { name: "工作台" });
+
+    const welcomeLogo = screen.getByRole("img", { name: "众墅之家" });
+    expect(welcomeLogo).toHaveAttribute("src", "/studio/logo-mark.svg");
+    expect(welcomeLogo).toHaveAttribute("width", "50.4");
+    expect(welcomeLogo).toHaveAttribute("height", "43.2");
+    expect(screen.getByText("众墅之家")).toBeVisible();
+    expect(screen.getByText("AI 即创")).toBeVisible();
+
+    await loginThroughAccountForm();
+    const workspaceLogo = screen.getByRole("img", { name: "众墅之家" });
+    expect(workspaceLogo.outerHTML).toBe(welcomeLogo.outerHTML);
+  });
+
   // 未认证的客户入口不得读写私有业务数据（V3 行 257/258）。
   it("issues no internal identity or private business call before authentication", async () => {
     const fetchMock = stubCustomerWorkspaceFetch();

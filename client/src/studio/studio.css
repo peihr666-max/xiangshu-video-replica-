@@ -119,7 +119,7 @@ html:has(.studio-shell) {
 .studio-brand small {
   display: block;
   margin-top: 10px;
-  font-size: var(--font-body);
+  font-size: var(--font-caption);
   color: #c8c8c1;
 }
 .studio-button {
