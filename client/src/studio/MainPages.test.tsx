@@ -935,7 +935,7 @@ describe("V1.4 工作台新版首页布局", () => {
         name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/支持抖音、小红书视频链接/)).toHaveClass(
+    expect(screen.getByText(/支持抖音、小红书的 App 分享链接/)).toHaveClass(
       "studio-start-helper",
     );
     expect(
@@ -1821,7 +1821,7 @@ describe("V1.4 工作台上传与创作入口", () => {
 
     expect(
       screen.getByText(
-        "支持抖音、小红书视频链接；其他平台请上传 MP4/MOV 文件。",
+        /支持抖音、小红书的 App 分享链接、网页链接与主页视频链接；其他平台请上传\s+MP4\/MOV 文件。/,
       ),
     ).toBeInTheDocument();
   });
