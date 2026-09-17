@@ -83,17 +83,6 @@
   align-items: center;
   gap: 18px;
 }
-.uc-brand img {
-  width: 150px;
-  height: 45px;
-  object-fit: contain;
-}
-.uc-brand > span {
-  border-left: 1px solid #55503d;
-  padding-left: 18px;
-  color: var(--uc-gold);
-  font-size: var(--font-section);
-}
 .uc-brandbar nav {
   gap: 22px;
 }
@@ -472,9 +461,6 @@
     flex-wrap: wrap;
     padding: 16px 20px;
     gap: 12px;
-  }
-  .uc-brand img {
-    width: 122px;
   }
   .uc-brandbar nav {
     width: 100%;

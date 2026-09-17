@@ -108,6 +108,17 @@ test("renders real account points and six focused tabs without reissuing an exis
   expect(mocks.navigate).toHaveBeenCalledWith("workbench");
 });
 
+test("uses the same gold logo and brand names as the studio", async () => {
+  render(<CustomerCenterPage account={setup()} />);
+  expect(await screen.findByText("125")).toBeVisible();
+  expect(screen.getByRole("img", { name: "众墅之家" })).toHaveAttribute(
+    "src",
+    "/studio/logo-mark.svg",
+  );
+  expect(screen.getByText("众墅之家")).toBeVisible();
+  expect(screen.getByText("AI 即创")).toBeVisible();
+});
+
 test("opening account records refreshes a balance changed by an administrator", async () => {
   const account = setup();
   render(<CustomerCenterPage account={account} />);

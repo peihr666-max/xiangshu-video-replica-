@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Build the desktop brand icon as a self-contained SVG."""
+
+from pathlib import Path
+import sys
+
+from fontTools.pens.svgPathPen import SVGPathPen
+from fontTools.ttLib import TTCollection
+
+
+FONT_PATH = Path("/System/Library/Fonts/STHeiti Medium.ttc")
+FONT_INDEX = 1  # Heiti SC Medium
+
+
+def text_paths(text: str, font_size: float, baseline: float, font) -> str:
+    glyph_set = font.getGlyphSet()
+    cmap = font.getBestCmap()
+    units_per_em = font["head"].unitsPerEm
+    scale = font_size / units_per_em
+
+    glyphs = []
+    advance = 0
+    for character in text:
+        glyph_name = cmap[ord(character)]
+        glyph = glyph_set[glyph_name]
+        pen = SVGPathPen(glyph_set)
+        glyph.draw(pen)
+        path = pen.getCommands()
+        if path:
+            glyphs.append((advance, path))
+        advance += glyph.width
+
+    start_x = (512 - advance * scale) / 2
+    paths = "\n".join(
+        f'      <path d="{path}" transform="translate({offset} 0)" />'
+        for offset, path in glyphs
+    )
+    return (
+        f'    <g fill="url(#gold)" stroke="#17150c" stroke-width="24" '
+        f'stroke-linejoin="round" paint-order="stroke fill" '
+        f'transform="translate({start_x:.3f} {baseline}) scale({scale:.6f} {-scale:.6f})">'
+        f'\n{paths}\n    </g>'
+    )
+
+
+def build_svg(output_path: Path) -> None:
+    font = TTCollection(FONT_PATH).fonts[FONT_INDEX]
+    company = text_paths("众墅之家", 100, 350, font)
+    product = text_paths("AI 即创", 112, 467, font)
+
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    <linearGradient id="gold" x1="116" y1="24" x2="396" y2="444" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffed61" />
+      <stop offset="1" stop-color="#f1bf25" />
+    </linearGradient>
+  </defs>
+  <!-- Keep these paths identical to client/public/studio/logo-mark.svg. -->
+  <g transform="translate(96 -45) scale(5)" stroke="url(#gold)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20.8 51.3h-3.5C9.4 51.3 4.4 46.1 4.4 39.4c0-6.1 4.5-11.5 11.5-12.8C18.5 18.8 24.4 14 32 14s13.5 4.8 16.1 12.6c7 1.3 11.5 6.7 11.5 12.8 0 6.7-5 11.9-12.9 11.9h-3.5" />
+    <path d="M18.7 34.1C24.4 32.3 28.4 28.4 32 24c3.6 4.4 7.6 8.3 13.3 10.1" />
+    <path d="M25.9 36c.2 5.3-2.7 9-7.5 12.4M25.5 41.2c1.1 1.9 2.3 3.3 3.8 4.7" />
+    <path d="M38.1 36c.1 6.4-3.1 10.6-8.2 14M38 41.2c1.8 3.1 3.8 5.3 7.6 7.2" />
+  </g>
+{company}
+{product}
+</svg>
+'''
+    output_path.write_text(svg, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    destination = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("client/src-tauri/app-icon.svg")
+    build_svg(destination)

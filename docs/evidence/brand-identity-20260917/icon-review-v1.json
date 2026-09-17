@@ -1,0 +1,22 @@
+{
+  "artifact": "client/src-tauri/icons/icon.png",
+  "reviewed_at": "2026-09-17",
+  "structure": "transparent background, logo above, company and product names on two rows",
+  "viewed_sizes": [512, 64, 32],
+  "verdict": "revise",
+  "findings": [
+    {
+      "severity": "medium",
+      "finding": "The logo is clear, but both text rows use too little of the available width at desktop icon sizes."
+    },
+    {
+      "severity": "medium",
+      "finding": "At 32 and 64 pixels the company name is recognizable mainly by overall shape; increasing the source text size will preserve more glyph detail after downsampling."
+    },
+    {
+      "severity": "medium",
+      "finding": "Gold text has insufficient edge separation on light desktop backgrounds because the delivered icon is intentionally transparent."
+    }
+  ],
+  "recommended_change": "Increase company text from 76 to 100, product text from 70 to 112, move baselines to approximately 350 and 475, and add a thin #17150c outline while preserving transparency."
+}
