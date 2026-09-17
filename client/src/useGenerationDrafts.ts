@@ -24,6 +24,7 @@ import {
   saveGenerationPrompt,
   waitForScriptRewriteTask,
 } from "./api";
+import { isInsufficientCredits } from "./insufficientCredits";
 import {
   type FinalReplicaSnapshot,
   replicaInputKey,
@@ -1159,8 +1160,7 @@ export function useGenerationDrafts({
       onBatchCreated(batch);
     } catch (requestError) {
       const definitiveRejection = isDefinitiveBatchRejection(requestError);
-      const insufficient =
-        (requestError as { code?: string }).code === "INSUFFICIENT_CREDITS";
+      const insufficient = isInsufficientCredits(requestError);
       if (definitiveRejection) {
         clearIdempotencyRecord(storageKey, idempotencyRecord);
       }
