@@ -1,5 +1,6 @@
 """Real PG ownership/encryption/cancellation; platform browser responses are fixtures."""
 
+import asyncio
 import json
 import os
 from collections.abc import AsyncGenerator
@@ -21,9 +22,10 @@ from test_publish_accounts import (
     pg,
 )
 
+from app import publish_browser_engine as engine
 from app import publish_browser_routes as routes
 from app.db_pg import pg_transaction
-from app.publish_browser_engine import BrowserEvent, parse_identity
+from app.publish_browser_engine import BrowserEvent, login_events, parse_identity
 from app.settings import SETTINGS_KEY_ENV
 
 __all__ = ["_clear_dependency_overrides", "client", "cw068_dsn", "holder", "lane_env", "pg"]
@@ -158,6 +160,372 @@ def test_identity_rejects_failed_and_missing_platform_identity() -> None:
     assert parse_identity(
         "douyin", {"status_code": 0, "user": {"uid": 123, "nickname": "本人"}}
     ) == {"platform_user_id": "123", "username": "本人"}
+    assert parse_identity(
+        "douyin", {"status_code": "0", "user": {"uid": "", "user_id": "456", "nickname": "备用ID"}}
+    ) == {"platform_user_id": "456", "username": "备用ID"}
+    assert (
+        parse_identity("douyin", {"status_code": False, "user": {"uid": "1", "nickname": "未登录"}})
+        is None
+    )
+
+
+class _EngineResponse:
+    def __init__(
+        self,
+        body: dict[str, Any],
+        *,
+        ok: bool = True,
+        status: int = 200,
+        url: str = "",
+    ) -> None:
+        self.body = body
+        self.ok = ok
+        self.status = status
+        self.url = url
+        self.disposed = False
+
+    async def json(self) -> dict[str, Any]:
+        return self.body
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
+class _EngineRequest:
+    def __init__(self, responses: list[_EngineResponse | BaseException]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, Any]] = []
+
+    async def get(self, url: str, **kwargs: Any) -> _EngineResponse:
+        self.calls.append({"url": url, **kwargs})
+        result = self.responses.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
+class _EnginePage:
+    def __init__(self, after_goto_url: str) -> None:
+        self.url = "about:blank"
+        self.after_goto_url = after_goto_url
+        self.frames: list[Any] = []
+        self.response_handler: Any = None
+
+    def on(self, event: str, handler: Any) -> None:
+        assert event == "response"
+        self.response_handler = handler
+
+    async def goto(self, *_: Any, **__: Any) -> None:
+        self.url = self.after_goto_url
+
+
+class _EngineContext:
+    def __init__(self, page: _EnginePage, request: _EngineRequest) -> None:
+        self.page = page
+        self.request = request
+
+    async def new_page(self) -> _EnginePage:
+        return self.page
+
+    async def storage_state(self, **_: Any) -> dict[str, Any]:
+        return {"cookies": [{"name": "session", "value": "secret"}], "origins": []}
+
+
+class _EngineBrowser:
+    def __init__(self, context: _EngineContext) -> None:
+        self.context = context
+        self.closed = False
+
+    async def new_context(self, **_: Any) -> _EngineContext:
+        return self.context
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class _EnginePlaywright:
+    def __init__(self, browser: _EngineBrowser) -> None:
+        self.chromium = self
+        self.browser = browser
+
+    async def launch(self, **_: Any) -> _EngineBrowser:
+        return self.browser
+
+
+class _EnginePlaywrightManager:
+    def __init__(self, browser: _EngineBrowser) -> None:
+        self.playwright = _EnginePlaywright(browser)
+
+    async def __aenter__(self) -> _EnginePlaywright:
+        return self.playwright
+
+    async def __aexit__(self, *_: Any) -> None:
+        return None
+
+
+def _install_engine(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    page_url: str,
+    responses: list[_EngineResponse | BaseException],
+) -> tuple[_EngineRequest, _EngineBrowser, list[float]]:
+    page = _EnginePage(page_url)
+    request = _EngineRequest(responses)
+    browser = _EngineBrowser(_EngineContext(page, request))
+    clock = [100.0]
+
+    monkeypatch.setattr(engine, "async_playwright", lambda: _EnginePlaywrightManager(browser))
+    monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])
+
+    async def advance(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(engine.asyncio, "sleep", advance)
+
+    async def unexpected_qr(*_: Any) -> None:
+        raise AssertionError("creator backend must not be captured as a QR code")
+
+    monkeypatch.setattr(engine, "qr_locator", unexpected_qr)
+    return request, browser, clock
+
+
+def test_douyin_creator_backend_probes_identity_and_connects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _EngineResponse(
+        {"status_code": "0", "user": {"uid": "douyin-1", "nickname": "抖音账号"}}
+    )
+    request, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://creator.douyin.com/creator-micro/content/manage",
+        responses=[response],
+    )
+
+    async def run() -> BrowserEvent:
+        events = login_events("douyin")
+        try:
+            return await anext(events)
+        finally:
+            await events.aclose()
+
+    event = asyncio.run(run())
+
+    assert event.phase == "connected"
+    assert event.identity == {"platform_user_id": "douyin-1", "username": "抖音账号"}
+    assert request.calls == [
+        {
+            "url": "https://creator.douyin.com/web/api/media/user/info/?aid=1128",
+            "timeout": 5000,
+            "max_redirects": 0,
+        }
+    ]
+    assert response.disposed is True
+    assert browser.closed is True
+
+
+def test_douyin_probe_is_rate_limited_and_creator_backend_never_emits_qr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second = _EngineResponse({"status_code": 8})
+    request, browser, clock = _install_engine(
+        monkeypatch,
+        page_url="https://creator.douyin.com/creator-micro",
+        responses=[RuntimeError("private response details"), second],
+    )
+
+    async def run() -> list[BrowserEvent]:
+        events = login_events("douyin")
+        try:
+            one = await anext(events)
+            two = await anext(events)
+            clock[0] += 1.5
+            three = await anext(events)
+            return [one, two, three]
+        finally:
+            await events.aclose()
+
+    events = asyncio.run(run())
+
+    assert [event.phase for event in events] == ["confirming", "confirming", "confirming"]
+    assert len(request.calls) == 2
+    assert second.disposed is True
+    assert browser.closed is True
+
+
+def test_douyin_late_failed_response_does_not_clear_verified_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://creator.douyin.com/",
+        responses=[],
+    )
+    page = browser.context.page
+
+    async def harmless_qr(*_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(engine, "qr_locator", harmless_qr)
+    real_sleep = asyncio.tasks.sleep
+
+    async def run() -> BrowserEvent:
+        events = login_events("douyin")
+        try:
+            assert (await anext(events)).phase == "loading"
+            page.response_handler(
+                _EngineResponse(
+                    {"status_code": 0, "user": {"uid": "douyin-1", "nickname": "已验证"}},
+                    url="https://creator.douyin.com/web/api/media/user/info/?aid=1128",
+                )
+            )
+            page.response_handler(
+                _EngineResponse(
+                    {"status_code": 8},
+                    url="https://creator.douyin.com/web/api/media/user/info/?aid=1128",
+                )
+            )
+            await real_sleep(0)
+            return await anext(events)
+        finally:
+            await events.aclose()
+
+    event = asyncio.run(run())
+
+    assert event.phase == "connected"
+    assert event.identity == {"platform_user_id": "douyin-1", "username": "已验证"}
+    assert browser.closed is True
+
+
+def test_douyin_failed_probe_does_not_clear_identity_captured_while_awaiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://creator.douyin.com/creator-micro",
+        responses=[],
+    )
+    page = browser.context.page
+    failed_probe = _EngineResponse({"status_code": 8})
+
+    class RacingRequest(_EngineRequest):
+        async def get(self, url: str, **kwargs: Any) -> _EngineResponse:
+            self.calls.append({"url": url, **kwargs})
+            page.response_handler(
+                _EngineResponse(
+                    {"status_code": 0, "user": {"uid": "douyin-2", "nickname": "并发账号"}},
+                    url="https://creator.douyin.com/web/api/media/user/info/?aid=1128",
+                )
+            )
+            await asyncio.tasks.sleep(0)
+            return failed_probe
+
+    browser.context.request = RacingRequest([])
+
+    async def run() -> BrowserEvent:
+        events = login_events("douyin")
+        try:
+            return await anext(events)
+        finally:
+            await events.aclose()
+
+    event = asyncio.run(run())
+
+    assert event.phase == "connected"
+    assert event.identity == {"platform_user_id": "douyin-2", "username": "并发账号"}
+    assert failed_probe.disposed is True
+    assert browser.closed is True
+
+
+def test_douyin_navigation_away_during_probe_cannot_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://creator.douyin.com/creator-micro",
+        responses=[],
+    )
+    page = browser.context.page
+
+    class NavigatingRequest(_EngineRequest):
+        async def get(self, url: str, **kwargs: Any) -> _EngineResponse:
+            self.calls.append({"url": url, **kwargs})
+            page.url = "https://example.com/creator-micro"
+            return _EngineResponse(
+                {"status_code": 0, "user": {"uid": "douyin-3", "nickname": "跳转账号"}}
+            )
+
+    browser.context.request = NavigatingRequest([])
+
+    async def harmless_qr(*_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(engine, "qr_locator", harmless_qr)
+
+    async def run() -> BrowserEvent:
+        events = login_events("douyin")
+        try:
+            return await anext(events)
+        finally:
+            await events.aclose()
+
+    event = asyncio.run(run())
+
+    assert event.phase == "loading"
+    assert browser.closed is True
+
+
+def test_douyin_foreign_page_cannot_probe_or_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    request, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://example.com/creator-micro",
+        responses=[
+            _EngineResponse({"status_code": 0, "user": {"uid": "attacker", "nickname": "伪造账号"}})
+        ],
+    )
+
+    async def harmless_qr(*_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(engine, "qr_locator", harmless_qr)
+
+    async def run() -> BrowserEvent:
+        events = login_events("douyin")
+        try:
+            return await anext(events)
+        finally:
+            await events.aclose()
+
+    event = asyncio.run(run())
+
+    assert event.phase == "loading"
+    assert request.calls == []
+    assert browser.closed is True
+
+
+def test_douyin_cancel_during_probe_closes_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CancelDuringJson(_EngineResponse):
+        async def json(self) -> dict[str, Any]:
+            raise asyncio.CancelledError
+
+        async def dispose(self) -> None:
+            raise RuntimeError("private disposal details")
+
+    request, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://creator.douyin.com/creator-micro",
+        responses=[CancelDuringJson({})],
+    )
+
+    async def run() -> None:
+        events = login_events("douyin")
+        with pytest.raises(asyncio.CancelledError):
+            await anext(events)
+        await events.aclose()
+
+    asyncio.run(run())
+
+    assert len(request.calls) == 1
+    assert browser.closed is True
 
 
 def test_relogin_wrong_account_preserves_original_encrypted_state(

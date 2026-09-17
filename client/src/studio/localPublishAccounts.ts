@@ -33,7 +33,10 @@ export type LocalPublishLoginStatus = {
   /** Desktop only: one-shot login export to hand to the server-side worker. */
   storage_state?: PublishStorageState | null;
 };
-export const canUseLocalPublishAccounts = () => isTauri();
+// Native profiles and cookie export are implemented with Windows WebView2.
+// Other desktop platforms use the existing encrypted cloud login flow.
+export const canUseLocalPublishAccounts = () =>
+  isTauri() && navigator.userAgent.includes("Windows");
 export const isPublishStorageState = (
   value: unknown,
 ): value is PublishStorageState =>
@@ -46,10 +49,8 @@ async function command<T>(
   name: string,
   args: Record<string, unknown>,
 ): Promise<T> {
-  if (!isTauri())
-    throw new Error(
-      "请使用 Windows 桌面客户端扫码连接账号，本机登录状态不会同步到网页。",
-    );
+  if (!canUseLocalPublishAccounts())
+    throw new Error("此操作需要 Windows 桌面客户端的本机账号功能。");
   try {
     return await invoke<T>(name, args);
   } catch (error) {
@@ -57,7 +58,7 @@ async function command<T>(
   }
 }
 export const listLocalPublishAccounts = (owner: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<LocalPublishAccount[]>("list_local_publish_accounts", { owner })
     : cloudAccounts();
 export const startLocalPublishLogin = (
@@ -65,7 +66,7 @@ export const startLocalPublishLogin = (
   platform: PublishPlatform,
   accountId?: string,
 ) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<string>("start_local_publish_login", {
         owner,
         platform,
@@ -73,7 +74,7 @@ export const startLocalPublishLogin = (
       })
     : startCloudLogin(owner, platform, accountId);
 export const checkLocalPublishLogin = (owner: string, loginId: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<LocalPublishLoginStatus>("check_local_publish_login", {
         owner,
         loginId,
@@ -82,11 +83,11 @@ export const checkLocalPublishLogin = (owner: string, loginId: string) =>
 export const focusLocalPublishLogin = (owner: string, loginId: string) =>
   command<void>("focus_local_publish_login", { owner, loginId });
 export const cancelLocalPublishLogin = (owner: string, loginId: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<void>("cancel_local_publish_login", { owner, loginId })
     : cancelCloudLogin(owner, loginId);
 export const removeLocalPublishAccount = (owner: string, accountId: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<void>("remove_local_publish_account", { owner, accountId })
     : cloudDeleteAccount(accountId);
 export const openLocalPublishAccount = (owner: string, accountId: string) =>
