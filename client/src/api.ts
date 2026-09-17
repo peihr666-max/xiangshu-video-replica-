@@ -4495,39 +4495,31 @@ function materialBlobPreview(blob: Blob): MaterialCachedPreview {
   };
 }
 
-export async function getMaterialCachedPreview(
-  userId: string,
+async function materialReadGeneration(
+  context: MaterialCacheContext,
   assetId: string,
-  options: { populate?: boolean; signal?: AbortSignal } = {},
-): Promise<MaterialCachedPreview> {
-  const context = materialCacheContext(userId, options.signal, assetId);
-  requireMaterialContext(context);
-  // Capture invalidation before remote authorization waits. Another tab may
-  // clear this user while those requests are in flight; it must win over them.
-  // Only the non-sensitive generation marker is read before authorization.
-  let generationAtStart: string | null = null;
-  if (materialCacheAvailable()) {
-    try {
-      generationAtStart = await materialCacheLocked(context, (cache) =>
-        materialGeneration(cache, context.scope, assetId),
-      );
-    } catch {
-      requireMaterialContext(context);
-    }
+): Promise<string | null> {
+  if (!materialCacheAvailable()) return null;
+  try {
+    return await materialCacheLocked(context, (cache) =>
+      materialGeneration(cache, context.scope, assetId),
+    );
+  } catch {
+    requireMaterialContext(context);
   }
-  // Fresh authorization is required even when every media byte is already local.
-  const { url } = await materialWait(
-    getAssetDownloadUrl(assetId),
-    options.signal,
-  );
-  requireMaterialContext(context);
-  const metadata = await requestApiJson<MaterialAssetMetadata>(
-    `/api/assets/${encodeURIComponent(assetId)}`,
-    "读取素材信息失败",
-    { signal: options.signal },
-  );
-  requireMaterialContext(context);
-  if (!url) throw new Error("素材预览地址不可用");
+  return null;
+}
+
+/** 授权后的缓存判定（单资产与批量共用）：命中本机缓存则出 Blob，
+ * 未命中且允许填充时后台写缓存；否则退回在线签名 URL。 */
+async function materialPreviewAfterAuthorization(
+  context: MaterialCacheContext,
+  assetId: string,
+  url: string,
+  metadata: MaterialAssetMetadata,
+  generationAtStart: string | null,
+  populate: boolean,
+): Promise<MaterialCachedPreview> {
   const online = { url, cached: false, release: () => undefined };
   if (generationAtStart === null || !materialMetadataValid(metadata))
     return online;
@@ -4548,7 +4540,7 @@ export async function getMaterialCachedPreview(
     });
     requireMaterialContext(context);
     if (initial.blob) return materialBlobPreview(initial.blob);
-    if (!options.populate) return online;
+    if (!populate) return online;
     const fillKey = `${key}:${initial.generation}:${context.epoch}:${context.invalidation}:${context.assetInvalidation}`;
     let fill = materialFills.get(fillKey);
     if (!fill) {
@@ -4577,7 +4569,7 @@ export async function getMaterialCachedPreview(
     }
     fill.users += 1;
     try {
-      const blob = await materialWait(fill.promise, options.signal);
+      const blob = await materialWait(fill.promise, context.signal);
       requireMaterialContext(context);
       return blob ? materialBlobPreview(blob) : online;
     } finally {
@@ -4596,6 +4588,98 @@ export async function getMaterialCachedPreview(
       throw error;
     return online;
   }
+}
+
+export async function getMaterialCachedPreview(
+  userId: string,
+  assetId: string,
+  options: { populate?: boolean; signal?: AbortSignal } = {},
+): Promise<MaterialCachedPreview> {
+  const context = materialCacheContext(userId, options.signal, assetId);
+  requireMaterialContext(context);
+  // Capture invalidation before remote authorization waits. Another tab may
+  // clear this user while those requests are in flight; it must win over them.
+  // Only the non-sensitive generation marker is read before authorization.
+  const generationAtStart = await materialReadGeneration(context, assetId);
+  // Fresh authorization is required even when every media byte is already local.
+  const { url } = await materialWait(
+    getAssetDownloadUrl(assetId),
+    options.signal,
+  );
+  requireMaterialContext(context);
+  const metadata = await requestApiJson<MaterialAssetMetadata>(
+    `/api/assets/${encodeURIComponent(assetId)}`,
+    "读取素材信息失败",
+    { signal: options.signal },
+  );
+  requireMaterialContext(context);
+  if (!url) throw new Error("素材预览地址不可用");
+  return materialPreviewAfterAuthorization(
+    context,
+    assetId,
+    url,
+    metadata,
+    generationAtStart,
+    options.populate ?? false,
+  );
+}
+
+/** 批量预览解析（MATERIAL-PERF-A P0-2）：一次批量授权 + 逐条本机缓存判定，
+ * 替代素材库网格的逐瓦片 N+1 授权请求。返回以请求 id 为键；授权失败或被
+ * 拒绝的 id 不出现在结果中，由调用方按失败处理。 */
+export async function getMaterialCachedPreviews(
+  userId: string,
+  entries: { id: string; populate: boolean }[],
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, MaterialCachedPreview>> {
+  const unique = [...new Set(entries.map((entry) => entry.id).filter(Boolean))];
+  if (!unique.length) return {};
+  const contexts = new Map<string, MaterialCacheContext>();
+  const generations = new Map<string, string | null>();
+  const populateById = new Map<string, boolean>(
+    entries.map((entry) => [entry.id, entry.populate]),
+  );
+  for (const assetId of unique) {
+    const context = materialCacheContext(userId, options.signal, assetId);
+    requireMaterialContext(context);
+    contexts.set(assetId, context);
+    generations.set(assetId, await materialReadGeneration(context, assetId));
+  }
+  const authorized = await materialWait(
+    requestApiJson<components["schemas"]["DownloadUrlsResponse"]>(
+      "/api/assets/download-urls",
+      "批量读取素材预览授权失败",
+      {
+        method: "POST",
+        body: JSON.stringify({ asset_ids: unique }),
+        signal: options.signal,
+      },
+    ),
+    options.signal,
+  );
+  requireMaterialContext(materialCacheContext(userId, options.signal));
+  const results: Record<string, MaterialCachedPreview> = {};
+  for (const item of authorized.items) {
+    const context = contexts.get(item.asset_id);
+    if (!context || !item.url) continue;
+    const metadata: MaterialAssetMetadata = {
+      id: item.asset_id,
+      project_id: null,
+      kind: "material_image",
+      sha256: item.sha256 ?? "",
+      size_bytes: item.size_bytes ?? 0,
+      content_type: item.content_type,
+    };
+    results[item.asset_id] = await materialPreviewAfterAuthorization(
+      context,
+      item.asset_id,
+      item.url,
+      metadata,
+      generations.get(item.asset_id) ?? null,
+      populateById.get(item.asset_id) ?? false,
+    );
+  }
+  return results;
 }
 
 export async function getMaterialCacheUsage(

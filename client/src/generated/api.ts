@@ -1323,6 +1323,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/assets/download-urls": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create Download Urls */
+    post: operations["create_download_urls_api_assets_download_urls_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/assets/{asset_id}/cached-url": {
     parameters: {
       query?: never;
@@ -7179,6 +7196,31 @@ export interface components {
     DownloadUrlResponse: {
       /** Url */
       url: string;
+    };
+    /** DownloadUrlsRequest */
+    DownloadUrlsRequest: {
+      /** Asset Ids */
+      asset_ids: string[];
+    };
+    /** DownloadUrlItem */
+    DownloadUrlItem: {
+      /** Asset Id */
+      asset_id: string;
+      /** Url */
+      url: string | null;
+      /** Sha256 */
+      sha256: string | null;
+      /** Size Bytes */
+      size_bytes: number | null;
+      /** Content Type */
+      content_type: string | null;
+      /** Error Code */
+      error_code: string | null;
+    };
+    /** DownloadUrlsResponse */
+    DownloadUrlsResponse: {
+      /** Items */
+      items: components["schemas"]["DownloadUrlItem"][];
     };
     /** EnqueueFirstFramesRequest */
     EnqueueFirstFramesRequest: {
@@ -13559,6 +13601,45 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DownloadUrlResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_download_urls_api_assets_download_urls_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description 批量签发素材预览授权（MATERIAL-PERF-A P0-2）。
+
+    素材库网格此前对每个瓦片各发一次单资产授权（N+1 写连接 + 审计往返）；
+    本端点在一个写事务内逐资产复用与单资产端点完全相同的授权逻辑。他属/
+    缺失/未完成上传按条返回 ``error_code``（属主掩蔽与单端点同形），不拖垮
+    整批；审计仍逐资产落行，口径不因批量而变稀。 */
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DownloadUrlsRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DownloadUrlsResponse"];
         };
       };
       /** @description Validation Error */
