@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from app.db_portable import BusinessConnection
@@ -20,6 +20,12 @@ DOUYIDOU_BASE_URL = "https://gateway.diadi.cn"
 DOUYIDOU_TIMEOUT_SECONDS = 25.0
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _URL_PATTERN = re.compile(r"https?://[^\s<>'\"]+")
+# 小红书 2025 起分享口令不再带 http:// 前缀；裸域名仅认已支持平台的域名。
+_BARE_URL_PATTERN = re.compile(
+    r"\b(?:[a-zA-Z0-9-]+\.)*(?:douyin\.com|xiaohongshu\.com|xhslink\.com|iesdouyin\.com)"
+    r"(?:/[^\s<>'\"]+)?",
+    re.IGNORECASE,
+)
 _TRAILING_PUNCTUATION = ".,;:!?，。；：！？、)）]】}"
 _WECHAT_HOSTS = {"channels.weixin.qq.com", "weixin.qq.com", "www.weixin.qq.com"}
 _DOUYIN_HOSTS = {
@@ -30,6 +36,30 @@ _DOUYIN_HOSTS = {
     "www.iesdouyin.com",
 }
 _XIAOHONGSHU_HOSTS = {"xiaohongshu.com", "www.xiaohongshu.com", "xhslink.com", "www.xhslink.com"}
+# 这些主机只产出短链，无法直接提取内容 ID，需要跟随 302 还原。
+_SHORT_LINK_HOSTS = {"v.douyin.com", "z.douyin.com", "xhslink.com", "www.xhslink.com"}
+_DOUYIN_ID_PATTERNS = (
+    re.compile(r"/video/(\d{15,22})(?!\d)"),
+    re.compile(r"/note/(\d{15,22})(?!\d)"),
+    re.compile(r"/slides/(\d{15,22})(?!\d)"),
+    re.compile(r"[?&]modal_id=(\d{15,22})(?!\d)"),
+)
+_XHS_ID_PATTERNS = (
+    re.compile(r"/explore/([0-9a-fA-F]{24})(?![0-9a-fA-F])"),
+    re.compile(r"/discovery/item/([0-9a-fA-F]{24})(?![0-9a-fA-F])"),
+    re.compile(r"/user/profile/[^/]+/([0-9a-fA-F]{24})(?![0-9a-fA-F])"),
+    re.compile(r"[?&]note_id=([0-9a-fA-F]{24})(?![0-9a-fA-F])"),
+)
+# 规范形态钉住网关已知稳定入口；如后续真实探针验证 /video/{id} 亦可用，仅需改这里。
+DOUYIN_CANONICAL_URL_TEMPLATE = "https://www.douyin.com/jingxuan?modal_id={video_id}"
+XIAOHONGSHU_CANONICAL_URL_TEMPLATE = "https://www.xiaohongshu.com/explore/{note_id}"
+_MAX_REDIRECT_HOPS = 3
+_REDIRECT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+        "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    )
+}
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +138,10 @@ class ResolvedViralLink:
 
 
 def normalize_supported_link(raw: str) -> str:
-    match = _URL_PATTERN.search(raw.strip())
+    text = raw.strip()
+    match = _URL_PATTERN.search(text)
+    if match is None:
+        match = _BARE_URL_PATTERN.search(text)
     if match is None:
         raise ViralLinkError(
             422,
@@ -117,6 +150,8 @@ def normalize_supported_link(raw: str) -> str:
             retryable=False,
         )
     url = match.group(0).rstrip(_TRAILING_PUNCTUATION)
+    if not url.lower().startswith(("http://", "https://")):
+        url = f"https://{url}"
     try:
         parsed = urlsplit(url)
         host = (parsed.hostname or "").lower()
@@ -153,6 +188,128 @@ def supported_link_platform(normalized_url: str) -> Literal["douyin", "xiaohongs
     return "xiaohongshu" if urlsplit(normalized_url).hostname in _XIAOHONGSHU_HOSTS else "douyin"
 
 
+class LinkRedirectTransport:
+    def resolve_redirect(self, url: str, *, headers: Mapping[str, str]) -> str | None:
+        """Return the next hop of an HTTP redirect, or None when unavailable."""
+        raise NotImplementedError
+
+
+class UrllibLinkRedirectTransport(LinkRedirectTransport):
+    def __init__(self, *, timeout_seconds: float = 5.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    def resolve_redirect(self, url: str, *, headers: Mapping[str, str]) -> str | None:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https"):
+            return None
+        request = Request(url, headers=dict(headers), method="GET")
+        opener = build_opener(NoRedirectHandler())
+        try:
+            with opener.open(request, timeout=self.timeout_seconds) as response:  # noqa: S310
+                if response.status in (301, 302, 303, 307, 308):
+                    return cast("str | None", response.headers.get("Location"))
+                return None
+        except HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                return exc.headers.get("Location")
+            logger.warning("Short-link resolver got HTTP %s", exc.code)
+            return None
+        except (TimeoutError, URLError, OSError) as exc:
+            logger.warning("Short-link resolution failed: %s", type(exc).__name__)
+            return None
+
+
+def _query_param(url: str, name: str) -> str | None:
+    query = urlsplit(url).query
+    if not query:
+        return None
+    values = parse_qs(query).get(name)
+    return values[0] if values else None
+
+
+def _extract_content_id(url: str, platform: Literal["douyin", "xiaohongshu"]) -> str | None:
+    for pattern in _DOUYIN_ID_PATTERNS if platform == "douyin" else _XHS_ID_PATTERNS:
+        match = pattern.search(url)
+        if match:
+            content_id = match.group(1)
+            return content_id.lower() if platform == "xiaohongshu" else content_id
+    return None
+
+
+def _redirect_target_allowed(target: str) -> bool:
+    try:
+        parsed = urlsplit(target)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+        return False
+    if parsed.port not in (None, 443 if parsed.scheme == "https" else 80):
+        return False
+    return (
+        host in _DOUYIN_HOSTS
+        or host in _XIAOHONGSHU_HOSTS
+        or host.endswith(".douyin.com")
+        or host.endswith(".xiaohongshu.com")
+        or host.endswith(".xhslink.com")
+    )
+
+
+def _canonical_url(
+    platform: Literal["douyin", "xiaohongshu"],
+    content_id: str,
+    *,
+    original: str,
+    resolved: str,
+) -> str:
+    if platform == "douyin":
+        return DOUYIN_CANONICAL_URL_TEMPLATE.format(video_id=content_id)
+    canonical = XIAOHONGSHU_CANONICAL_URL_TEMPLATE.format(note_id=content_id)
+    token = _query_param(original, "xsec_token") or _query_param(resolved, "xsec_token")
+    if token:
+        token_pair = (("xsec_token", token),)
+        canonical += "?" + urlencode(token_pair)
+    return canonical
+
+
+def canonicalize_viral_link(
+    normalized_url: str,
+    *,
+    redirect_transport: LinkRedirectTransport | None = None,
+) -> str:
+    """把任意受支持的入口链接归一为网关已知稳定的规范形态。
+
+    能直接提取内容 ID 的形态立即重写；短链（v/z.douyin.com、xhslink.com）跟随
+    302 还原后再提取。redirect_transport 为 None 时跳过网络还原（离线测试与既有
+    行为保持一致）。任何一步失败都原样返回输入，绝不阻塞解析主流程。
+    """
+    platform = supported_link_platform(normalized_url)
+    direct_id = _extract_content_id(normalized_url, platform)
+    if direct_id:
+        return _canonical_url(platform, direct_id, original=normalized_url, resolved=normalized_url)
+    if redirect_transport is None:
+        return normalized_url
+    try:
+        host = (urlsplit(normalized_url).hostname or "").lower()
+    except ValueError:
+        return normalized_url
+    if host not in _SHORT_LINK_HOSTS:
+        return normalized_url
+    resolved = normalized_url
+    for _ in range(_MAX_REDIRECT_HOPS):
+        target = redirect_transport.resolve_redirect(resolved, headers=_REDIRECT_HEADERS)
+        if not target or not _redirect_target_allowed(target):
+            return normalized_url
+        try:
+            resolved = normalize_supported_link(target)
+        except ViralLinkError:
+            return normalized_url
+        content_id = _extract_content_id(resolved, platform)
+        if content_id:
+            return _canonical_url(platform, content_id, original=normalized_url, resolved=resolved)
+    return normalized_url
+
+
 def _first_url(value: object) -> str | None:
     if not isinstance(value, list):
         return None
@@ -186,10 +343,12 @@ class DouyidouLinkClient:
         app_id: str,
         app_secret: str,
         transport: DouyidouHttpTransport | None = None,
+        redirect_transport: LinkRedirectTransport | None = None,
     ) -> None:
         self.app_id = app_id
         self.app_secret = app_secret
         self.transport = transport or UrllibDouyidouHttpTransport()
+        self.redirect_transport = redirect_transport
 
     def _request(self, source_url: str) -> dict[str, Any]:
         params = {"app_id": self.app_id, "url": source_url}
@@ -229,6 +388,7 @@ class DouyidouLinkClient:
 
     def resolve(self, raw_url: str, *, purpose: str) -> ResolvedViralLink:
         source_url = normalize_supported_link(raw_url)
+        source_url = canonicalize_viral_link(source_url, redirect_transport=self.redirect_transport)
         platform = supported_link_platform(source_url)
         response = self._request(source_url)
         if response.get("code") != 0:
@@ -268,7 +428,7 @@ class DouyidouLinkClient:
             ),
             "",
         )
-        id_pattern = r"[0-9a-fA-F]{24}" if platform == "xiaohongshu" else r"\d{17,20}"
+        id_pattern = r"[0-9a-fA-F]{24}" if platform == "xiaohongshu" else r"\d{15,22}"
         if not re.fullmatch(id_pattern, source_id):
             raise ViralLinkError(
                 502,
@@ -316,4 +476,8 @@ def douyidou_link_client_from_settings(conn: BusinessConnection) -> DouyidouLink
             "VIRAL_LINK_NOT_CONFIGURED",
             "视频链接解析服务尚未配置，请联系管理员或上传 MP4/MOV 文件。",
         )
-    return DouyidouLinkClient(app_id=app_id, app_secret=app_secret)
+    return DouyidouLinkClient(
+        app_id=app_id,
+        app_secret=app_secret,
+        redirect_transport=UrllibLinkRedirectTransport(),
+    )

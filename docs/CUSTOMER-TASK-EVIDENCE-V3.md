@@ -1545,3 +1545,6 @@ REVIEW_READY / 本地自动化通过，待 PR 评审及合并。Owner Codex 会�
 ## SIDEBAR-TOGGLE-20260917 · 工作台侧边栏折叠/展开开关
 
 桌面端左侧栏新增折叠/展开开关：顶栏按钮（≥801px 显示，≤800px 保持抽屉）、localStorage 记忆、默认展开；原 88px 图标栏样式由"按屏宽强制"改为 class 驱动收起态。Owner Claude 当前会话；基线 `origin/main@0ce6ed28`，分支 `feat/sidebar-toggle-20260917`，独立 worktree `.worktrees/SIDEBAR-TOGGLE-20260917`。测试先行（先红后绿），StudioWorkspace 100 项、前端全量 1719 项通过；完整门禁与 PR 结果见[独立证据](evidence/SIDEBAR-TOGGLE-20260917.md)。不核销其他任务状态；未合并部署。
+## LINK-FORMAT-20260917 · 抖音/小红书链接入口全格式支持
+
+服务端链接规范化：裸域名分享文本提取、短链 302 还原（SSRF 防护、3 跳上限、失败降级原链直传）、任意入口形态提取内容 ID 重写网关已知稳定形态（抖音 `/jingxuan?modal_id=`、小红书 `/explore/{id}` 保留 xsec_token）、网关 ID 校验放宽 15–22 位；计费与路由口径不变。用户明确不做真实付费探针，29 项离线表驱动测试先红后绿，既有链接测试全部保持通过。Owner Claude 当前会话；基线 `origin/main@0ce6ed28`，分支 `feat/link-format-canonical-20260917`，独立 worktree `.worktrees/LINK-FORMAT-20260917`。本地最终门禁一次通过：静态门 + 四分片 2609 passed / 1 既有 skipped；PR 与 CI 结果见[独立证据](evidence/LINK-FORMAT-20260917.md)。未合并部署。
