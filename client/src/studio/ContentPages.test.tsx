@@ -35,8 +35,8 @@ const {
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
-  getMaterialCachedPreviews,
   getMaterialCacheUsage,
   clearMaterialCache,
   evictMaterialCachedPreview,
@@ -70,8 +70,8 @@ const {
   hideMaterial: vi.fn(),
   downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
+  getMaterialBatchPreviews: vi.fn(),
   getMaterialCachedPreview: vi.fn(),
-  getMaterialCachedPreviews: vi.fn(),
   getMaterialCacheUsage: vi.fn(),
   clearMaterialCache: vi.fn(),
   evictMaterialCachedPreview: vi.fn(),
@@ -113,8 +113,8 @@ vi.mock("../api", () => ({
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
-  getMaterialCachedPreviews,
   getMaterialCacheUsage,
   clearMaterialCache,
   evictMaterialCachedPreview,
@@ -441,25 +441,25 @@ describe("V1.4 内容与运营页面", () => {
         cached: false,
         release: vi.fn(),
       }));
-    getMaterialCachedPreviews
+    getMaterialBatchPreviews
       .mockReset()
       .mockImplementation(
         async (
           _userId: string,
           entries: { id: string; populate: boolean }[],
         ) => {
-          const results: Record<
+          const previews: Record<
             string,
             { url: string; cached: boolean; release: () => unknown }
           > = {};
           for (const entry of entries) {
-            results[entry.id] = {
+            previews[entry.id] = {
               ...(await getAssetDownloadUrl(entry.id)),
               cached: false,
               release: vi.fn(),
             };
           }
-          return results;
+          return { previews, thumbnails: {} };
         },
       );
     getMaterialCacheUsage.mockReset().mockResolvedValue({
@@ -3384,12 +3384,15 @@ describe("V1.4 内容与运营页面", () => {
     });
     const release = vi.fn();
     // 网格预览走批量通道（P0-2）；播放后的后台填充仍走单资产预览（populate）。
-    getMaterialCachedPreviews.mockResolvedValue({
-      "cache-video": {
-        url: "https://storage.test/video",
-        cached: false,
-        release: vi.fn(),
+    getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "cache-video": {
+          url: "https://storage.test/video",
+          cached: false,
+          release: vi.fn(),
+        },
       },
+      thumbnails: {},
     });
     getMaterialCachedPreview.mockImplementation(
       async (_userId, _assetId, options) =>
@@ -3432,12 +3435,15 @@ describe("V1.4 内容与运营页面", () => {
       total: 1,
     });
     const release = vi.fn();
-    getMaterialCachedPreviews.mockResolvedValue({
-      "cache-image": {
-        url: "blob:cached-image",
-        cached: true,
-        release,
+    getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "cache-image": {
+          url: "blob:cached-image",
+          cached: true,
+          release,
+        },
       },
+      thumbnails: {},
     });
     getMaterialCacheUsage.mockResolvedValue({
       bytes: 1048576,
@@ -3469,17 +3475,20 @@ describe("V1.4 内容与运营页面", () => {
     });
     let resolveOld!: (value: unknown) => void;
     const releaseOld = vi.fn();
-    getMaterialCachedPreviews.mockImplementation((userId) =>
+    getMaterialBatchPreviews.mockImplementation((userId) =>
       userId === "old-user"
         ? new Promise((resolve) => {
             resolveOld = resolve;
           })
         : Promise.resolve({
-            "cache-image": {
-              url: "blob:new-user",
-              cached: true,
-              release: vi.fn(),
+            previews: {
+              "cache-image": {
+                url: "blob:new-user",
+                cached: true,
+                release: vi.fn(),
+              },
             },
+            thumbnails: {},
           }),
     );
     const context = studio({
@@ -3501,11 +3510,14 @@ describe("V1.4 内容与运营页面", () => {
     );
     await act(async () => {
       resolveOld({
-        "cache-image": {
-          url: "blob:old-user",
-          cached: true,
-          release: releaseOld,
+        previews: {
+          "cache-image": {
+            url: "blob:old-user",
+            cached: true,
+            release: releaseOld,
+          },
         },
+        thumbnails: {},
       });
     });
     expect(releaseOld).toHaveBeenCalledOnce();
@@ -3579,9 +3591,9 @@ describe("V1.4 内容与运营页面", () => {
 
     // 整页可见素材只发一次批量授权（P0-2），不再逐瓦片请求。
     await waitFor(() =>
-      expect(getMaterialCachedPreviews).toHaveBeenCalledTimes(1),
+      expect(getMaterialBatchPreviews).toHaveBeenCalledTimes(1),
     );
-    const firstEntries = getMaterialCachedPreviews.mock.calls[0][1];
+    const firstEntries = getMaterialBatchPreviews.mock.calls[0][1];
     expect(firstEntries).toHaveLength(24);
     expect(
       firstEntries.slice(0, 3).map((entry: { id: string }) => entry.id),
@@ -3607,10 +3619,10 @@ describe("V1.4 内容与运营页面", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
     await waitFor(() =>
-      expect(getMaterialCachedPreviews).toHaveBeenCalledTimes(2),
+      expect(getMaterialBatchPreviews).toHaveBeenCalledTimes(2),
     );
     expect(
-      getMaterialCachedPreviews.mock.calls[1][1].map(
+      getMaterialBatchPreviews.mock.calls[1][1].map(
         (entry: { id: string }) => entry.id,
       ),
     ).toEqual(["image-25"]);
@@ -3644,20 +3656,20 @@ describe("V1.4 内容与运营页面", () => {
       }),
     );
     // 第 1 页批量授权成功；第 2 页批量整体超时 → 退回逐条路径。
-    getMaterialCachedPreviews
+    getMaterialBatchPreviews
       .mockImplementationOnce(async (_userId, entries) => {
-        const results: Record<
+        const previews: Record<
           string,
           { url: string; cached: boolean; release: () => unknown }
         > = {};
         for (const entry of entries) {
-          results[entry.id] = {
+          previews[entry.id] = {
             ...(await getAssetDownloadUrl(entry.id)),
             cached: false,
             release: vi.fn(),
           };
         }
-        return results;
+        return { previews, thumbnails: {} };
       })
       .mockRejectedValueOnce(new Error("批量授权超时"));
     getAssetDownloadUrl.mockImplementation((id: string) => {
@@ -3828,6 +3840,90 @@ describe("V1.4 内容与运营页面", () => {
       expect(getAssetDownloadUrl).toHaveBeenCalledTimes(2);
     },
   );
+
+  it("带封面的视频瓦片用缩略图懒加载展示，详情仍可播放原视频", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("thumb-video", {
+          title: "thumb-video.mp4",
+          media_type: "video",
+          content_type: "video/mp4",
+        }),
+      ],
+      page: 1,
+      page_size: 24,
+      total: 1,
+    });
+    getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "thumb-video": {
+          url: "https://storage.test/video",
+          cached: false,
+          release: vi.fn(),
+        },
+      },
+      thumbnails: { "thumb-video": "https://media.test/thumb.jpg" },
+    });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 thumb-video.mp4",
+    });
+    // 网格展示缩略图 img（懒加载），不再经服务端代理流式拉原视频。
+    const thumb = await waitFor(() => {
+      const element = card.querySelector("img");
+      expect(element).toHaveAttribute("src", "https://media.test/thumb.jpg");
+      expect(element).toHaveAttribute("loading", "lazy");
+      return element as HTMLElement;
+    });
+    expect(card.querySelector("video")).toBeNull();
+    expect(thumb).toBeInTheDocument();
+    // 点开详情：先见封面海报，随后加载可播放视频。
+    fireEvent.click(card);
+    const heading = await screen.findByRole("heading", {
+      name: "thumb-video.mp4",
+    });
+    expect(heading.parentElement?.querySelector("img")).toHaveAttribute(
+      "src",
+      "https://media.test/thumb.jpg",
+    );
+    await waitFor(() =>
+      expect(heading.parentElement?.querySelector("video")).toHaveAttribute(
+        "src",
+        "https://storage.test/video",
+      ),
+    );
+  });
+
+  it("无封面的历史视频瓦片保持原视频预览行为", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("legacy-video", {
+          title: "legacy-video.mp4",
+          media_type: "video",
+          content_type: "video/mp4",
+        }),
+      ],
+      page: 1,
+      page_size: 24,
+      total: 1,
+    });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 legacy-video.mp4",
+    });
+    // 默认批量夹具不含缩略图 → 瓦片回退为 video 预览（beforeEach 默认 URL）。
+    await waitFor(() =>
+      expect(card.querySelector("video")).toHaveAttribute(
+        "src",
+        "https://storage.test/material",
+      ),
+    );
+    expect(card.querySelector("img")).toBeNull();
+  });
 
   it("直出素材通过 generation_task_id 获取预览且详情复用", async () => {
     const direct = material("direct-task", {

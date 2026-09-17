@@ -147,7 +147,7 @@ describe("FirstFrameSelection", () => {
         simplified
       />,
     );
-    await screen.findByRole("button", { name: "再生成3张" });
+    await screen.findByRole("button", { name: "再生成1张" });
     expect(screen.getByLabelText("场景设置")).toHaveValue("replace");
     expect(
       screen.queryByText("画幅或场景已更改，请重新生成后确认首帧。"),
@@ -202,7 +202,7 @@ describe("FirstFrameSelection", () => {
     expect(screen.queryByAltText("当前首帧预览")).toBeNull();
     expect(screen.queryByAltText("首帧候选 1")).toBeNull();
     expect(
-      screen.getByRole("button", { name: /生成3张首帧|再生成3张/ }),
+      screen.getByRole("button", { name: /生成1张首帧|再生成1张/ }),
     ).toBeDisabled();
     expect(screen.getByRole("button", { name: "使用这张首帧" })).toBeDisabled();
   });
@@ -216,11 +216,11 @@ describe("FirstFrameSelection", () => {
         simplified
       />,
     );
-    await screen.findByRole("button", { name: "再生成3张" });
+    await screen.findByRole("button", { name: "再生成1张" });
     fireEvent.change(screen.getByLabelText("图片画幅"), {
       target: { value: "9:16" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
     await waitFor(() =>
       expect(generateFirstFrames).toHaveBeenCalledWith(
         "project-1",
@@ -241,14 +241,14 @@ describe("FirstFrameSelection", () => {
         onSelectionChange={onSelectionChange}
       />,
     );
-    await screen.findByRole("button", { name: "再生成3张" });
+    await screen.findByRole("button", { name: "再生成1张" });
     onSelectionChange.mockClear();
     fireEvent.change(screen.getByLabelText("场景设置"), {
       target: { value: "replace" },
     });
     expect(onSelectionChange).toHaveBeenCalledWith(null);
     expect(screen.getByRole("button", { name: "使用这张首帧" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
     await waitFor(() =>
       expect(generateFirstFrames).toHaveBeenCalledWith(
         "project-1",
@@ -296,7 +296,7 @@ describe("FirstFrameSelection", () => {
         onBusyChange={onBusyChange}
       />,
     );
-    await screen.findByText("已自动预选第一张候选，请查看后单击确认。");
+    await screen.findByText("已自动预选最新生成的候选，请查看后单击确认。");
     expect(onBusyChange).not.toHaveBeenCalledWith(true);
     expect(resumeFirstFrameGeneration).not.toHaveBeenCalled();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
@@ -558,10 +558,7 @@ describe("FirstFrameSelection", () => {
     fireEvent.change(screen.getByLabelText("首帧编辑提示词"), {
       target: { value: "Use the selected character identity." },
     });
-    fireEvent.change(screen.getByLabelText("候选数量"), {
-      target: { value: "2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
 
     await waitFor(() =>
       expect(generateFirstFrames).toHaveBeenCalledWith(
@@ -569,7 +566,7 @@ describe("FirstFrameSelection", () => {
         {
           model: "gpt-image-2",
           prompt: "Use the selected character identity.",
-          quantity: 3,
+          quantity: 1,
           character_version_id: "character-version-3",
           character_reference_selection_id: "reference-selection-1",
         },
@@ -589,7 +586,7 @@ describe("FirstFrameSelection", () => {
     );
     await screen.findByText("人物置换首帧");
 
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
 
     await waitFor(() =>
       expect(generateFirstFrames).toHaveBeenCalledWith(
@@ -597,7 +594,7 @@ describe("FirstFrameSelection", () => {
         {
           model: "gpt-image-2",
           prompt: undefined,
-          quantity: 3,
+          quantity: 1,
           character_version_id: "character-version-3",
           character_reference_selection_id: "reference-selection-1",
         },
@@ -636,7 +633,7 @@ describe("FirstFrameSelection", () => {
         sourceFrameSelectionId="source-selection-1"
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "再生成3张" }));
+    fireEvent.click(await screen.findByRole("button", { name: "再生成1张" }));
 
     expect(
       await screen.findByRole("progressbar", {
@@ -714,7 +711,7 @@ describe("FirstFrameSelection", () => {
         sourceFrameSelectionId="source-selection-1"
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "再生成3张" }));
+    fireEvent.click(await screen.findByRole("button", { name: "再生成1张" }));
     await screen.findByRole("progressbar", {
       name: "人物置换首帧生成进度",
     });
@@ -746,9 +743,9 @@ describe("FirstFrameSelection", () => {
     );
 
     expect(
-      await screen.findByText("已自动预选第一张候选，请查看后单击确认。"),
+      await screen.findByText("已自动预选最新生成的候选，请查看后单击确认。"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /首帧候选 1/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /首帧候选 2/ })).toBeChecked();
     expect(
       screen.queryByRole("progressbar", {
         name: "人物置换首帧生成进度",
@@ -778,7 +775,7 @@ describe("FirstFrameSelection", () => {
         sourceFrameSelectionId="source-selection-1"
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: "再生成3张" }));
+    fireEvent.click(await screen.findByRole("button", { name: "再生成1张" }));
     await screen.findByRole("progressbar", {
       name: "人物置换首帧生成进度",
     });
@@ -831,7 +828,7 @@ describe("FirstFrameSelection", () => {
     fireEvent.change(screen.getByLabelText("首帧编辑提示词"), {
       target: { value: "Keep the legacy character identity." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
 
     await waitFor(() =>
       expect(generateFirstFrames).toHaveBeenCalledWith(
@@ -839,7 +836,7 @@ describe("FirstFrameSelection", () => {
         {
           model: "nano-banana-pro-2k",
           prompt: "Keep the legacy character identity.",
-          quantity: 3,
+          quantity: 1,
         },
         expect.any(Function),
       ),
@@ -859,7 +856,7 @@ describe("FirstFrameSelection", () => {
     expect(
       await screen.findByRole("button", { name: "版本 #2" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "再生成3张" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "再生成1张" })).toBeDisabled();
   });
 
   it("clearly marks local fake output instead of presenting it as a provider result", async () => {
@@ -1056,12 +1053,12 @@ describe("FirstFrameSelection", () => {
       />,
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "再生成3张" })).toBeEnabled(),
+      expect(screen.getByRole("button", { name: "再生成1张" })).toBeEnabled(),
     );
     vi.mocked(generateFirstFrames).mockReturnValueOnce(
       new Promise(() => undefined),
     );
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
     await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(true));
     await act(async () => {
       resolveConfirmation?.(confirmedSelection);
@@ -1125,7 +1122,7 @@ describe("FirstFrameSelection", () => {
 
     expect(onSelectionChange).toHaveBeenCalledWith(confirmedSelection);
     expect(
-      screen.getByRole("button", { name: "再生成3张" }),
+      screen.getByRole("button", { name: "再生成1张" }),
     ).toBeInTheDocument();
   });
 
@@ -1259,9 +1256,9 @@ describe("FirstFrameSelection", () => {
     expect(onSelectionChange).not.toHaveBeenCalledWith(confirmedSelection);
   });
 
-  // P0-03-04：首帧候选生成完成后自动预选第一张，确认压缩为一次点击；
+  // P0-03-04：首帧候选生成完成后自动预选最新一张，确认压缩为一次点击；
   // 不改候选生成的人工触发与付费语义（红线 3：仅显式点击才生成）。
-  it("auto-selects the first candidate after regeneration for one-click confirmation (P0-03-04)", async () => {
+  it("auto-selects the newest candidate after regeneration for one-click confirmation (P0-03-04)", async () => {
     render(
       <FirstFrameSelection
         projectId="project-1"
@@ -1277,14 +1274,14 @@ describe("FirstFrameSelection", () => {
       await screen.findByRole("radio", { name: /首帧候选 1/ }),
     ).not.toBeChecked();
 
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
     await waitFor(() => expect(generateFirstFrames).toHaveBeenCalledOnce());
 
     expect(
-      await screen.findByText("已自动预选第一张候选，请查看后单击确认。"),
+      await screen.findByText("已自动预选最新生成的候选，请查看后单击确认。"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /首帧候选 1/ })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /首帧候选 2/ })).not.toBeChecked();
+    expect(screen.getByRole("radio", { name: /首帧候选 2/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /首帧候选 1/ })).not.toBeChecked();
 
     const confirmButton = screen.getByRole("button", {
       name: "使用这张首帧",
@@ -1292,7 +1289,7 @@ describe("FirstFrameSelection", () => {
     await waitFor(() => expect(confirmButton).toBeEnabled());
     fireEvent.click(confirmButton);
     await waitFor(() =>
-      expect(confirmFirstFrame).toHaveBeenCalledWith("project-1", "first-1"),
+      expect(confirmFirstFrame).toHaveBeenCalledWith("project-1", "first-2"),
     );
   });
 
@@ -1307,9 +1304,9 @@ describe("FirstFrameSelection", () => {
       />,
     );
     await screen.findByText("人物置换首帧");
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
-    await screen.findByText("已自动预选第一张候选，请查看后单击确认。");
-    expect(screen.getByRole("radio", { name: /首帧候选 1/ })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
+    await screen.findByText("已自动预选最新生成的候选，请查看后单击确认。");
+    expect(screen.getByRole("radio", { name: /首帧候选 2/ })).toBeChecked();
 
     const callsBeforeReload = vi.mocked(getLatestProjectFirstFrames).mock.calls
       .length;
@@ -1327,11 +1324,11 @@ describe("FirstFrameSelection", () => {
       ),
     );
 
-    expect(screen.getByRole("radio", { name: /首帧候选 1/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /首帧候选 2/ })).toBeChecked();
   });
 
   // P0-03-04：旧确认与新生成候选不一致时同样预选第一张，重新确认保持单击。
-  it("auto-selects the first candidate after regenerating over a stale confirmation (P0-03-04)", async () => {
+  it("auto-selects the newest candidate after regenerating over a stale confirmation (P0-03-04)", async () => {
     vi.mocked(getLatestProjectFirstFrameSelection).mockResolvedValue({
       version: {
         ...candidatesVersion,
@@ -1357,7 +1354,7 @@ describe("FirstFrameSelection", () => {
       ),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "再生成3张" }));
+    fireEvent.click(screen.getByRole("button", { name: "再生成1张" }));
     await waitFor(() => expect(generateFirstFrames).toHaveBeenCalledOnce());
 
     expect(
@@ -1365,7 +1362,7 @@ describe("FirstFrameSelection", () => {
         "已确认首帧与当前候选不一致，请重新确认最新候选。",
       ),
     ).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /首帧候选 1/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /首帧候选 2/ })).toBeChecked();
 
     const confirmButton = screen.getByRole("button", {
       name: "使用这张首帧",
@@ -1373,7 +1370,7 @@ describe("FirstFrameSelection", () => {
     await waitFor(() => expect(confirmButton).toBeEnabled());
     fireEvent.click(confirmButton);
     await waitFor(() =>
-      expect(confirmFirstFrame).toHaveBeenCalledWith("project-1", "first-1"),
+      expect(confirmFirstFrame).toHaveBeenCalledWith("project-1", "first-2"),
     );
   });
 

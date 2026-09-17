@@ -23,6 +23,7 @@ from app.analysis import (
 )
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
+from app.material_thumbs import store_video_thumbnail
 from app.permissions import (
     require_asset_access,
     require_not_auditor,
@@ -100,6 +101,8 @@ class ProbedUploadCompletion:
     size_bytes: int
     content_type: str
     metadata: VideoMetadata
+    # MATERIAL-THUMBS-B：首帧缩略图对象键（探测期已落存储；失败为 None 不阻塞上传）。
+    thumbnail_key: str | None = None
 
 
 class VideoProbe(Protocol):
@@ -486,6 +489,8 @@ def probe_upload_completion(
             content_type=content_type,
         )
     )
+    # MATERIAL-THUMBS-B：抽帧放在探测期（写事务之外）；失败只损失缩略图。
+    thumbnail_key = store_video_thumbnail(storage, verified.key, content)
     return ProbedUploadCompletion(
         prepared=prepared,
         storage_uri=verified.uri,
@@ -493,6 +498,7 @@ def probe_upload_completion(
         size_bytes=stored.size,
         content_type=content_type,
         metadata=metadata,
+        thumbnail_key=thumbnail_key,
     )
 
 
@@ -522,6 +528,8 @@ def persist_upload_completion(
     if row is None:
         raise media_error(409, "UPLOAD_STATE_CHANGED", "Upload was removed during verification.")
     metadata = json.loads(str(row["metadata_json"]))
+    if probed.thumbnail_key:
+        metadata["thumbnail_key"] = probed.thumbnail_key
     if probed.metadata.width and probed.metadata.height and probed.metadata.fps:
         width, height = probed.metadata.width, probed.metadata.height
         divisor = gcd(width, height)
