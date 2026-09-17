@@ -281,10 +281,12 @@ export function Media({
   presentation,
   onPlay,
   aspectRatio,
+  onAspectRatioChange,
   fallback,
 }: {
   presentation?: "video";
   aspectRatio?: string;
+  onAspectRatioChange?: (ratio: number) => void;
   fallback?: ReactNode;
   onPlay?: () => void;
   asset?: StudioAsset;
@@ -335,6 +337,7 @@ export function Media({
     return (
       <VideoPreview
         onPlay={onPlay}
+        onAspectRatioChange={onAspectRatioChange}
         frameRatio={
           aspectRatio ?? (asset.kind === "image" ? "adaptive" : undefined)
         }

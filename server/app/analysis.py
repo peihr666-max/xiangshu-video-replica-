@@ -130,9 +130,9 @@ class ShotCard(BaseModel):
     composition: str = Field(min_length=1)
     camera_motion: str = Field(min_length=1)
     subject: str = Field(min_length=1)
-    # Optional only for backward compatibility. New provider responses must
-    # populate it so first-frame generation can reject multi-person videos
-    # before making a paid image call.
+    # Optional only for backward compatibility. New provider responses still
+    # populate it as useful scene metadata; first-frame generation targets the
+    # analysed primary subject and preserves other people in place.
     person_count: int | None = Field(default=None, ge=0)
     action: str = Field(min_length=1)
     scene: str = Field(min_length=1)
@@ -197,7 +197,7 @@ class ProviderShotCard(ShotCard):
 
     ``ShotCard`` remains backward-compatible for stored/manual legacy rows.
     Fresh provider responses must never silently downgrade the fields used by
-    single-person gating and deterministic H3 prompt compilation.
+    primary-subject targeting and deterministic H3 prompt compilation.
     """
 
     person_count: int = Field(ge=0)

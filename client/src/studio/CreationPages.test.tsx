@@ -334,6 +334,40 @@ describe("V1.4 创作页面", () => {
     }));
   });
 
+  it("sizes the replica columns from the current source video and resets on replacement", () => {
+    const value = studio();
+    const asset = {
+      id: "source-1",
+      name: "来源视频".repeat(40),
+      kind: "video" as const,
+      url: "/portrait.mp4",
+      group: "项目",
+      source: "上传",
+      saved: true,
+    };
+    value.data.assets.push(asset);
+    useStudio.mockReturnValue(value);
+    const view = render(<ReplicaPage />);
+    const grid = view.container.querySelector(
+      ".creation-replica-stage-grid",
+    ) as HTMLElement;
+    const video = grid.querySelector("video");
+    if (!video) throw new Error("replica source preview missing");
+    Object.defineProperties(video, {
+      videoWidth: { value: 1920 },
+      videoHeight: { value: 1080 },
+    });
+    fireEvent.loadedMetadata(video);
+    expect(grid.style.getPropertyValue("--replica-source-ratio")).toBe(
+      String(1920 / 1080),
+    );
+    asset.url = "/next.mp4";
+    view.rerender(<ReplicaPage />);
+    expect(grid.style.getPropertyValue("--replica-source-ratio")).toBe(
+      String(9 / 16),
+    );
+  });
+
   it("提取原文后不显示二创编辑框或终稿按钮", () => {
     const value = studio();
     value.state.draft.script = {

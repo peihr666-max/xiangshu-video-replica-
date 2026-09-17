@@ -1,4 +1,5 @@
 import {
+  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -1222,6 +1223,13 @@ export function ReplicaPage() {
     data.videos,
     state.draft.sourceId ?? state.selectedVideoId,
   );
+  const sourceMediaKey = source?.url || source?.poster || source?.id || "";
+  const [sourceRatio, setSourceRatio] = useState<{
+    source: string;
+    ratio: number;
+  }>();
+  const previewRatio =
+    sourceRatio?.source === sourceMediaKey ? sourceRatio.ratio : 9 / 16;
   const selectedFirstFrame = findAsset(data.assets, state.draft.firstFrameId);
   const [stage, setStage] = useState<ReplicaStage>(() =>
     state.draft.projectId ? "ready" : "source",
@@ -2030,7 +2038,12 @@ export function ReplicaPage() {
             </Panel>
           ) : (
             <>
-              <div className="creation-replica-stage-grid">
+              <div
+                className="creation-replica-stage-grid"
+                style={
+                  { "--replica-source-ratio": previewRatio } as CSSProperties
+                }
+              >
                 <div className="creation-replica-media-column">
                   <SourceStrip source={source} />
                   <Panel className="creation-replica-video">
@@ -2038,6 +2051,9 @@ export function ReplicaPage() {
                       asset={source}
                       alt="参考视频"
                       className="creation-replica-video__media"
+                      onAspectRatioChange={(ratio) =>
+                        setSourceRatio({ source: sourceMediaKey, ratio })
+                      }
                       presentation="video"
                       aspectRatio="adaptive"
                     />

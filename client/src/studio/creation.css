@@ -262,13 +262,14 @@
   grid-template-columns: 0.75fr 0.95fr 1.05fr;
 }
 
-.creation-replica .studio-creation-nav,
-.creation-replica .creation-source-strip {
+.creation-replica .studio-creation-nav {
   width: max-content;
 }
 
 .creation-replica .creation-source-strip {
-  min-width: min(720px, calc(100% - 36px));
+  min-width: 0;
+  overflow-wrap: anywhere;
+  width: auto;
 }
 
 .creation-shot-list,
@@ -1443,6 +1444,36 @@
   display: grid;
   gap: 20px;
   grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+}
+.creation-replica-stage-grid {
+  --image-preview-height: clamp(260px, 52dvh, 520px);
+  grid-template-columns: minmax(
+      0,
+      min(
+        52%,
+        calc(
+          var(--image-preview-height) *
+          var(--replica-source-ratio, 0.5625) +
+          42px
+        )
+      )
+    ) minmax(0, 1fr);
+}
+.creation-replica-stage-grid > * {
+  min-width: 0;
+}
+.creation-replica-stage-grid .creation-source-strip > span:last-child {
+  min-width: 0;
+}
+.creation-replica-stage-grid .creation-status-dot {
+  flex-shrink: 0;
+}
+.creation-replica-analyze .creation-panel-title-row {
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+.creation-replica-analyze .creation-shot-summary-list {
+  overflow-wrap: anywhere;
 }
 .creation-replica-media-column,
 .creation-final-copy {
