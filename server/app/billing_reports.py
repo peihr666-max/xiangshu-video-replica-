@@ -251,5 +251,6 @@ def statistics(
         "periods": [metrics[key] for key in sorted(key for key in metrics if key is not None)],
         "legacy_scope": "date_and_customer",
         "basis": "请求结算归属周期；未结算请求按受理时间列示。成本或收入证据未齐时利润待核对。"
-        "共享采集成本只记在平台请求，筛选单个客户时公共成本未分摊，请以采集批次核算利润。",
+        "共享采集成本只记在平台请求，筛选单个客户时公共成本未分摊，请以采集批次核算利润。"
+        "成本口径为上游接口调用，不含云存储与支付通道费用，此处利润为毛利而非净利。",
     }
