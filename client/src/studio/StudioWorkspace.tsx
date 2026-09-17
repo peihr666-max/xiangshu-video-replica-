@@ -126,6 +126,25 @@ type WalletSummary = Pick<
   "walletStatus" | "availableCredits"
 >;
 
+// 侧边栏折叠是设备级偏好：仅存本地，不上服务端。
+const SIDEBAR_COLLAPSED_KEY = "studio.sidebar.collapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistSidebarCollapsed(collapsed: boolean) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // 存储不可用（隐私模式等）时静默降级为会话内状态
+  }
+}
+
 function quoteMatchesInput(
   quote: GenerationPriceQuote | null,
   input: GenerationQuoteInput,
@@ -308,6 +327,13 @@ export function StudioWorkspace({
   const closeMenu = () => {
     setMenuOpen(false);
     menuButtonRef.current?.focus();
+  };
+  const [sidebarCollapsed, setSidebarCollapsed] =
+    useState(readSidebarCollapsed);
+  const toggleSidebarCollapsed = () => {
+    const next = !sidebarCollapsed;
+    persistSidebarCollapsed(next);
+    setSidebarCollapsed(next);
   };
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
@@ -1826,7 +1852,7 @@ export function StudioWorkspace({
   return (
     <StudioContext.Provider value={context}>
       <div
-        className={`studio-shell ${creationWorkspace ? "studio-shell--creation" : ""} ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
+        className={`studio-shell ${creationWorkspace ? "studio-shell--creation" : ""} ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""} ${sidebarCollapsed ? "studio-shell--sidebar-collapsed" : ""}`}
       >
         {menuOpen && (
           <button
@@ -1880,6 +1906,7 @@ export function StudioWorkspace({
                     key={item.id}
                     aria-current={activeNav === item.id ? "page" : undefined}
                     className={activeNav === item.id ? "is-active" : ""}
+                    title={sidebarCollapsed ? item.title : undefined}
                     onClick={() => navigate(item.id)}
                   >
                     <Icon name={item.icon} />
@@ -1906,6 +1933,16 @@ export function StudioWorkspace({
         </aside>
         <main className={`studio-main studio-route-${state.page}`}>
           <div className="studio-topbar">
+            <button
+              type="button"
+              aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              aria-expanded={!sidebarCollapsed}
+              aria-controls="studio-sidebar"
+              className="studio-sidebar-toggle"
+              onClick={toggleSidebarCollapsed}
+            >
+              <Icon name={sidebarCollapsed ? "chevron" : "back"} />
+            </button>
             <button
               type="button"
               aria-label="展开导航"
