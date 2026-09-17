@@ -1,0 +1,38 @@
+{
+  "scope": "video-first-tail-frame-cards",
+  "score": 96,
+  "pass": true,
+  "differences": [
+    "首帧与尾帧空状态改为整卡加号入口，移除了卡片下方单独的本机上传按钮。",
+    "点击卡片后可选择素材库或本地上传；已有图片在原卡片内按原比例预览并可点击更换。",
+    "参考生视频上传分支保持原入口与行为。"
+  ],
+  "evidence": {
+    "geometry": "geometry.json",
+    "screenshots": [
+      "1440-video.png",
+      "1024-video.png",
+      "390-video.png",
+      "1440-source-dialog.png",
+      "1440-reference-unchanged.png"
+    ],
+    "measurements": {
+      "desktop_card_width_px": 320.9,
+      "desktop_card_height_px": 280,
+      "tablet_card_width_px": 369.14,
+      "tablet_card_height_px": 240,
+      "mobile_card_width_px": 358,
+      "mobile_card_height_px": 240,
+      "selected_media_object_fit": "contain"
+    },
+    "behavior": {
+      "standalone_local_upload_buttons": 0,
+      "library_option_visible": true,
+      "local_upload_option_visible": true,
+      "dialog_close_restores_card_focus": true,
+      "reference_mode_frame_cards": 0
+    },
+    "horizontal_overflow": false,
+    "console_errors": []
+  }
+}

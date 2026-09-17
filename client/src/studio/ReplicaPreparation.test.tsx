@@ -71,6 +71,7 @@ beforeEach(() => {
 });
 it("AI 改写覆盖唯一文案框并支持撤销", async () => {
   render(<Harness />);
+  expect(screen.getByLabelText("口播文案")).toHaveAttribute("rows", "10");
   fireEvent.click(screen.getByRole("button", { name: "AI 改写" }));
   await waitFor(() =>
     expect(screen.getByLabelText("口播文案")).toHaveValue("AI 新口播"),

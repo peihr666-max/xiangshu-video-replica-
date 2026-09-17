@@ -1,0 +1,52 @@
+{
+  "fixtureInjection": true,
+  "sources": {
+    "video": "/tmp/replica-layout-landscape.mp4",
+    "audio": "/tmp/reference-audio-5s.mp3"
+  },
+  "video": {
+    "before": {
+      "currentTime": 0.001216,
+      "duration": 1,
+      "videoWidth": 640,
+      "videoHeight": 360,
+      "paused": false
+    },
+    "after": {
+      "currentTime": 0.806251,
+      "duration": 1,
+      "videoWidth": 640,
+      "videoHeight": 360,
+      "paused": false
+    },
+    "afterClose": {
+      "connected": false,
+      "paused": true,
+      "currentTime": 1
+    },
+    "decoded": true,
+    "advanced": true
+  },
+  "audio": {
+    "before": {
+      "currentTime": 0.000105,
+      "duration": 5,
+      "paused": false
+    },
+    "after": {
+      "currentTime": 0.763331,
+      "duration": 5,
+      "paused": false
+    },
+    "afterClose": {
+      "connected": false,
+      "paused": true,
+      "currentTime": 0.928538
+    },
+    "decoded": true,
+    "advanced": true
+  },
+  "dialogsUnmounted": true,
+  "consoleErrors": [],
+  "pass": true
+}

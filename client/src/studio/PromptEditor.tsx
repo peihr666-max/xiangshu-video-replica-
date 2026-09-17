@@ -375,7 +375,7 @@ export function PromptEditor({
         aria-label={label}
         className="creation-textarea"
         value={value}
-        rows={rows}
+        rows={rows * 2}
         readOnly={readOnly}
         disabled={readOnly}
         placeholder={placeholder}

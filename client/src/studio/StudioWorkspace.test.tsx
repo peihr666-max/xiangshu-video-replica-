@@ -801,7 +801,8 @@ describe("V1.4 workspace integration", () => {
     const state = createState("video");
     render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
     await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: "尾帧 尾帧（可选）" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加尾帧" }));
+    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
     expect(
       await screen.findByRole("img", { name: "云端尾帧" }),
     ).toHaveAttribute("src", "https://signed.example/tail.png");

@@ -1,0 +1,42 @@
+{
+  "390": {
+    "order": true,
+    "uploadBox": {
+      "x": 16,
+      "y": 288,
+      "width": 358,
+      "height": 208
+    },
+    "firstBox": {
+      "x": 16,
+      "y": 583.5,
+      "width": 358,
+      "height": 96
+    },
+    "imageDialog": true,
+    "focusReturned": true,
+    "escapeFocusReturned": true,
+    "overflow": false,
+    "consoleErrors": []
+  },
+  "1440": {
+    "order": true,
+    "uploadBox": {
+      "x": 108,
+      "y": 249,
+      "width": 655.765625,
+      "height": 208
+    },
+    "firstBox": {
+      "x": 108,
+      "y": 544.5,
+      "width": 655.765625,
+      "height": 96
+    },
+    "imageDialog": true,
+    "focusReturned": true,
+    "escapeFocusReturned": true,
+    "overflow": false,
+    "consoleErrors": []
+  }
+}

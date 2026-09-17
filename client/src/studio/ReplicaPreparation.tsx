@@ -152,7 +152,7 @@ export function ReplicaNarration() {
       <textarea
         aria-label="口播文案"
         className="creation-textarea"
-        rows={5}
+        rows={10}
         readOnly={readOnly}
         value={draft.script.text}
         onChange={(event) => {

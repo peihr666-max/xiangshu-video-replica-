@@ -664,7 +664,7 @@
   padding: 12px;
 }
 .content-publish-fields textarea {
-  min-height: 64px;
+  min-height: 128px;
 }
 .content-publish-account,
 .content-publish-account-empty,
@@ -843,6 +843,11 @@
   position: absolute;
   color: #ecece8;
   z-index: 1;
+}
+@media (max-width: 1180px) {
+  .content-publish-layout {
+    grid-template-columns: 1fr;
+  }
 }
 @media (max-width: 980px) {
   .content-video-grid,

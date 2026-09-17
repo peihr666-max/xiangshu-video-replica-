@@ -1,5 +1,23 @@
 # REPLICA-SUBJECT-LAYOUT-20260917 · 主体置换与工作区布局修复
 
+## 本次修改清单（提交前整理）
+
+本次按同一会话的 7 组反馈交付，代码分成主要人物与工作区、声音克隆、创作素材交互三个逻辑提交。没有数据库迁移、新依赖、真实付费调用或生产部署。
+
+| 修改项 | 修改后的行为 | 主要文件 |
+| --- | --- | --- |
+| 主要人物置换 | 不再因背景人物拦截首帧；三种参考模式只替换 shot.subject，保留旁人。更新合同指纹，避免复用旧规则候选。继续三张候选、人工确认，不恢复图片 AI 质检 | `server/app/first_frames.py`、相关首帧测试 |
+| 自适应预览与公共布局 | 使用视频真实比例安排左右区域，长来源文字换行；窄屏上下排列。各页面统一紧凑侧栏，创作内容页头去掉重复 Logo | `VideoPreview.tsx`、`studio/CreationPages.tsx`、`studio/StudioWorkspace.tsx`、`studio/creation.css`、`studio/studio.css` |
+| 文案与提示词输入 | 文案、脚本和提示词多行编辑区的原高度/行数翻倍，保留纵向拉伸；只读内容与单行标题不扩大 | `ScriptEditor.tsx`、`FirstFrameSelection.tsx`、`studio/PromptEditor.tsx`、`studio/ReplicaPreparation.tsx`、相关 CSS |
+| 克隆声音格式 | 支持 MP3、M4A、WAV、WMA、WMV、AAC、FLAC、OGG、OPUS、AIFF/AIF、AMR；服务端校验有效音轨、5–180 秒和 20 MB，Worker 提取首音轨并转 MP3 | `studio/live.ts`、`studio/PeoplePages.tsx`、`api.ts`、`server/app/materials.py`、`server/app/media_tools.py`、`server/app/oral_worker.py` |
+| 克隆结果稳定性 | 轮询只更新对应声音、忽略迟到旧结果；试听与操作区预留稳定尺寸，结果出现时卡片高度和滚动位置不变 | `studio/PeoplePages.tsx`、`studio/live.ts`、`studio/oral.css` |
+| 文／图生视频素材 | 首尾帧显示更大的图片卡片；点“＋”选择素材库或本地上传，不再在卡片下另放上传按钮；可更换、移除 | `studio/CreationPages.tsx`、`studio/creation.css` |
+| 参考生视频素材 | 添加区上置、已选素材下置；单击打开图片/视频/音频预览，关闭或 Escape 后返回原卡片焦点且不滚动 | `studio/CreationPages.tsx`、`studio/creation.css` |
+
+验证结果：本地完整静态门通过；前端 107 文件 / 1716 项通过；后端四片 2580 项通过、1 项既有跳过；评审后 PostgreSQL 39 项及焦点专项 2 项补验通过。宽屏/中屏/手机布局、实际本地音视频播放及声音状态变化均已测量；独立最终评审 APPROVE，0 剩余问题。
+
+交付边界：主要人物识别沿用现有拆解 subject，没有新建框选或追踪系统；真实多人遮挡场景的供应商出图精度尚未进行付费验收。WMV 按含音轨容器处理，无音轨文件明确拒绝。原口播及参考音频合同保持原有校验。新提交必须以 PR 当前 head 的 Secret / Linux / Windows 门禁为准；未合并、未部署。
+
 ## §14 任务证据
 
 - 任务 / 工作包：同一批截图反馈及追加要求；多人视频主要人物置换、预览自适应、共用紧凑侧栏及移除创作页重复 Logo。
@@ -62,3 +80,36 @@
 最终增量基于完整前端 1680 / 后端 2548（1既有skip）的全量基线；评审修复后另跑前端 225、后端 58 + PG 5，全过。最终远程 CI 将在同一 PR head 对完整集合重新取证。
 
 独立复审：APPROVE，两项阻断已关闭，无剩余问题；见 [评审记录](replica-subject-layout-20260917/code-review.json)。
+
+
+## 同会话追加反馈：文案、声音与素材输入
+
+1. 文案与提示词：共享 PromptEditor/ScriptEditor、首帧提示词、复刻准备、文案工坊、AI 视频、口播文案、发布描述按原有 rows/height/min-height 翻倍，保留纵向手动缩放。标题、人物资料、支付设置不变。
+2. 声音格式：克隆入口接受 MP3、M4A、WAV、WMA、WMV、AAC、FLAC、OGG、OPUS、AIFF/AIF、AMR。浏览器无法探测时由服务端 complete 严验容器签名、有效音轨、5–180 秒与 20 MB；Worker 提取首音轨并转为 MP3 后提交既有 Hifly 接口。完整口播/参考音频仍沿用原合同。只模拟 Provider 接口，不发真实付费请求。
+3. 结果跳动：VoicePanel 轮询原先每 6 秒触发全工作区和钱包重读，且播放控件替换按钮触发换行。改为只更新当前声音且内容未变保持原状态引用；每个声音独立请求序号隔离迟到结果。预留稳定试听/确认两槽，桌面 44px、窄屏两行100px；全局刷新保留用户提交/确认后的单次操作。
+4. 文/图生视频：首尾帧桌面大卡片、窄屏单列，“＋”直接打开素材库或本地上传选择；上传成功在同位置显示大图，保留更换/移除。仍遵守原 T2V 开放能力与费用校验。
+5. 参考生视频：添加区在上方，已添加素材在下方；单击预览图片/视频/音频。序号、用途与移除保持独立。
+
+### 增量回归与视觉证据
+
+- 声音格式前端 RED 24项失败；实现后 API/live/PeoplePages 279 passed。声音状态局部更新 RED 1失败；修复后 PeoplePages/live 118 passed。全量发现1项旧尾帧按钮入口断言，更新为“添加尾帧→从素材库选择”后 StudioWorkspace 98 passed。
+- 声音布局第一次浏览器检查暴露通用 flex 规则覆盖新 grid，控件切换有4px高度差；修复 specificity 与44px控制槽后，1440/1024/390三档、6个声音卡片切换前后高度和scrollTop均相同（桌面166.39px、手机222.39px）。使用显式DEV数据注入，未修改业务数据。
+- 输入框按实际浏览器几何验收，不保留只匹配CSS源码的镜像测试。发布页1024宽度发现旧双列最小宽度超出可用空间，增加响应式单列，保留1440双列。
+- 后端先跑纯格式/容器、损坏文件、无音轨WMV、转码失败不触达Provider、旧MP3与PG上传合同专项；最新全量门禁结果在收尾补充。
+- FFmpeg 输入限制依据[官方协议文档](https://ffmpeg.org/ffmpeg-protocols.html#Protocol-Options)，仅本次克隆输入显式限制本地协议；同一时间保留原媒体通道默认行为。参考[FFmpeg命令文档](https://ffmpeg.org/ffmpeg.html)执行音轨映射和转码。无新依赖。
+
+
+### 追加反馈最终验证
+
+- 最新 `npm run check:static` 完整通过：Biome、TypeScript、前端 **107 files / 1716 passed**、e2e lint、cargo fmt/check、Ruff、373 文件格式及 Mypy 159 文件。既有5条CSS specificity及5条Rust dead-code警告保留，无新增静态错误。
+- 同次后端四片全量：**2580 passed / 1 既有 skipped**（633+689+654+604），独立5561–5564容器均自动清理；评审后删除上传完成阶段重复完整解码，另以独立5567专项复验 **CW058 26 passed + oral 13 passed**，容器清理。完整ffmpeg转换只在租约Worker执行一次，complete保留轻量校验。
+- 独立评审指出旧测试未真实消费更新；现新增 useState harness 验证原位 READY、停止轮询、无关引用不变，deferred旧请求晚于新READY不能覆盖，单条状态仅为demo签URL；PeoplePages/live **120 passed**，并已纳入最终1716全量。
+- 参考预览使用本地合成媒体实际解码播放：视频640×360、1秒，播放时间0.001→0.806；音频5秒，0.000→0.763。关闭后两类媒体均暂停、节点卸载，0控制台错误。没有用真实Provider或业务数据。
+- 视觉：[输入区](replica-subject-layout-20260917/textarea/1440-copy.png)、[首尾帧大图卡片](replica-subject-layout-20260917/video-frame-cards/1440-video.png)、[参考素材上下布局](replica-subject-layout-20260917/reference-materials/1440-reference-materials.png)、[声音结果稳定布局](replica-subject-layout-20260917/voice/1440-ready.png)。各子目录含实际几何和交互JSON；[综合判定](replica-subject-layout-20260917/feedback-visual-verdict.json)通过。
+- 已存在 PR：[#139](https://github.com/peihr666-max/xiangshu-video-replica-/pull/139)。首批 c687432 的 Secret/Linux/Windows 三门禁已通过；本次追加反馈提交后以新head的门禁结果为准，尚未合并、部署或运行付费验收。
+
+边界补验：本地合成180秒WAV转为MP3通过，未因编码封装边界误拒绝上限样本。声音代码单独提交 `6973b2e`；UI布局和本批证据按独立逻辑提交。
+
+最终交互补验：参考素材预览关闭按钮与 Escape 均将焦点返回原缩略卡，`preventScroll` 保持滚动位置；1440/390 两档无横向溢出或控制台错误。该评审 LOW 已修复，新增专项 2 passed，Biome 与 TypeScript 通过。
+
+独立最终评审：**APPROVE，0 剩余问题**；追加反馈全范围及最后焦点修复均已复核，见 [评审记录](replica-subject-layout-20260917/feedback-code-review.json)。
