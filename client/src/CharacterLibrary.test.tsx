@@ -35,9 +35,7 @@ const VIEW_TYPES: api.CharacterViewType[] = [
   "FRONT_HALF",
   "FRONT_FULL",
   "LEFT_45",
-  "RIGHT_45",
   "LEFT_SIDE",
-  "RIGHT_SIDE",
 ];
 
 function viewsFor(prefix: string): api.SimpleCharacterView[] {
@@ -503,7 +501,7 @@ describe("CharacterLibrary", () => {
     expect(screen.getByAltText("荣哥 正脸近景")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "下载拼合图" })).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "下载全部（7 张）" }),
+      screen.queryByRole("button", { name: "下载全部（5 张）" }),
     ).toBeNull();
 
     // 旧人物（无拼合图）灯箱=视角网格 + 下载全部。
@@ -511,9 +509,9 @@ describe("CharacterLibrary", () => {
     expect(
       await screen.findByRole("dialog", { name: "人物预览 林夏" }),
     ).toBeInTheDocument();
-    expect(screen.getByAltText("林夏 右侧面")).toBeInTheDocument();
+    expect(screen.getByAltText("林夏 左侧面")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "下载全部（7 张）" }),
+      screen.getByRole("button", { name: "下载全部（5 张）" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "关闭人物预览" }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -778,10 +776,10 @@ describe("CharacterLibrary", () => {
       ),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "下载全部（7 张）" }));
+    fireEvent.click(screen.getByRole("button", { name: "下载全部（5 张）" }));
 
     await waitFor(() =>
-      expect(api.downloadCharacterAsset).toHaveBeenCalledTimes(8),
+      expect(api.downloadCharacterAsset).toHaveBeenCalledTimes(6),
     );
   });
 
@@ -906,7 +904,7 @@ describe("CharacterLibrary", () => {
     expect(screen.queryByRole("button", { name: "改名" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除人物 林夏" })).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "下载全部（7 张）" }),
+      screen.queryByRole("button", { name: "下载全部（5 张）" }),
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "下载拼合图" })).toBeNull();
     expect(screen.queryAllByRole("button", { name: "下载" })).toHaveLength(0);
@@ -917,9 +915,9 @@ describe("CharacterLibrary", () => {
     expect(
       await screen.findByRole("dialog", { name: "人物预览 林夏" }),
     ).toBeInTheDocument();
-    expect(screen.getByAltText("林夏 右侧面")).toBeInTheDocument();
+    expect(screen.getByAltText("林夏 左侧面")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "下载全部（7 张）" }),
+      screen.queryByRole("button", { name: "下载全部（5 张）" }),
     ).toBeNull();
     expect(screen.queryAllByRole("button", { name: "下载" })).toHaveLength(0);
   });

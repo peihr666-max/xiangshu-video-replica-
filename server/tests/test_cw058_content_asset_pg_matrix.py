@@ -2575,7 +2575,7 @@ def test_character_materials_group_contact_sheets_without_losing_reference_acces
         item = page.items[0]
         key = str(item.asset_id).removeprefix("contact-")
         assert item.preview_asset_id == f"asset-{key}-front_full"
-        assert len(item.character_views) == 7
+        assert len(item.character_views) == 5
         assert {view.asset_id for view in item.character_views} == {
             f"asset-{key}-{view_type.lower()}" for view_type in REQUIRED_CHARACTER_VIEW_TYPES
         }
@@ -2856,7 +2856,7 @@ def test_publish_freezes_hash_and_enforces_published_view_uniqueness_on_pg(
         "AND is_published_selection = 1",
         (version_id,),
     ).fetchone()
-    assert published_count is not None and published_count[0] == 7
+    assert published_count is not None and published_count[0] == 5
 
     # PG 部分唯一索引：同一视图第二个已发布选择必须被数据库拒绝。
     # （走门面写，验证 IntegrityConstraintError 携 SQLSTATE 与约束名。）

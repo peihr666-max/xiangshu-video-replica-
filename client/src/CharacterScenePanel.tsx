@@ -27,9 +27,7 @@ const viewLabels: Record<string, string> = {
   FRONT_HALF: "正面半身",
   FRONT_FACE: "正面特写",
   LEFT_45: "左侧 45°",
-  RIGHT_45: "右侧 45°",
   LEFT_SIDE: "左侧面",
-  RIGHT_SIDE: "右侧面",
 };
 
 /** 人物详情与人物管理共用同一场景列表、任务恢复和生成表单。 */

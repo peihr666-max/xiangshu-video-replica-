@@ -3195,9 +3195,7 @@ export type CharacterViewType =
   | "FRONT_HALF"
   | "FRONT_FULL"
   | "LEFT_45"
-  | "RIGHT_45"
-  | "LEFT_SIDE"
-  | "RIGHT_SIDE";
+  | "LEFT_SIDE";
 
 export interface SimpleCharacterView {
   view_type: CharacterViewType;
