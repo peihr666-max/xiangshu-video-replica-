@@ -33,6 +33,7 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from app.api_errors import http_error as _http
 from app.db_pg import pg_transaction
 from app.ops_metrics import (
     get_or_create_request_id,
@@ -392,11 +393,6 @@ class AdminActor:
     session_id: str
     session_expires_at: str
     last_activity_at: str
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    set_current_result_code(code)
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 def _admin_exchange_identifier(request: Request) -> str:

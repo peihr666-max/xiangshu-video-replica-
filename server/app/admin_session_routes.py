@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import Field, StrictInt
 
 from app.admin_auth_routes import AdminReader, AdminWriter
 from app.admin_write_contract import AdminWriteContract, transaction_now_iso, write_with_idempotency
+from app.api_errors import http_error as _http
 from app.customer_session_service import revoke_session
 from app.db_pg import MissingDatabaseConfigError, pg_transaction
 
@@ -28,10 +29,6 @@ DEFAULT_LIST_LIMIT = 20
 MAX_LIST_LIMIT = 100
 SESSION_SERVICE_UNAVAILABLE = "SESSION_SERVICE_UNAVAILABLE"
 SESSION_SERVICE_UNAVAILABLE_MESSAGE = "Session management requires the PostgreSQL runtime."
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 class SessionRevokeRequest(AdminWriteContract):

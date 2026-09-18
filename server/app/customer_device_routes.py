@@ -116,6 +116,7 @@ from app.activation_code_service import (
     mask_activation_code,
     normalize_activation_code,
 )
+from app.api_errors import http_error as _http
 from app.auth_headers import bearer_token as _bearer_token
 from app.customer_auth import CustomerSessionContext, SessionFencingError, verify_session_context
 from app.customer_device_service import (
@@ -163,7 +164,7 @@ from app.customer_idempotency import (
     request_hash as compute_request_hash,
 )
 from app.db_pg import get_pg_pool, pg_transaction
-from app.ops_metrics import get_or_create_request_id, set_current_result_code
+from app.ops_metrics import get_or_create_request_id
 from app.security_rate_limit import (
     DIMENSION_ACTIVATE_CODE,
     DIMENSION_ACTIVATE_IP,
@@ -218,11 +219,6 @@ def _lock_reset_code_scope(conn: psycopg.Connection, scope: str) -> None:
         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
         (f"{RESET_CODE_OPERATION}:{scope}",),
     )
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    set_current_result_code(code)
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 class _PairingRaceLost(Exception):
