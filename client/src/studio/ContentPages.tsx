@@ -1815,6 +1815,9 @@ function MaterialsPageContent() {
   const previewLoadingIdsRef = useRef(new Set<string>());
   // MATERIAL-PERF-A（P0-4）：失败/过期预览的有限自动重试记账。
   const previewRetryCountsRef = useRef(new Map<string, number>());
+  // 缩略图单独记账：本体授权成功会清零上面那个计数，而缩略图 404 时本体往往
+  // 是好的（抽帧失败而已），共用一个计数等于上限永不生效。
+  const thumbnailRetryCountsRef = useRef(new Map<string, number>());
   const previewRetryTimersRef = useRef(
     new Set<ReturnType<typeof setTimeout>>(),
   );
@@ -1891,6 +1894,7 @@ function MaterialsPageContent() {
       for (const timer of previewRetryTimersRef.current) clearTimeout(timer);
       previewRetryTimersRef.current.clear();
       previewRetryCountsRef.current.clear();
+      thumbnailRetryCountsRef.current.clear();
     };
   }, [refreshCacheUsage, review]);
   // Latest-ref 桥：loadPreview 的失败分支通过它调度自动重试（P0-4），
@@ -2138,6 +2142,25 @@ function MaterialsPageContent() {
   };
 
   const invalidatePreview = (asset: StudioAsset, failedUrl?: string) => {
+    const authId = asset.previewAssetId ?? asset.assetId ?? "";
+    // 缩略图失效走单独一支：它报上来的是 poster 而不是 previewStates.url，
+    // 落到下面的 wasReady 判据必然不匹配，瓦片会一直挂着失效的封面。客户版
+    // 签名绑 session_epoch，换一次会话就会整片 403——表现为「用着用着图没了，
+    // 刷新一下又好」。清掉本地缓存的地址并重新批量授权即可自愈。
+    if (failedUrl && authId && thumbnailUrls[authId] === failedUrl) {
+      setThumbnailUrls((current) => {
+        const next = { ...current };
+        delete next[authId];
+        return next;
+      });
+      // 挂同一个有限次计数：抽帧失败的视频每次都会签出一条新地址却依旧 404，
+      // 不设上限就是「重签 → 404 → 重签」的死循环。用尽次数后瓦片保留占位。
+      const attempts = thumbnailRetryCountsRef.current.get(asset.id) ?? 0;
+      if (attempts >= 2) return;
+      thumbnailRetryCountsRef.current.set(asset.id, attempts + 1);
+      void loadPreviewsBatch([asset]);
+      return;
+    }
     const wasReady = previewStates[asset.id]?.url === failedUrl;
     if (!wasReady) return;
     previewResourcesRef.current.get(asset.id)?.release();
