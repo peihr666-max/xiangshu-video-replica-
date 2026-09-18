@@ -2,7 +2,7 @@
  * 视频复刻（模块①）流程与布局缺陷的回归测试。
  *
  * 本文件只测试、不改源码：A1/A2/A3/B2/C1/C5 六项缺陷的期望行为在此固化。
- * 修复落地前部分用例为红（TDD red），这是预期结果，不是测试写错。
+ * 对应修复均已落地，用例全绿，这些断言的作用是防止缺陷回潮。
  *
  * 隔离策略：只部分 mock `../api` 与 `./live`——
  *  - `./live` 的 `uploadWorkbenchSourceVideo` 保持真实实现（C1 测的是它本体，
@@ -81,8 +81,8 @@ import { ReplicaPage } from "./CreationPages";
 import { uploadWorkbenchSourceVideo } from "./live";
 
 /**
- * 预期为红的断言用短超时：修复前失败是预期结果，无需等满 jest-dom 默认的
- * 10s；修复后状态更新在毫秒级完成，4s 有充足余量。
+ * 这些断言等的是异步恢复链路（草稿读取、素材注册）落地，用 4s 上限：
+ * 正常在毫秒级返回，上限只用来兜住偶发的渲染排队。
  */
 const RED_TIMEOUT = { timeout: 4000 };
 
@@ -513,7 +513,6 @@ describe("复刻页 C 类：素材签名与提示词渲染", () => {
       RED_TIMEOUT,
     );
 
-    // PromptMarkdown 尚未接入复刻页 → 当前必然为红。
     await waitFor(
       () =>
         expect(view.container.querySelector(".prompt-md__shot")).not.toBeNull(),

@@ -24,6 +24,7 @@ const VIEW_LABELS: Record<ProjectCharacterAssetOption["view_type"], string> = {
 
 export function CharacterSelection({
   banded = false,
+  onAspectRatioChange,
   onBusyChange,
   onSelectionChange,
   onVersionChange,
@@ -34,6 +35,8 @@ export function CharacterSelection({
 }: {
   /** 三带布局（复刻页第 2 节）：控制带 / 媒体带 / 操作带，供左右栏媒体框对齐。 */
   banded?: boolean;
+  /** 场景预览图加载完成后的宽高比（宽 / 高）。复刻页要用它给左侧媒体框定比例。 */
+  onAspectRatioChange?: (ratio: number) => void;
   onBusyChange?: (isBusy: boolean) => void;
   onSelectionChange?: (hasSelection: boolean) => void;
   onVersionChange?: (selection: ProjectMainCharacter | null) => void;
@@ -432,6 +435,12 @@ export function CharacterSelection({
           className="flow-character-row__preview"
           src={visibleScenePreview.url}
           alt="已选场景图"
+          onLoad={(event) => {
+            const image = event.currentTarget;
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              onAspectRatioChange?.(image.naturalWidth / image.naturalHeight);
+            }
+          }}
           onError={() => {
             if (
               scenePreviewRequestIdRef.current !==

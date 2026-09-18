@@ -103,7 +103,7 @@ import {
   StudioDialog,
   Tabs,
 } from "./ui";
-import { useMediaRowFit } from "./useMediaRowFit";
+import { type MediaRowStyle, useMediaRowFit } from "./useMediaRowFit";
 import "./creation.css";
 import { OralJourney } from "./OralJourney";
 
@@ -184,6 +184,14 @@ function ReplicaMediaRow({
       {children}
     </div>
   );
+}
+
+/**
+ * 面板级比例覆盖：行的 --row-ratio 是给「左栏宽度」算的单一值，两栏素材比例不同时
+ * 各面板必须各自覆盖，否则比例小的那栏会被撑出黑边。
+ */
+function panelRatioStyle(ratio: number): MediaRowStyle {
+  return { "--row-ratio": `${ratio}` };
 }
 
 function ControlGroup({
@@ -1306,6 +1314,19 @@ export function ReplicaPage() {
     shotCardVersionId,
   };
   const finalReady = finalSnapshot?.inputKey === replicaInputKey(finalInput);
+  // finalSnapshot 只在挂载时读一次草稿：草稿是异步恢复的，挂载时 projectId 还没到，
+  // 刷新后草稿里的快照就再也读不进来，「已完成」状态凭空消失。项目 id 变化时补读一次。
+  // 不能无差别跟随草稿：改镜头会就地清空快照（不落库），跟随会把清空结果复原。
+  const snapshotProjectIdRef = useRef(state.draft.projectId);
+  useEffect(() => {
+    if (snapshotProjectIdRef.current === state.draft.projectId) {
+      return;
+    }
+    snapshotProjectIdRef.current = state.draft.projectId;
+    setFinalSnapshot(
+      state.draft.projectId ? (state.draft.finalSnapshot ?? null) : null,
+    );
+  }, [state.draft.projectId, state.draft.finalSnapshot]);
   const [promptNameOpen, setPromptNameOpen] = useState(false);
   const [promptName, setPromptName] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
@@ -2080,6 +2101,11 @@ export function ReplicaPage() {
     (duration, shot) => Math.max(duration, shot.end_time),
     0,
   );
+  // 「首帧未就绪」在面板内（有文案没首帧）和面板外（两者都没有）两处出现：
+  // 分支结构不同、位置也不同，共用一份文案，免得两处措辞各自漂移。
+  const missingFirstFrameHint = (
+    <Hint>请先完成首帧置换并选定图片，再合成最终提示词。</Hint>
+  );
   return (
     <section className="creation-page creation-replica">
       <CreationNavigation />
@@ -2150,9 +2176,14 @@ export function ReplicaPage() {
                 <Panel className="creation-replica-analyze">
                   <div className="creation-panel-title-row">
                     <span>拆解控制</span>
-                    {displayShots.length > 0 && (
-                      <small>已拆解 {displayShots.length} 个镜头</small>
-                    )}
+                    <span className="creation-replica-meta">
+                      <span className="creation-replica-project-name">
+                        {project?.name}
+                      </span>
+                      {displayShots.length > 0 && (
+                        <small>已拆解 {displayShots.length} 个镜头</small>
+                      )}
+                    </span>
                   </div>
                   <div className="creation-upload-row">
                     <Button
@@ -2424,13 +2455,11 @@ export function ReplicaPage() {
                         <Hint>生成前核对文案和费用。</Hint>
                       </>
                     ) : (
-                      <Hint>
-                        请先完成首帧置换并选定图片，再合成最终提示词。
-                      </Hint>
+                      missingFirstFrameHint
                     )}
                   </Panel>
                 ) : (
-                  <Hint>请先完成首帧置换并选定图片，再合成最终提示词。</Hint>
+                  missingFirstFrameHint
                 )}
               </div>
             </ReplicaMediaRow>
@@ -2493,6 +2522,8 @@ function ReplicaFirstFrameSection({
   const [firstFrameSelection, setFirstFrameSelection] =
     useState<AnalysisVersion | null>(null);
   const [, setLeafBusy] = useState(false);
+  /** 场景形象素材自身的宽高比，由左栏预览图 onLoad 回报；未知时退回首帧比例。 */
+  const [sceneRatio, setSceneRatio] = useState<number | null>(null);
   const referenceMatchInFlightRef = useRef<string | undefined>(undefined);
   const referenceRetryScheduledRef = useRef(false);
   const readOnlyRef = useRef(readOnly);
@@ -2518,6 +2549,8 @@ function ReplicaFirstFrameSection({
   const confirmedSelectionKeyRef = useRef<string | undefined>(undefined);
   const previousProjectIdRef = useRef<string | undefined>(undefined);
   const projectEffectMountedRef = useRef(false);
+  /** 草稿素材补取的世代号：换项目或重选首帧后，旧请求的结果都作废。 */
+  const draftMaterialsRequestRef = useRef(0);
 
   const firstFrameAssetId = firstFrameSelection
     ? (readFirstFrameSelectionPayload(firstFrameSelection)
@@ -2534,11 +2567,9 @@ function ReplicaFirstFrameSection({
     } as Partial<StudioDraft>);
   }, []);
 
-  // 项目可能尚未并入 data.projects（上传后列表刷新的间隙），草稿里的 id 仍是可用的兜底；
-  // 但列表为空说明账号确实还没有项目，仍走引导空态，不拿草稿 id 硬撑出空壳界面。
-  const projectId =
-    project?.id ??
-    (data.projects.length > 0 ? state.draft.projectId : undefined);
+  // 只认真实存在于 data.projects 的项目。早先会在列表非空时拿草稿里的 id 兜底，
+  // 但那个 id 可能已经被删/换号，于是用一份不存在的项目渲染出空壳界面（缺陷 A4）。
+  const projectId = project?.id;
   const referenceAssetId =
     project?.reference_asset_id ?? state.draft.sourceAssetId ?? null;
   // 换项目时重置全部下游状态与草稿中的旧首帧。
@@ -2559,6 +2590,7 @@ function ReplicaFirstFrameSection({
     characterVersionIdRef.current = undefined;
     sourceFrameSelectionIdRef.current = undefined;
     confirmedSelectionKeyRef.current = undefined;
+    draftMaterialsRequestRef.current += 1;
     if (projectChanged && projectId && !review && !readOnlyRef.current) {
       patchDraftRef.current({
         firstFrameId: undefined,
@@ -2704,8 +2736,10 @@ function ReplicaFirstFrameSection({
       // 确认首帧此前只写了 id，asset 从未注册进 data.assets，「已选首帧」与左栏就
       // 永远取不到图。复用草稿素材读取（会解析 firstFrameId 并取签名地址）补上，
       // 按 id 合并以免覆盖已有地址。
+      const requestId = ++draftMaterialsRequestRef.current;
       void loadDraftMaterials({ ...draftRef.current, ...firstFramePatch })
         .then((loaded) => {
+          if (draftMaterialsRequestRef.current !== requestId) return;
           if (!loaded.assets.length) return;
           updateDataRef.current((current) => ({
             ...current,
@@ -2713,6 +2747,8 @@ function ReplicaFirstFrameSection({
           }));
         })
         .catch(() => {
+          // 过期请求的失败与当前首帧无关，弹提示会把用户误导去重选一次。
+          if (draftMaterialsRequestRef.current !== requestId) return;
           // 已确认的首帧不因取图失败回滚；下次进页面或重选首帧会再取一次。
           notifyRef.current("首帧预览暂时加载失败，重新选择首帧可重试。");
         });
@@ -2810,51 +2846,103 @@ function ReplicaFirstFrameSection({
       ) : review ? (
         <>
           <Hint>审核示例 · 只读</Hint>
-          <div className="media-row">
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">源画面</div>
+          {/* 审核示例必须与生产分支同构（三带 + .media-frame），否则复刻页在
+              审核入口下的真实布局无法被验证；这里只把真实组件换成静态示例数据。 */}
+          <Panel className="creation-replacement-source">
+            <div className="creation-panel-title-row">
+              <span>源画面</span>
+            </div>
+            <div className="media-frame">
               <Media
                 asset={reviewOriginal}
                 alt="审核示例原画面"
                 aspectRatio="adaptive"
               />
-            </Panel>
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">场景形象</div>
-              <select
-                aria-label="人物场景形象"
-                className="creation-project-select"
-                disabled
-                value={reviewScene?.id ?? ""}
-              >
-                {reviewSceneOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <Media
-                asset={reviewScene}
-                alt="审核示例场景图"
-                aspectRatio="adaptive"
-              />
-            </Panel>
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">置换首帧</div>
-              <div className="creation-review-candidates">
-                {reviewCandidates.map(({ id, asset }, index) => (
-                  <figure key={id}>
-                    <Media
-                      asset={asset}
-                      alt={`审核示例候选 ${index + 1}`}
-                      aspectRatio="adaptive"
-                    />
-                    <figcaption>候选 {index + 1}</figcaption>
-                  </figure>
-                ))}
+            </div>
+          </Panel>
+          {/* 与生产分支同构：行的比例取两栏较大者，两侧面板各自覆盖。 */}
+          <ReplicaMediaRow ratio={Math.max(sceneRatio ?? ratio, ratio)}>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(sceneRatio ?? ratio)}
+            >
+              <div className="creation-panel-title-row">
+                <span>场景形象</span>
               </div>
+              <section className="flow-character-row flow-character-row--banded">
+                <div className="band-ctrl">
+                  <select
+                    aria-label="人物场景形象"
+                    className="creation-project-select"
+                    disabled
+                    value={reviewScene?.id ?? ""}
+                  >
+                    {reviewSceneOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="media-frame">
+                  <Media
+                    asset={reviewScene}
+                    alt="审核示例场景图"
+                    aspectRatio="adaptive"
+                    onAspectRatioChange={setSceneRatio}
+                  />
+                </div>
+                <div className="band-act" />
+              </section>
             </Panel>
-          </div>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(ratio)}
+            >
+              <div className="creation-panel-title-row">
+                <span>置换首帧</span>
+              </div>
+              <section className="first-frame-selection first-frame-selection--compact first-frame-selection--banded">
+                {/* 首个子元素必须是标题块：creation.css 用它做视觉隐藏，
+                    同时把它排除在带布局之外，示例这里也要保持同构。 */}
+                <div>
+                  <h3 id="first-frame-title">人物置换首帧</h3>
+                </div>
+                <div className="band-ctrl">
+                  <select
+                    aria-label="画面比例"
+                    className="creation-project-select"
+                    disabled
+                    value="9:16"
+                  >
+                    <option value="9:16">9:16 竖屏</option>
+                  </select>
+                </div>
+                <div className="media-frame">
+                  <Media
+                    asset={reviewCandidates[0]?.asset}
+                    alt="审核示例候选 1"
+                    aspectRatio="adaptive"
+                  />
+                </div>
+                <div className="band-act center">
+                  <span className="status-note">审核示例</span>
+                </div>
+                <div className="creation-review-candidates">
+                  {reviewCandidates.map(({ id, asset }, index) => (
+                    <figure key={id}>
+                      <Media
+                        asset={asset}
+                        alt={`审核示例候选 ${index + 1}`}
+                        aspectRatio="adaptive"
+                      />
+                      <figcaption>候选 {index + 1}</figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </section>
+            </Panel>
+          </ReplicaMediaRow>
         </>
       ) : (
         <>
@@ -2874,22 +2962,31 @@ function ReplicaFirstFrameSection({
               videoDurationSeconds={videoDurationSeconds}
             />
           </Panel>
-          <ReplicaMediaRow ratio={ratio}>
-            <Panel className="creation-replacement-step banded">
+          {/* 行上只能有一份 --row-ratio，取两栏较大者，左栏宽度才装得下较宽的那张图；
+              两侧面板各自覆盖回自己的比例。 */}
+          <ReplicaMediaRow ratio={Math.max(sceneRatio ?? ratio, ratio)}>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(sceneRatio ?? ratio)}
+            >
               <div className="creation-panel-title-row">
                 <span>场景形象</span>
               </div>
               <CharacterSelection
                 banded
-                sceneOnly
+                onAspectRatioChange={setSceneRatio}
                 onBusyChange={setLeafBusy}
                 onVersionChange={handleCharacterChange}
                 projectId={projectId}
                 readOnly={readOnly}
+                sceneOnly
                 variant="inline"
               />
             </Panel>
-            <Panel className="creation-replacement-step banded">
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(ratio)}
+            >
               <div className="creation-panel-title-row">
                 <span>置换首帧</span>
               </div>

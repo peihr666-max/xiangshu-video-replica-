@@ -948,6 +948,22 @@
   gap: 10px;
 }
 
+/* 项目名回到「拆解控制」标题行右侧（复刻页曾整个丢掉项目名）。 */
+.creation-replica-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.creation-replica-project-name {
+  color: #b6afa2;
+  font-size: var(--font-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 宽度交给 useMediaRowFit 的 --media-col 驱动；max-height 会把竖版素材压成窄高条。 */
 .creation-replica-video__media {
   width: min(100%, 960px);
@@ -1899,6 +1915,23 @@
   background: #0b0c0b;
   border-radius: 8px;
   overflow: hidden;
+}
+
+/* 撞上 40% 列宽上限时，max-width 会先把宽度卡住，高度改由 flex 决定，
+   aspect-ratio 反向失效（1440 视口下 16:9 素材实测 428×306，比例 1.400）。
+   故从列宽反推高度上限：列宽 = 高度 × 比例 + 42px（与 useMediaRowFit 的
+   padCompensation 同源），反过来即 (列宽 - 42) / 比例。
+   min-height 必须一起压低——CSS 里 min-height 优先于 max-height，
+   只写 max-height 会被 --media-min-h 顶回去，比例照旧失真。
+   只在 .media-row 内生效：--media-col 由该行提供，行外没有这个量，
+   行外的媒体框（如源画面面板）不该被一个不存在的列宽卡住。 */
+.media-row .media-frame {
+  --media-fit-max-h: calc(
+    (var(--media-col, 240px) - 42px) /
+    var(--row-ratio, 0.5625)
+  );
+  max-height: var(--media-fit-max-h);
+  min-height: min(var(--media-min-h, 320px), var(--media-fit-max-h));
 }
 
 /* 三带法：左右两侧头部带/底部带等高，媒体自然上下对齐 */

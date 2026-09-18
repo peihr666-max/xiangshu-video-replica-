@@ -984,9 +984,9 @@ describe("V1.4 workspace integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
       fireEvent.click(screen.getByRole("button", { name: entry }));
 
-      // 拆解控制头部按原型只显示「拆解控制」，不再挂项目名；
-      // 改为断言项目草稿已导入、复刻流程已展开（未落到空工作区引导）。
+      // 拆解控制头部右侧显示当前项目名（复刻页曾整个丢掉项目名）。
       expect(await screen.findByText("拆解控制")).toBeInTheDocument();
+      expect(screen.getByText("张工预算项目")).toBeInTheDocument();
       expect(screen.queryByText("先导入参考视频")).not.toBeInTheDocument();
       expect(
         screen.queryByLabelText("模拟已有功能工作区"),
