@@ -177,7 +177,10 @@ REFERENCE_ROLE_MEDIA_KEYS = {
     "reference_video": "video_url",
     "reference_audio": "audio_url",
 }
-CUSTOMER_DURATION_OPTIONS = {4, 15}
+# 客户可选时长 = provider 接受的范围（validate_h3_request 校验 4–15 的每一秒），
+# 报价端点同样是 ge=4 le=15 的按秒线性计价。曾收窄成 {4, 15}，结果 12 秒的源视频
+# 被拉成 15 秒或压成 4 秒，动作节奏与口播必然失真。
+CUSTOMER_DURATION_OPTIONS = frozenset(range(4, 16))
 CUSTOMER_QUANTITY_OPTIONS = {1, 2, 4}
 MAX_GENERATION_PROMPT_CHARS = 7_000
 # A real H3 request polls for up to five minutes. Leave headroom so another
@@ -1244,7 +1247,7 @@ def compile_prompt_version(
         raise generation_error(
             422,
             "DURATION_OPTION_INVALID",
-            "Customer generation duration must be 4 or 15 seconds.",
+            "Customer generation duration must be an integer from 4 to 15 seconds.",
         )
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1499,15 +1502,13 @@ def preview_prompt_text(
     source_duration_seconds = shot_timeline_duration(shot_payload)
     duration_seconds = request.output_duration_seconds
     if duration_seconds is None:
-        rounded_duration = max(4, min(15, round(source_duration_seconds)))
-        duration_seconds = (
-            (4 if rounded_duration <= 9 else 15) if actor.role == "customer" else rounded_duration
-        )
+        # 复刻默认贴着源时长走；客户不再被二分到 4/15 两档。
+        duration_seconds = max(4, min(15, round(source_duration_seconds)))
     elif actor.role == "customer" and duration_seconds not in CUSTOMER_DURATION_OPTIONS:
         raise generation_error(
             422,
             "DURATION_OPTION_INVALID",
-            "Customer generation duration must be 4 or 15 seconds.",
+            "Customer generation duration must be an integer from 4 to 15 seconds.",
         )
     prompt_text = compile_prompt_text(
         script_payload=script_payload,
@@ -2289,7 +2290,7 @@ def create_generation_batch(
             raise generation_error(
                 422,
                 "DURATION_OPTION_INVALID",
-                "Customer generation duration must be 4 or 15 seconds.",
+                "Customer generation duration must be an integer from 4 to 15 seconds.",
             )
         if actor.role == "customer" and request.quantity not in CUSTOMER_QUANTITY_OPTIONS:
             raise generation_error(

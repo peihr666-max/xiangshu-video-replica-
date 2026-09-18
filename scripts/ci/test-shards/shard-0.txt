@@ -6,6 +6,7 @@ server/tests/test_admin_session_routes.py
 server/tests/test_api_errors.py
 server/tests/test_auth_headers.py
 server/tests/test_bootstrap_all_env_pg_gate.py
+<<<<<<< HEAD
 server/tests/test_character_image_authorization.py
 server/tests/test_customer_pricing.py
 server/tests/test_cw027_admin_permission_matrix.py
@@ -19,6 +20,21 @@ server/tests/test_db_pg.py
 server/tests/test_h3_account_pool.py
 server/tests/test_health.py
 server/tests/test_material_perf_batch_urls.py
+=======
+server/tests/test_csv_export.py
+server/tests/test_customer_registration.py
+server/tests/test_cw028_shared_settings_contract.py
+server/tests/test_cw033_evidence_boundary.py
+server/tests/test_cw033_pitr_drill_validation.py
+server/tests/test_cw043_viral_import_pg.py
+server/tests/test_cw058_content_asset_pg_matrix.py
+server/tests/test_cw060_operator_isolation.py
+server/tests/test_db_pg.py
+server/tests/test_dedup_cas_pg.py
+server/tests/test_h3_prompts.py
+server/tests/test_health.py
+server/tests/test_material_thumbs.py
+>>>>>>> origin/main
 server/tests/test_migration_dialect_contract.py
 server/tests/test_ops_metrics.py
 server/tests/test_pg_test_kit.py

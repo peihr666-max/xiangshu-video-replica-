@@ -12,6 +12,7 @@ import type {
   Project,
   SimpleLibraryEntry,
   SimpleSceneLook,
+  ViralVideoItem,
 } from "../api";
 import * as live from "./live";
 import { createDraft } from "./state";
@@ -2033,5 +2034,50 @@ describe("素材按内容哈希去重命中时的复用", () => {
       materialId: "asset:reused-video",
     });
     expect(asset.url).toBe("/signed/reused.mp4");
+  });
+});
+
+describe("爆款视频封面地址", () => {
+  const item = {
+    platform: "douyin",
+    videoId: "v1",
+    category: "民宿",
+    title: "标题",
+    author: "作者",
+    authorAvatar: null,
+    verified: false,
+    coverUrl: "/api/viral/covers/douyin/v1",
+    durationMs: 15_000,
+    likes: 1,
+    comments: null,
+    shares: null,
+    collects: null,
+    publishedAt: null,
+    publishedDisplay: null,
+    likeDisplay: null,
+    tags: [],
+    hasPlayableAudio: false,
+    playUrl: null,
+  } as ViralVideoItem;
+
+  // 封面经服务端转存后签发站内相对路径（viral_media.CoverEnricher.stable_url）。
+  // 桌面端页面 origin 不是 API origin，不绝对化就是一排空白封面框。
+  it("站内封面按 API 地址绝对化", () => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
+    expect(live.studioVideoFromViral(item).poster).toBe(
+      "https://studio.example.com/backend/api/viral/covers/douyin/v1",
+    );
+  });
+
+  it("源站绝对地址与缺封面时原样保留", () => {
+    expect(
+      live.studioVideoFromViral({
+        ...item,
+        coverUrl: "https://cdn.example/a.jpg",
+      }).poster,
+    ).toBe("https://cdn.example/a.jpg");
+    expect(live.studioVideoFromViral({ ...item, coverUrl: null }).poster).toBe(
+      "",
+    );
   });
 });
