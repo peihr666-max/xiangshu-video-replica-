@@ -732,6 +732,31 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/studio/publish/browser/accounts/import": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Import Account
+     * @description Persist a desktop WebView2 login exported once at connect time.
+     *
+     *     The desktop client keeps its own WebView2 profile for manual publishing;
+     *     this copy lets the server-side worker deliver on the account's behalf. The
+     *     account's avatar is copied into our own storage here so the studio never
+     *     hotlinks a platform CDN.
+     */
+    post: operations["import_account_api_studio_publish_browser_accounts_import_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/studio/publish/browser/accounts/{account_id}": {
     parameters: {
       query?: never;
@@ -777,6 +802,110 @@ export interface paths {
     put?: never;
     /** Login */
     post: operations["login_api_studio_publish_browser_logins_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/records": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Publish Records */
+    get: operations["read_publish_records_api_studio_publish_records_get"];
+    put?: never;
+    /** Create Publish Record */
+    post: operations["create_publish_record_api_studio_publish_records_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/records/summary": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Publish Summary */
+    get: operations["read_publish_summary_api_studio_publish_records_summary_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/records/{record_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Publish Record */
+    get: operations["read_publish_record_api_studio_publish_records__record_id__get"];
+    put?: never;
+    post?: never;
+    /** Delete Publish Record */
+    delete: operations["delete_publish_record_api_studio_publish_records__record_id__delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/records/{record_id}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Cancel Publish Record */
+    post: operations["cancel_publish_record_api_studio_publish_records__record_id__cancel_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/records/{record_id}/retry": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Retry Publish Record */
+    post: operations["retry_publish_record_api_studio_publish_records__record_id__retry_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/studio/publish/records/{record_id}/sync": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Sync Publish Record */
+    post: operations["sync_publish_record_api_studio_publish_records__record_id__sync_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1332,7 +1461,15 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create Download Urls */
+    /**
+     * Create Download Urls
+     * @description 批量签发素材预览授权（MATERIAL-PERF-A P0-2）。
+     *
+     *     素材库网格此前对每个瓦片各发一次单资产授权（N+1 写连接 + 审计往返）；
+     *     本端点在一个写事务内逐资产复用与单资产端点完全相同的授权逻辑。他属/
+     *     缺失/未完成上传按条返回 ``error_code``（属主掩蔽与单端点同形），不拖垮
+     *     整批；审计仍逐资产落行，口径不因批量而变稀。
+     */
     post: operations["create_download_urls_api_assets_download_urls_post"];
     delete?: never;
     options?: never;
@@ -1975,27 +2112,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/control/settings/rates/history": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * List Daily Prices
-     * @description 已录入的每日对外售价（按日期倒序）。
-     */
-    get: operations["list_daily_prices_api_control_settings_rates_history_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/control/profit/daily-price": {
+  "/api/control/first-frame-tasks/{task_id}/reconcile": {
     parameters: {
       query?: never;
       header?: never;
@@ -2003,107 +2120,9 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /**
-     * Upsert Daily Price
-     * @description 录入/更新某日的对外售价（写契约 + 审计 + 返回最新价格列表）。
-     */
-    put: operations["upsert_daily_price_api_control_profit_daily_price_put"];
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/control/profit/overview": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Profit Overview
-     * @description 日维度收入/成本/毛利/利润率（标准收入口径，Asia/Shanghai 日界）。
-     */
-    get: operations["profit_overview_api_control_profit_overview_get"];
     put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/control/profit/overview.csv": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Export Profit Csv */
-    get: operations["export_profit_csv_api_control_profit_overview_csv_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/control/profit/costs": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Cost Overview */
-    get: operations["cost_overview_api_control_profit_costs_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/control/profit/costs.csv": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Export Costs Csv */
-    get: operations["export_costs_csv_api_control_profit_costs_csv_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/control/settings/rates": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Read Rates
-     * @description 费率表与最近变更（审计员与管理员均可读）。
-     */
-    get: operations["read_rates_api_control_settings_rates_get"];
-    /**
-     * Update Rates
-     * @description 批量调整科目单价：逐科目记 audit（old/new），同事务提交。
-     */
-    put: operations["update_rates_api_control_settings_rates_put"];
-    post?: never;
+    /** Reconcile First Frame Task */
+    post: operations["reconcile_first_frame_task_api_control_first_frame_tasks__task_id__reconcile_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -5861,6 +5880,47 @@ export interface components {
       username: string;
       /** Verified At */
       verified_at: number;
+      /**
+       * Status
+       * @default connected
+       * @enum {string}
+       */
+      status: "connected" | "invalid";
+      /** Error Message */
+      error_message?: string | null;
+      /**
+       * Source
+       * @default cloud
+       * @enum {string}
+       */
+      source: "cloud" | "desktop";
+      /** Avatar Url */
+      avatar_url?: string | null;
+    };
+    /**
+     * BrowserAccountImportRequest
+     * @description Desktop WebView2 login exported once at connect time (cookies + localStorage).
+     */
+    BrowserAccountImportRequest: {
+      /**
+       * Platform
+       * @enum {string}
+       */
+      platform: "douyin" | "wechat_channels" | "xiaohongshu";
+      identity: components["schemas"]["BrowserIdentity"];
+      /** Storage State */
+      storage_state: {
+        [key: string]: unknown;
+      };
+    };
+    /** BrowserIdentity */
+    BrowserIdentity: {
+      /** Platform User Id */
+      platform_user_id: string;
+      /** Username */
+      username: string;
+      /** Avatar Url */
+      avatar_url?: string | null;
     };
     /** BrowserLoginRequest */
     BrowserLoginRequest: {
@@ -6647,73 +6707,6 @@ export interface components {
       /** Expected Balance */
       expected_balance: number;
     };
-    /** CostDayRow */
-    CostDayRow: {
-      /** Day */
-      day: string;
-      /** Video Count */
-      video_count: number;
-      /** Output Seconds */
-      output_seconds: number;
-      /** Video 768P Fen */
-      video_768p_fen: number;
-      /** Video 2K Fen */
-      video_2k_fen: number;
-      /** Analysis Fen */
-      analysis_fen: number;
-      /** Image Fen */
-      image_fen: number;
-      /** Context Ir Fen */
-      context_ir_fen: number;
-      /** Total Cost Fen */
-      total_cost_fen: number;
-      /** Unknown Count */
-      unknown_count: number;
-    };
-    /** CostOverviewResponse */
-    CostOverviewResponse: {
-      /** Days */
-      days: components["schemas"]["CostDayRow"][];
-      /** Records */
-      records: components["schemas"]["CostRecordRow"][];
-      /** Record Total */
-      record_total: number;
-      /** Records Truncated */
-      records_truncated: boolean;
-      /** Total Cost Fen */
-      total_cost_fen: number;
-      /** Total Output Seconds */
-      total_output_seconds: number;
-      /** Average Video Cost Per Second Fen */
-      average_video_cost_per_second_fen: number | null;
-      /** Unknown Count */
-      unknown_count: number;
-    };
-    /** CostRecordRow */
-    CostRecordRow: {
-      /** Id */
-      id: string;
-      /** Occurred At */
-      occurred_at: string;
-      /** Source Type */
-      source_type: string;
-      /** Source Id */
-      source_id: string;
-      /** Subject */
-      subject: string;
-      /** Resolution */
-      resolution: string | null;
-      /** Unit */
-      unit: string;
-      /** Usage Amount */
-      usage_amount: number | null;
-      /** Unit Price Fen */
-      unit_price_fen: number;
-      /** Cost Fen */
-      cost_fen: number | null;
-      /** Status */
-      status: string;
-    };
     /** CreateAnalysisRequest */
     CreateAnalysisRequest: {
       /** Asset Id */
@@ -6991,49 +6984,6 @@ export interface components {
       /** Unit Price Fen */
       unit_price_fen: number | null;
     };
-    /** DailyPriceRow */
-    DailyPriceRow: {
-      /** Price Date */
-      price_date: string;
-      /** Price 768P Fen */
-      price_768p_fen: number;
-      /** Price 2K Fen */
-      price_2k_fen: number;
-      /** Note */
-      note: string | null;
-      /** Created By Username */
-      created_by_username: string | null;
-    };
-    /**
-     * DailyPriceUpsertRequest
-     * @description 每日对外售价：upsert（同日重复录入即改价），契约 + 审计。
-     */
-    DailyPriceUpsertRequest: {
-      /**
-       * Confirm
-       * @default false
-       */
-      confirm: boolean;
-      /**
-       * Reason
-       * @default
-       */
-      reason: string;
-      /**
-       * Price Date
-       * @description 生效日期 YYYY-MM-DD（Asia/Shanghai）
-       */
-      price_date: string;
-      /** Price 768P Fen */
-      price_768p_fen: number;
-      /** Price 2K Fen */
-      price_2k_fen: number;
-      /**
-       * Note
-       * @default
-       */
-      note: string;
-    };
     /** DeliverRequest */
     DeliverRequest: {
       /**
@@ -7192,6 +7142,23 @@ export interface components {
        */
       reason: string;
     };
+    /** DownloadUrlItem */
+    DownloadUrlItem: {
+      /** Asset Id */
+      asset_id: string;
+      /** Url */
+      url?: string | null;
+      /** Sha256 */
+      sha256?: string | null;
+      /** Size Bytes */
+      size_bytes?: number | null;
+      /** Content Type */
+      content_type?: string | null;
+      /** Error Code */
+      error_code?: string | null;
+      /** Thumbnail Url */
+      thumbnail_url?: string | null;
+    };
     /** DownloadUrlResponse */
     DownloadUrlResponse: {
       /** Url */
@@ -7201,23 +7168,6 @@ export interface components {
     DownloadUrlsRequest: {
       /** Asset Ids */
       asset_ids: string[];
-    };
-    /** DownloadUrlItem */
-    DownloadUrlItem: {
-      /** Asset Id */
-      asset_id: string;
-      /** Url */
-      url: string | null;
-      /** Sha256 */
-      sha256: string | null;
-      /** Size Bytes */
-      size_bytes: number | null;
-      /** Content Type */
-      content_type: string | null;
-      /** Error Code */
-      error_code: string | null;
-      /** Thumbnail Url */
-      thumbnail_url?: string | null;
     };
     /** DownloadUrlsResponse */
     DownloadUrlsResponse: {
@@ -7232,10 +7182,13 @@ export interface components {
        * @enum {string}
        */
       model: "gpt-image-2" | "nano-banana-pro-2k";
-      /** Replace Scene — default false */
-      replace_scene?: boolean;
       /** Prompt */
       prompt?: string | null;
+      /**
+       * Replace Scene
+       * @default false
+       */
+      replace_scene: boolean;
       /**
        * Quantity
        * @default 3
@@ -7346,10 +7299,13 @@ export interface components {
        * @enum {string}
        */
       model: "gpt-image-2" | "nano-banana-pro-2k";
-      /** Replace Scene — default false */
-      replace_scene?: boolean;
       /** Prompt */
       prompt?: string | null;
+      /**
+       * Replace Scene
+       * @default false
+       */
+      replace_scene: boolean;
       /**
        * Quantity
        * @default 3
@@ -8376,37 +8332,6 @@ export interface components {
       expected_version: number;
       config: components["schemas"]["PricingConfig"];
     };
-    /** ProfitDayRow */
-    ProfitDayRow: {
-      /** Day */
-      day: string;
-      /** Video Count */
-      video_count: number;
-      /** Settled Seconds */
-      settled_seconds: number;
-      /** Revenue Fen */
-      revenue_fen: number;
-      /** Cost Fen */
-      cost_fen: number | null;
-      /** Gross Fen */
-      gross_fen: number | null;
-      /** Margin Pct */
-      margin_pct: number | null;
-      /**
-       * Cost Unknown Count
-       * @default 0
-       */
-      cost_unknown_count: number;
-    };
-    /** ProfitOverviewResponse */
-    ProfitOverviewResponse: {
-      /** Prices */
-      prices: components["schemas"]["DailyPriceRow"][];
-      /** Days */
-      days: components["schemas"]["ProfitDayRow"][];
-      /** Cost Coverage Note */
-      cost_coverage_note: string;
-    };
     /** ProjectCharacterAssetOption */
     ProjectCharacterAssetOption: {
       /** Character Asset Id */
@@ -8720,6 +8645,111 @@ export interface components {
       /** Created At */
       created_at: string;
     };
+    /** PublishRecordActionResponse */
+    PublishRecordActionResponse: {
+      record: components["schemas"]["PublishRecordResponse"];
+    };
+    /** PublishRecordCreateRequest */
+    PublishRecordCreateRequest: {
+      /** Account Id */
+      account_id: string;
+      /** Video Material Id */
+      video_material_id: string;
+      /** Cover Material Id */
+      cover_material_id?: string | null;
+      /**
+       * Title
+       * @default
+       */
+      title: string;
+      /**
+       * Description
+       * @default
+       */
+      description: string;
+      /** Tags */
+      tags?: string[];
+      /** Scheduled At */
+      scheduled_at?: string | null;
+      /** Options */
+      options?: {
+        [key: string]: unknown;
+      };
+    };
+    /** PublishRecordDeleteResponse */
+    PublishRecordDeleteResponse: {
+      /** Deleted */
+      deleted: boolean;
+    };
+    /** PublishRecordListResponse */
+    PublishRecordListResponse: {
+      /** Records */
+      records: components["schemas"]["PublishRecordResponse"][];
+    };
+    /** PublishRecordResponse */
+    PublishRecordResponse: {
+      /** Id */
+      id: string;
+      /** Platform */
+      platform: string;
+      /** Account Id */
+      account_id: string | null;
+      /** Account Username */
+      account_username: string | null;
+      /** Video Asset Id */
+      video_asset_id: string;
+      /** Cover Asset Id */
+      cover_asset_id: string | null;
+      /** Title */
+      title: string;
+      /** Description */
+      description: string;
+      /** Tags */
+      tags: string[];
+      /** Scheduled At */
+      scheduled_at: string | null;
+      /** Status */
+      status: string;
+      /** Delivery Mode */
+      delivery_mode: string | null;
+      /** Platform Item Id */
+      platform_item_id: string | null;
+      /** Platform Short Url */
+      platform_short_url: string | null;
+      /** Platform Status */
+      platform_status: string | null;
+      /** Stats */
+      stats: {
+        [key: string]: unknown;
+      } | null;
+      /** Stats Synced At */
+      stats_synced_at: string | null;
+      /** Sync Requested */
+      sync_requested: boolean;
+      /** Error Message */
+      error_message: string | null;
+      /** Published At */
+      published_at: string | null;
+      /** Attempt Count */
+      attempt_count: number;
+      /** Created At */
+      created_at: string;
+      /** Updated At */
+      updated_at: string;
+    };
+    /** PublishSummaryResponse */
+    PublishSummaryResponse: {
+      /** Published Total */
+      published_total: number;
+      /** Queued Total */
+      queued_total: number;
+      /** Failed Total */
+      failed_total: number;
+      /** Play Total */
+      play_total: number;
+      /** Like Total */
+      like_total: number;
+    };
     /** PublishVerifyResponse */
     PublishVerifyResponse: {
       /** Submitted */
@@ -8750,76 +8780,6 @@ export interface components {
       reason: string;
       /** Fair Queue Enabled */
       fair_queue_enabled: boolean;
-    };
-    /** RateEntry */
-    RateEntry: {
-      /** Subject */
-      subject: string;
-      /**
-       * Kind
-       * @enum {string}
-       */
-      kind: "upstream_cost" | "external_price";
-      /**
-       * Unit
-       * @enum {string}
-       */
-      unit: "second" | "image" | "call";
-      /** Resolution */
-      resolution: string | null;
-      /** Unit Price Fen */
-      unit_price_fen: number;
-      /** Updated At */
-      updated_at: string;
-      /** Updated By Username */
-      updated_by_username: string | null;
-    };
-    /** RateHistoryEntry */
-    RateHistoryEntry: {
-      /** Subject */
-      subject: string;
-      /** Old Unit Price Fen */
-      old_unit_price_fen: number | null;
-      /** New Unit Price Fen */
-      new_unit_price_fen: number;
-      /** Reason */
-      reason: string;
-      /** Actor Username */
-      actor_username: string | null;
-      /** Created At */
-      created_at: string;
-    };
-    /** RateUpdate */
-    RateUpdate: {
-      /** Subject */
-      subject: string;
-      /** Unit Price Fen */
-      unit_price_fen: number;
-    };
-    /** RatesResponse */
-    RatesResponse: {
-      /** Rates */
-      rates: components["schemas"]["RateEntry"][];
-      /** History */
-      history: components["schemas"]["RateHistoryEntry"][];
-    };
-    /**
-     * RatesUpdateRequest
-     * @description 费率调整走共享管理写契约（T12 precedent）：幂等键、confirm、原因。
-     */
-    RatesUpdateRequest: {
-      /**
-       * Confirm
-       * @default false
-       */
-      confirm: boolean;
-      /**
-       * Reason
-       * @default
-       */
-      reason: string;
-      /** Updates */
-      updates: components["schemas"]["RateUpdate"][];
     };
     /** RechargeOrderPage */
     RechargeOrderPage: {
@@ -12236,6 +12196,39 @@ export interface operations {
       };
     };
   };
+  import_account_api_studio_publish_browser_accounts_import_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BrowserAccountImportRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BrowserAccount"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
   remove_account_api_studio_publish_browser_accounts__account_id__delete: {
     parameters: {
       query?: never;
@@ -12321,6 +12314,265 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_publish_records_api_studio_publish_records_get: {
+    parameters: {
+      query?: {
+        status?: string | null;
+        platform?: string | null;
+        limit?: number;
+      };
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordListResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  create_publish_record_api_studio_publish_records_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PublishRecordCreateRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_publish_summary_api_studio_publish_records_summary_get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishSummaryResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  read_publish_record_api_studio_publish_records__record_id__get: {
+    parameters: {
+      query?: never;
+      header?: {
+        "X-Dev-User-Id"?: string | null;
+        Authorization?: string | null;
+      };
+      path: {
+        record_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  delete_publish_record_api_studio_publish_records__record_id__delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        record_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordDeleteResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  cancel_publish_record_api_studio_publish_records__record_id__cancel_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        record_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordActionResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  retry_publish_record_api_studio_publish_records__record_id__retry_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        record_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordActionResponse"];
+        };
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+    };
+  };
+  sync_publish_record_api_studio_publish_records__record_id__sync_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        record_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PublishRecordActionResponse"];
+        };
       };
       /** @description Validation Error */
       422: {
@@ -13625,12 +13877,6 @@ export interface operations {
       path?: never;
       cookie?: never;
     };
-    /** @description 批量签发素材预览授权（MATERIAL-PERF-A P0-2）。
-
-    素材库网格此前对每个瓦片各发一次单资产授权（N+1 写连接 + 审计往返）；
-    本端点在一个写事务内逐资产复用与单资产端点完全相同的授权逻辑。他属/
-    缺失/未完成上传按条返回 ``error_code``（属主掩蔽与单端点同形），不拖垮
-    整批；审计仍逐资产落行，口径不因批量而变稀。 */
     requestBody: {
       content: {
         "application/json": components["schemas"]["DownloadUrlsRequest"];
@@ -14849,77 +15095,13 @@ export interface operations {
       };
     };
   };
-  list_daily_prices_api_control_settings_rates_history_get: {
-    parameters: {
-      query?: {
-        limit?: number;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["DailyPriceRow"][];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  upsert_daily_price_api_control_profit_daily_price_put: {
+  reconcile_first_frame_task_api_control_first_frame_tasks__task_id__reconcile_post: {
     parameters: {
       query?: never;
       header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["DailyPriceUpsertRequest"];
+      path: {
+        task_id: string;
       };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["DailyPriceRow"][];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  profit_overview_api_control_profit_overview_get: {
-    parameters: {
-      query?: {
-        lookback_days?: number;
-      };
-      header?: never;
-      path?: never;
       cookie?: never;
     };
     requestBody?: never;
@@ -14930,157 +15112,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ProfitOverviewResponse"];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  export_profit_csv_api_control_profit_overview_csv_get: {
-    parameters: {
-      query?: {
-        lookback_days?: number;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  cost_overview_api_control_profit_costs_get: {
-    parameters: {
-      query?: {
-        lookback_days?: number;
-        subject?: string | null;
-        resolution?: string | null;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["CostOverviewResponse"];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  export_costs_csv_api_control_profit_costs_csv_get: {
-    parameters: {
-      query?: {
-        lookback_days?: number;
-        subject?: string | null;
-        resolution?: string | null;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": unknown;
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
-        };
-      };
-    };
-  };
-  read_rates_api_control_settings_rates_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["RatesResponse"];
-        };
-      };
-    };
-  };
-  update_rates_api_control_settings_rates_put: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["RatesUpdateRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["RatesResponse"];
+          "application/json": {
+            [key: string]: unknown;
+          };
         };
       };
       /** @description Validation Error */

@@ -4709,7 +4709,7 @@ export async function getMaterialBatchPreviews(
       kind: "material_image",
       sha256: item.sha256 ?? "",
       size_bytes: item.size_bytes ?? 0,
-      content_type: item.content_type,
+      content_type: item.content_type ?? null,
     };
     results[item.asset_id] = await materialPreviewAfterAuthorization(
       context,
