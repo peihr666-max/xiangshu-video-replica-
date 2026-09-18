@@ -32,7 +32,7 @@ from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
-from app.material_thumbs import THUMBNAIL_URL_EXPIRES_IN
+from app.material_thumbs import THUMBNAIL_URL_EXPIRES_IN, thumbnail_key_for
 from app.media import storage_key_from_uri
 from app.media_routes import (
     api_base_url,
@@ -1112,11 +1112,15 @@ def _signed_thumbnail_url(
     except (TypeError, ValueError):
         return None
     thumbnail_key = metadata.get("thumbnail_key") if isinstance(metadata, dict) else None
-    if not isinstance(thumbnail_key, str) or not thumbnail_key:
-        return None
     try:
         storage = storage_for_asset(conn, str(row["storage_uri"]))
-        if storage.provider == "cos":
+        if not isinstance(thumbnail_key, str) or not thumbnail_key:
+            # 历史素材（抽帧写入点上线前入库，或当初抽帧失败）没有记键。派生键
+            # 由原对象键确定性推导，这里照签，首次加载时由 signed-objects 现场
+            # 补齐——历史素材因此不需要回填脚本跑批。对象此刻还不存在，不能走
+            # 直连（COS 预签名对缺失对象只会 404，不会触发派生）。
+            thumbnail_key = thumbnail_key_for(storage_key_from_uri(str(row["storage_uri"])))
+        elif storage.provider == "cos":
             # 缩略图直连对象存储：派生小图不再经应用服务器逐字节转发（网格一页
             # 24 张瓦片过去就是 24 次穿透 worker，且代理响应是 no-store，翻页
             # 必然全量重拉）。字节搬运交给对象存储，应用只负责签名。

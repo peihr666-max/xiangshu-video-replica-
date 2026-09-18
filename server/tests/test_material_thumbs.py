@@ -100,6 +100,56 @@ def test_store_video_thumbnail_puts_adjacent_object_and_returns_key() -> None:
     assert stored is not None and stored.startswith(JPEG_MAGIC)
 
 
+def test_derives_thumbnail_on_demand_for_a_legacy_video() -> None:
+    """历史素材按需补齐：抽帧只发生在上传写入点，#145 之前入库的视频永远没有
+    缩略图，靠回填脚本跑批既要额外运维、又补不了将来抽帧失败的那些。改成第一次
+    有人看到它时现场派生——派生键是确定性的，重复请求天然幂等。"""
+    from app.material_thumbs import ensure_thumbnail_object
+    from app.storage import FakeStorageAdapter
+
+    storage = FakeStorageAdapter(provider="fake", bucket="matthumbs-tests")
+    original_key = "materials/employee_1/legacy/clip.mp4"
+    storage.put_object(original_key, make_test_video(), content_type="video/mp4")
+    thumb_key = thumbnail_key_for(original_key)
+    assert storage.head_object(thumb_key) is None
+
+    assert ensure_thumbnail_object(storage, thumb_key) is True
+    stored = storage.get_object(thumb_key)
+    assert stored is not None and stored.startswith(JPEG_MAGIC)
+
+
+def test_on_demand_derivation_is_idempotent_and_does_not_reread_the_source() -> None:
+    """已存在直接返回：多张瓦片同时请求同一条历史视频不会重复抽帧."""
+    from app.material_thumbs import ensure_thumbnail_object
+    from app.storage import FakeStorageAdapter
+
+    storage = FakeStorageAdapter(provider="fake", bucket="matthumbs-tests")
+    original_key = "materials/employee_1/legacy/clip.mp4"
+    storage.put_object(original_key, make_test_video(), content_type="video/mp4")
+    thumb_key = thumbnail_key_for(original_key)
+    assert ensure_thumbnail_object(storage, thumb_key) is True
+    first = storage.get_object(thumb_key)
+
+    reads: list[str] = []
+    original_get = storage.get_object
+    storage.get_object = lambda key: (reads.append(key), original_get(key))[1]  # type: ignore[method-assign]
+    assert ensure_thumbnail_object(storage, thumb_key) is True
+    assert original_key not in reads
+    storage.get_object = original_get  # type: ignore[method-assign]
+    assert storage.get_object(thumb_key) == first
+
+
+def test_on_demand_derivation_reports_failure_without_raising() -> None:
+    """源对象缺失或不可解码只是没有缩略图，绝不能拖垮这次预览请求."""
+    from app.material_thumbs import ensure_thumbnail_object
+    from app.storage import FakeStorageAdapter
+
+    storage = FakeStorageAdapter(provider="fake", bucket="matthumbs-tests")
+    assert ensure_thumbnail_object(storage, "materials/x/missing.mp4.thumb.jpg") is False
+    storage.put_object("materials/x/bad.mp4", b"garbage", content_type="video/mp4")
+    assert ensure_thumbnail_object(storage, "materials/x/bad.mp4.thumb.jpg") is False
+
+
 def test_store_video_thumbnail_never_breaks_on_bad_content() -> None:
     from app.storage import FakeStorageAdapter
 
@@ -115,7 +165,7 @@ def test_store_video_thumbnail_never_breaks_on_bad_content() -> None:
 import hashlib  # noqa: E402
 from collections.abc import Iterator  # noqa: E402
 from contextlib import contextmanager  # noqa: E402
-from urllib.parse import parse_qs, urlsplit  # noqa: E402
+from urllib.parse import parse_qs, unquote, urlsplit  # noqa: E402
 
 import psycopg  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
@@ -318,9 +368,12 @@ def test_batch_signs_seven_day_thumbnail_url_for_videos_with_thumb(
     expires = int(query["expires"][0])
     assert 6 * DAY <= expires - int(time.time()) <= 8 * DAY
     assert urlsplit(items["thumb_video"]["url"]).path.startswith("/api/assets/signed-objects/")
-    # 历史无缩略图视频：主 URL 照常，缩略图 URL 为 None（前端降级占位）。
+    # 历史无缩略图视频：照签确定性派生键，首次加载时由 signed-objects 现场补齐，
+    # 因此不再返回 None（前端不必为「视频却没有封面」单独降级）。
     assert items["legacy_video"]["url"] is not None
-    assert items["legacy_video"]["thumbnail_url"] is None
+    legacy_thumb = items["legacy_video"]["thumbnail_url"]
+    assert legacy_thumb is not None
+    assert "legacy_video.mp4.thumb.jpg" in unquote(legacy_thumb)
     app.dependency_overrides.clear()
 
 

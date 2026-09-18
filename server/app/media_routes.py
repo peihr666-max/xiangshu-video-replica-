@@ -22,7 +22,11 @@ from app.auth import AuthenticatedUser, CurrentUser, Database, authenticate_user
 from app.customer_fence import BusinessDbDep, BusinessReadConn
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
-from app.material_thumbs import THUMBNAIL_SUFFIX, THUMBNAIL_URL_EXPIRES_IN
+from app.material_thumbs import (
+    THUMBNAIL_SUFFIX,
+    THUMBNAIL_URL_EXPIRES_IN,
+    ensure_thumbnail_object,
+)
 from app.media import (
     MAX_UPLOAD_BYTES,
     FFprobeVideoProbe,
@@ -822,6 +826,12 @@ def get_signed_object(
 ) -> Response:
     """Proxy a revocable signed grant for local or private cloud storage."""
     storage = _prepare_signed_object_read(object_key=object_key, request=request)
+    if object_key.endswith(THUMBNAIL_SUFFIX):
+        # 历史素材没有缩略图对象（抽帧原本只在上传写入点发生）。授权侧照签确定性
+        # 派生键，这里首次读取时现场补齐，历史素材因此不需要回填脚本。派生失败
+        # 只是这条没有缩略图，继续走下面的读取并以 404 收场，由前端降级占位。
+        if not ensure_thumbnail_object(storage, object_key):
+            logger.info("thumbnail derivation unavailable for %s", object_key)
     return _read_stored_object(
         storage,
         object_key=object_key,
