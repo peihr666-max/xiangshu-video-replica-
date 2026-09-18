@@ -23,6 +23,7 @@ const VIEW_LABELS: Record<ProjectCharacterAssetOption["view_type"], string> = {
 };
 
 export function CharacterSelection({
+  banded = false,
   onBusyChange,
   onSelectionChange,
   onVersionChange,
@@ -31,6 +32,8 @@ export function CharacterSelection({
   variant = "full",
   sceneOnly = false,
 }: {
+  /** 三带布局（复刻页第 2 节）：控制带 / 媒体带 / 操作带，供左右栏媒体框对齐。 */
+  banded?: boolean;
   onBusyChange?: (isBusy: boolean) => void;
   onSelectionChange?: (hasSelection: boolean) => void;
   onVersionChange?: (selection: ProjectMainCharacter | null) => void;
@@ -422,69 +425,71 @@ export function CharacterSelection({
     const visibleScenePreview =
       scenePreview?.contextKey === scenePreviewContext ? scenePreview : null;
     const scenePreviewError = scenePreviewErrorContext === scenePreviewContext;
-    return (
-      <section className="flow-character-row" aria-label="角色">
-        {sceneOnly && visibleScenePreview ? (
-          <img
-            key={`${visibleScenePreview.contextKey}\0${visibleScenePreview.url}`}
-            className="flow-character-row__preview"
-            src={visibleScenePreview.url}
-            alt="已选场景图"
-            onError={() => {
-              if (
-                scenePreviewRequestIdRef.current !==
-                  visibleScenePreview.requestId ||
-                scenePreviewContextRef.current !==
-                  visibleScenePreview.contextKey
-              ) {
-                return;
-              }
-              scenePreviewRequestIdRef.current += 1;
-              setScenePreview(null);
-              setScenePreviewErrorContext(visibleScenePreview.contextKey);
-            }}
-          />
-        ) : null}
-        <label>
-          {sceneOnly ? "人物场景" : "角色"}
-          <select
-            aria-label={sceneOnly ? "人物场景形象" : "角色版本"}
-            disabled={readOnly || isRestoring || isSaving || isAutoSelecting}
-            onChange={(event) => void handleInlineChange(event.target.value)}
-            value={selectedVersionId}
-          >
-            {sceneOnly && !isRestoring && inlineVersions.length > 0 ? (
-              <option value="" disabled>
-                请选择场景形象
-              </option>
-            ) : null}
-            {isRestoring || (!hasCurrentOption && !inlineVersions.length) ? (
-              <option value="">
-                {isRestoring
-                  ? "恢复中…"
-                  : sceneOnly
-                    ? "暂无可用场景形象"
-                    : "暂无可选角色"}
-              </option>
-            ) : null}
-            {selectedVersionId && !hasCurrentOption ? (
-              <option value={selectedVersionId}>
-                {currentSummary
-                  ? `${currentSummary.identityName} · V${currentSummary.versionNumber}`
-                  : "当前角色"}
-              </option>
-            ) : null}
-            {inlineVersions.map((version) => (
-              <option
-                key={version.character_version_id}
-                value={version.character_version_id}
-              >
-                {version.identity_name} · {versionAppearanceLabel(version)} · V
-                {version.version_number}
-              </option>
-            ))}
-          </select>
-        </label>
+    const scenePreviewImage =
+      sceneOnly && visibleScenePreview ? (
+        <img
+          key={`${visibleScenePreview.contextKey}\0${visibleScenePreview.url}`}
+          className="flow-character-row__preview"
+          src={visibleScenePreview.url}
+          alt="已选场景图"
+          onError={() => {
+            if (
+              scenePreviewRequestIdRef.current !==
+                visibleScenePreview.requestId ||
+              scenePreviewContextRef.current !== visibleScenePreview.contextKey
+            ) {
+              return;
+            }
+            scenePreviewRequestIdRef.current += 1;
+            setScenePreview(null);
+            setScenePreviewErrorContext(visibleScenePreview.contextKey);
+          }}
+        />
+      ) : null;
+    const versionSelect = (
+      <label>
+        {sceneOnly ? "人物场景" : "角色"}
+        <select
+          aria-label={sceneOnly ? "人物场景形象" : "角色版本"}
+          disabled={readOnly || isRestoring || isSaving || isAutoSelecting}
+          onChange={(event) => void handleInlineChange(event.target.value)}
+          value={selectedVersionId}
+        >
+          {sceneOnly && !isRestoring && inlineVersions.length > 0 ? (
+            <option value="" disabled>
+              请选择场景形象
+            </option>
+          ) : null}
+          {isRestoring || (!hasCurrentOption && !inlineVersions.length) ? (
+            <option value="">
+              {isRestoring
+                ? "恢复中…"
+                : sceneOnly
+                  ? "暂无可用场景形象"
+                  : "暂无可选角色"}
+            </option>
+          ) : null}
+          {selectedVersionId && !hasCurrentOption ? (
+            <option value={selectedVersionId}>
+              {currentSummary
+                ? `${currentSummary.identityName} · V${currentSummary.versionNumber}`
+                : "当前角色"}
+            </option>
+          ) : null}
+          {inlineVersions.map((version) => (
+            <option
+              key={version.character_version_id}
+              value={version.character_version_id}
+            >
+              {version.identity_name} · {versionAppearanceLabel(version)} · V
+              {version.version_number}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+    const inlineNotices = (
+      <>
         {sceneOnly && !isRestoring && inlineVersions.length === 0 ? (
           <span className="status-note" role="status">
             请到人物库创建并发布人物场景形象。
@@ -532,6 +537,32 @@ export function CharacterSelection({
             {guidance}
           </span>
         ) : null}
+      </>
+    );
+    // 三带布局（复刻页第 2 节）：下拉进控制带、预览图进媒体带、操作带留空，
+    // 与左栏「源画面」的媒体带等位，两栏媒体框因此同尺寸且上下边对齐。
+    if (banded) {
+      return (
+        <section
+          className="flow-character-row flow-character-row--banded"
+          aria-label="角色"
+        >
+          <div className="band-ctrl">{versionSelect}</div>
+          <div className="media-frame">
+            {scenePreviewImage ?? (
+              <p className="file-note">选择场景形象后在此预览。</p>
+            )}
+          </div>
+          <div className="band-act" />
+          {inlineNotices}
+        </section>
+      );
+    }
+    return (
+      <section className="flow-character-row" aria-label="角色">
+        {scenePreviewImage}
+        {versionSelect}
+        {inlineNotices}
       </section>
     );
   }

@@ -18,6 +18,7 @@ import {
 import { VideoPreview } from "./VideoPreview";
 
 export function SourceFrameSelection({
+  candidatesAlwaysVisible = false,
   featureSuggestion = null,
   onBusyChange,
   onConfirmed,
@@ -28,6 +29,9 @@ export function SourceFrameSelection({
   simplified = false,
   videoDurationSeconds = null,
 }: {
+  // 复刻页第 2 节把源画面提为独立横向区域：候选帧与取帧工具常驻可见，
+  // 不再收进折叠区（简化模式的默认折叠语义保持不变）。
+  candidatesAlwaysVisible?: boolean;
   featureSuggestion?: SourceFrameCharacterFeatures | null;
   onBusyChange?: (isBusy: boolean) => void;
   onConfirmed?: () => void;
@@ -586,7 +590,10 @@ export function SourceFrameSelection({
       {materialReady && candidates.length > 0 ? (
         <details
           className="source-frame-advanced"
-          open={!simplified && manualConfirmationRequired}
+          open={
+            candidatesAlwaysVisible ||
+            (!simplified && manualConfirmationRequired)
+          }
         >
           <summary>{readOnly ? "查看源画面记录" : "查看或更换源画面"}</summary>
           <div className="source-frame-advanced__body">

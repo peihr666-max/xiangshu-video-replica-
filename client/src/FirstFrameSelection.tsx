@@ -29,6 +29,7 @@ type PendingFirstFrameGeneration = {
 };
 
 export function FirstFrameSelection({
+  banded = false,
   legacyCharacterSelected = false,
   onBusyChange,
   onSelectionChange,
@@ -38,6 +39,8 @@ export function FirstFrameSelection({
   simplified = false,
   sourceFrameSelectionId,
 }: {
+  /** 三带布局（控制带 / 媒体带 / 操作带）：供复刻页第 2 节与左栏媒体框对齐。 */
+  banded?: boolean;
   legacyCharacterSelected?: boolean;
   onBusyChange?: (isBusy: boolean) => void;
   onSelectionChange?: (selection: AnalysisVersion | null) => void;
@@ -208,8 +211,9 @@ export function FirstFrameSelection({
         }
         // P0-03-04：预选仅是建议，确认仍为人工动作；候选生成的付费语义
         // 不变（仍由用户显式点击触发）。
+        // 三带布局把候选列表收进折叠区，必须默认预选最新候选，确认按钮才有对象。
         const canAutoSelect =
-          autoSelectFirstCandidate &&
+          (autoSelectFirstCandidate || banded) &&
           !(latestState.stale || selection.stale) &&
           displayVersion.id === latest?.id &&
           !currentSelection;
@@ -296,6 +300,7 @@ export function FirstFrameSelection({
       referenceSelectionId,
       simplified,
       sourceFrameSelectionId,
+      banded,
     ],
   );
 
@@ -539,6 +544,302 @@ export function FirstFrameSelection({
     }
   }
 
+  // 下列片段同时供常规布局与 banded（复刻页第 2 节三带）布局使用：
+  // 两套布局的禁用条件、交互语义必须完全一致，只能有一份实现。
+  const sceneSettings = simplified ? (
+    <label>
+      场景设置
+      <select
+        aria-label="场景设置"
+        disabled={
+          readOnly ||
+          contextLoading ||
+          !materialReady ||
+          isSubmitting ||
+          !canGenerate
+        }
+        value={replaceScene ? "replace" : "preserve"}
+        onChange={(event) => {
+          setReplaceScene(event.target.value === "replace");
+          onSelectionChange?.(null);
+        }}
+      >
+        <option value="preserve">保留原场景</option>
+        <option value="replace">使用人物场景背景</option>
+      </select>
+    </label>
+  ) : null;
+  const aspectSettings = (
+    <label>
+      图片画幅
+      <select
+        aria-label="图片画幅"
+        value={aspectRatio}
+        disabled={
+          readOnly ||
+          contextLoading ||
+          !materialReady ||
+          isSubmitting ||
+          !canGenerate
+        }
+        onChange={(event) => {
+          setAspectRatio(event.target.value as typeof aspectRatio);
+          onSelectionChange?.(null);
+        }}
+      >
+        <option value="source">跟随原视频</option>
+        <option value="9:16">9:16 · 竖屏</option>
+        <option value="16:9">16:9 · 横屏</option>
+        <option value="1:1">1:1 · 方图</option>
+        <option value="3:4">3:4 · 竖图</option>
+        <option value="4:3">4:3 · 横图</option>
+      </select>
+    </label>
+  );
+  const generateButton = (
+    <button
+      disabled={
+        readOnly ||
+        contextLoading ||
+        !materialReady ||
+        isSubmitting ||
+        !canGenerate ||
+        batchCredits === null
+      }
+      onClick={handleGenerate}
+      type="button"
+    >
+      {isSubmitting
+        ? "正在生成"
+        : payload
+          ? banded
+            ? "重新生成候选"
+            : "再生成1张"
+          : banded
+            ? "生成候选首帧"
+            : "生成1张首帧"}
+    </button>
+  );
+  const confirmButton = (
+    <button
+      className="secondary-button"
+      disabled={
+        readOnly ||
+        contextLoading ||
+        !materialReady ||
+        isSubmitting ||
+        !selectedAssetId ||
+        !selectedPreview ||
+        !comparisonReady ||
+        !aspectMatchesVersion ||
+        isHistoryVersion
+      }
+      onClick={handleConfirm}
+      type="button"
+    >
+      {banded ? "确认此首帧" : "使用这张首帧"}
+    </button>
+  );
+  const aspectChangedNote =
+    !contextLoading && payload && !aspectMatchesVersion && !isSubmitting ? (
+      <p className="status-note">画幅或场景已更改，请重新生成后确认首帧。</p>
+    ) : null;
+  const progressBlock =
+    generationStartedAt !== null ? (
+      <div className="first-frame-generation-progress" role="status">
+        <div className="first-frame-generation-progress__heading">
+          <strong>{firstFrameTaskStageLabel(generationTask)}</strong>
+          <span>已等待 {elapsedSeconds} 秒</span>
+        </div>
+        <progress aria-label="人物置换首帧生成进度" />
+        {generationTask && !simplified ? (
+          <p>
+            任务 {generationTask.id} · 第 {Math.max(1, generationTask.attempt)}{" "}
+            次执行
+          </p>
+        ) : !generationTask ? (
+          <p>正在提交…</p>
+        ) : null}
+        <p>可离开页面，返回后继续查看。</p>
+      </div>
+    ) : null;
+  const fakeProviderNote =
+    payload?.provider === "fake" ? (
+      <p className="settings-error">模拟输出：尚未调用正式图像生成服务。</p>
+    ) : null;
+  const comparisonBlock =
+    payload?.review_mode === "HUMAN_CONFIRMATION" ? (
+      <details className="first-frame-comparison" open={!simplified}>
+        <summary>查看原图与人物参考</summary>
+        <section aria-label="首帧对照确认" className="first-frame-options">
+          <p>
+            {payload.replace_scene
+              ? "核对人物、背景和动作是否自然。"
+              : "核对人物已替换，原场景和动作保持一致。"}
+          </p>
+          {[
+            { id: payload.source_frame_asset_id, label: "原视频源画面" },
+            ...(payload.character_reference_asset_ids ?? []).map((id) => ({
+              id,
+              label: "所选场景形象",
+            })),
+          ].map(({ id, label }) =>
+            id ? (
+              <figure key={id}>
+                {previewUrls[id] ? (
+                  <img
+                    src={previewUrls[id]}
+                    alt={label}
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: 360,
+                      objectFit: "contain",
+                    }}
+                    onError={() => void handlePreviewError(id)}
+                  />
+                ) : (
+                  <p>{label}预览暂不可用，请刷新重试。</p>
+                )}
+                <figcaption>{label}</figcaption>
+              </figure>
+            ) : null,
+          )}
+        </section>
+      </details>
+    ) : null;
+  const currentPreview =
+    simplified && selectedPreview ? (
+      <VideoPreview
+        className="first-frame-current"
+        frameRatio="adaptive"
+        alt="当前首帧预览"
+        poster={selectedPreview}
+        onPosterError={() => void handlePreviewError(selectedAssetId)}
+      />
+    ) : null;
+  const candidatesFieldset = payload ? (
+    <fieldset className="first-frame-options">
+      <legend>
+        {readOnly
+          ? "候选记录（素材预览需要下载权限）"
+          : simplified
+            ? "选择一张"
+            : "查看候选效果，选择一张作为已确认首帧"}
+      </legend>
+      {payload.candidates.map((candidate, index) => (
+        <FirstFrameOption
+          candidate={candidate}
+          checked={selectedAssetId === candidate.asset_id}
+          disabled={
+            readOnly ||
+            contextLoading ||
+            isSubmitting ||
+            !previewUrls[candidate.asset_id] ||
+            isHistoryVersion
+          }
+          index={index}
+          key={candidate.asset_id}
+          onSelect={() => {
+            setSelectedAssetId(candidate.asset_id);
+            // 换候选后，未完成的两段式覆盖确认必须重新开始。
+          }}
+          onPreviewError={() => void handlePreviewError(candidate.asset_id)}
+          previewUrl={previewUrls[candidate.asset_id]}
+          readOnly={readOnly}
+        />
+      ))}
+    </fieldset>
+  ) : null;
+  const historyBlock =
+    !contextLoading && materialReady ? (
+      <details
+        open={!simplified}
+        className="first-frame-history"
+        aria-labelledby="first-frame-history-title"
+      >
+        <summary id="first-frame-history-title">历史版本</summary>
+        {readOnly ? (
+          <p className="status-note">只读身份不能生成或确认首帧。</p>
+        ) : null}
+        {history.length === 0 ? (
+          <p className="file-note">暂无历史版本。</p>
+        ) : null}
+        <div className="first-frame-history-list">
+          {history.map((historyVersion) => (
+            <button
+              className={
+                historyVersion.id === version?.id
+                  ? "history-version history-version--active"
+                  : "history-version"
+              }
+              key={historyVersion.id}
+              disabled={contextLoading || isSubmitting}
+              onClick={() => void load(historyVersion)}
+              type="button"
+            >
+              版本 #{historyVersion.version_number}
+            </button>
+          ))}
+        </div>
+      </details>
+    ) : null; // 历史版本始终渲染，常规布局展开、简化布局折叠。
+
+  /**
+   * 三带布局（复刻页第 2 节右栏）：控制带 / 媒体带 / 操作带与左栏等位，
+   * 两侧媒体框因此同尺寸且上下边对齐。候选与历史收进折叠区，
+   * 避免它们撑高媒体带、破坏左右对齐。
+   */
+  if (banded) {
+    return (
+      <section
+        className="first-frame-selection first-frame-selection--compact first-frame-selection--banded"
+        aria-labelledby="first-frame-title"
+      >
+        <div>
+          <h3 id="first-frame-title">人物置换首帧</h3>
+        </div>
+        <div className="band-ctrl">
+          {sceneSettings}
+          {aspectSettings}
+        </div>
+        <div className="media-frame">
+          {currentPreview ?? (
+            <p className="file-note">
+              {isSubmitting ? "正在生成首帧…" : "生成后在此预览并确认。"}
+            </p>
+          )}
+        </div>
+        <div className="band-act center">
+          {confirmButton}
+          {generateButton}
+        </div>
+        <p className="file-note">
+          {batchCredits === null
+            ? pricingError || "正在读取本批费用…"
+            : `本次预计 ${batchCredits} 积分；再次生成按新一次计费。`}
+        </p>
+        {aspectChangedNote}
+        {fakeProviderNote}
+        {contextLoading ? (
+          <p className="status-note">正在读取首帧候选</p>
+        ) : null}
+        {!contextLoading && error ? (
+          <p className="settings-error">{error}</p>
+        ) : null}
+        {!contextLoading && status ? (
+          <p className="setup-success">{status}</p>
+        ) : null}
+        {progressBlock}
+        <details className="first-frame-band-extras">
+          <summary>候选与历史</summary>
+          {comparisonBlock}
+          {candidatesFieldset}
+          {historyBlock}
+        </details>
+      </section>
+    );
+  }
+
   return (
     <section
       className={
@@ -613,116 +914,19 @@ export function FirstFrameSelection({
         </label>
       ) : null}
       <div className="source-frame-actions">
-        <p>
-          每次生成1张，不满意可再次生成；选定1张用于视频合成。去字幕，保留最终画面的实物文字。
-        </p>
+        <p>每次生成1张；选定1张用于视频合成。</p>
         <p>
           {batchCredits === null
             ? pricingError || "正在读取本批费用…"
             : `本次预计 ${batchCredits} 积分；再次生成按新一次计费。`}
         </p>
-        {simplified && (
-          <label>
-            场景设置
-            <select
-              aria-label="场景设置"
-              disabled={
-                readOnly ||
-                contextLoading ||
-                !materialReady ||
-                isSubmitting ||
-                !canGenerate
-              }
-              value={replaceScene ? "replace" : "preserve"}
-              onChange={(event) => {
-                setReplaceScene(event.target.value === "replace");
-                onSelectionChange?.(null);
-              }}
-            >
-              <option value="preserve">保留原场景</option>
-              <option value="replace">使用人物场景背景</option>
-            </select>
-          </label>
-        )}
-        <label>
-          图片画幅
-          <select
-            aria-label="图片画幅"
-            value={aspectRatio}
-            disabled={
-              readOnly ||
-              contextLoading ||
-              !materialReady ||
-              isSubmitting ||
-              !canGenerate
-            }
-            onChange={(event) => {
-              setAspectRatio(event.target.value as typeof aspectRatio);
-              onSelectionChange?.(null);
-            }}
-          >
-            <option value="source">跟随原视频</option>
-            <option value="9:16">9:16 · 竖屏</option>
-            <option value="16:9">16:9 · 横屏</option>
-            <option value="1:1">1:1 · 方图</option>
-            <option value="3:4">3:4 · 竖图</option>
-            <option value="4:3">4:3 · 横图</option>
-          </select>
-        </label>
-        <button
-          disabled={
-            readOnly ||
-            contextLoading ||
-            !materialReady ||
-            isSubmitting ||
-            !canGenerate ||
-            batchCredits === null
-          }
-          onClick={handleGenerate}
-          type="button"
-        >
-          {isSubmitting ? "正在生成" : payload ? "再生成1张" : "生成1张首帧"}
-        </button>
-        <button
-          className="secondary-button"
-          disabled={
-            readOnly ||
-            contextLoading ||
-            !materialReady ||
-            isSubmitting ||
-            !selectedAssetId ||
-            !selectedPreview ||
-            !comparisonReady ||
-            !aspectMatchesVersion ||
-            isHistoryVersion
-          }
-          onClick={handleConfirm}
-          type="button"
-        >
-          使用这张首帧
-        </button>
+        {sceneSettings}
+        {aspectSettings}
+        {generateButton}
+        {confirmButton}
       </div>
-      {!contextLoading && payload && !aspectMatchesVersion && !isSubmitting ? (
-        <p className="status-note">画幅或场景已更改，请重新生成后确认首帧。</p>
-      ) : null}
-      {generationStartedAt !== null ? (
-        <div className="first-frame-generation-progress" role="status">
-          <div className="first-frame-generation-progress__heading">
-            <strong>{firstFrameTaskStageLabel(generationTask)}</strong>
-            <span>已等待 {elapsedSeconds} 秒</span>
-          </div>
-          <progress aria-label="人物置换首帧生成进度" />
-          {generationTask && !simplified ? (
-            <p>
-              任务 {generationTask.id} · 第{" "}
-              {Math.max(1, generationTask.attempt)} 次执行
-            </p>
-          ) : !generationTask ? (
-            <p>正在提交…</p>
-          ) : null}
-          <p>可离开页面，返回后继续查看。</p>
-        </div>
-      ) : null}
+      {aspectChangedNote}
+      {progressBlock}
       {contextLoading ? <p className="status-note">正在读取首帧候选</p> : null}
       {!contextLoading && error ? (
         <p className="settings-error">{error}</p>
@@ -755,131 +959,13 @@ export function FirstFrameSelection({
               {payload.provider === "fake" ? "测试模式" : "正式服务"}
             </p>
           ) : null}
-          {payload.provider === "fake" ? (
-            <p className="settings-error">
-              模拟输出：尚未调用正式图像生成服务。
-            </p>
-          ) : null}
-          {payload.review_mode === "HUMAN_CONFIRMATION" ? (
-            <details className="first-frame-comparison" open={!simplified}>
-              <summary>查看原图与人物参考</summary>
-              <section
-                aria-label="首帧对照确认"
-                className="first-frame-options"
-              >
-                <p>
-                  {payload.replace_scene
-                    ? "核对人物、背景和动作是否自然。"
-                    : "核对人物已替换，原场景和动作保持一致。"}
-                </p>
-                {[
-                  { id: payload.source_frame_asset_id, label: "原视频源画面" },
-                  ...(payload.character_reference_asset_ids ?? []).map(
-                    (id) => ({
-                      id,
-                      label: "所选场景形象",
-                    }),
-                  ),
-                ].map(({ id, label }) =>
-                  id ? (
-                    <figure key={id}>
-                      {previewUrls[id] ? (
-                        <img
-                          src={previewUrls[id]}
-                          alt={label}
-                          style={{
-                            maxWidth: "100%",
-                            maxHeight: 360,
-                            objectFit: "contain",
-                          }}
-                          onError={() => void handlePreviewError(id)}
-                        />
-                      ) : (
-                        <p>{label}预览暂不可用，请刷新重试。</p>
-                      )}
-                      <figcaption>{label}</figcaption>
-                    </figure>
-                  ) : null,
-                )}
-              </section>
-            </details>
-          ) : null}
-          {simplified && selectedPreview ? (
-            <VideoPreview
-              className="first-frame-current"
-              frameRatio="adaptive"
-              alt="当前首帧预览"
-              poster={selectedPreview}
-              onPosterError={() => void handlePreviewError(selectedAssetId)}
-            />
-          ) : null}
-          <fieldset className="first-frame-options">
-            <legend>
-              {readOnly
-                ? "候选记录（素材预览需要下载权限）"
-                : simplified
-                  ? "选择一张"
-                  : "查看候选效果，选择一张作为已确认首帧"}
-            </legend>
-            {payload.candidates.map((candidate, index) => (
-              <FirstFrameOption
-                candidate={candidate}
-                checked={selectedAssetId === candidate.asset_id}
-                disabled={
-                  readOnly ||
-                  contextLoading ||
-                  isSubmitting ||
-                  !previewUrls[candidate.asset_id] ||
-                  isHistoryVersion
-                }
-                index={index}
-                key={candidate.asset_id}
-                onSelect={() => {
-                  setSelectedAssetId(candidate.asset_id);
-                  // 换候选后，未完成的两段式覆盖确认必须重新开始。
-                }}
-                onPreviewError={() =>
-                  void handlePreviewError(candidate.asset_id)
-                }
-                previewUrl={previewUrls[candidate.asset_id]}
-                readOnly={readOnly}
-              />
-            ))}
-          </fieldset>
+          {fakeProviderNote}
+          {comparisonBlock}
+          {currentPreview}
+          {candidatesFieldset}
         </>
       ) : null}
-      {!contextLoading && materialReady ? (
-        <details
-          open={!simplified}
-          className="first-frame-history"
-          aria-labelledby="first-frame-history-title"
-        >
-          <summary id="first-frame-history-title">历史版本</summary>
-          {readOnly ? (
-            <p className="status-note">只读身份不能生成或确认首帧。</p>
-          ) : null}
-          {history.length === 0 ? (
-            <p className="file-note">暂无历史版本。</p>
-          ) : null}
-          <div className="first-frame-history-list">
-            {history.map((historyVersion) => (
-              <button
-                className={
-                  historyVersion.id === version?.id
-                    ? "history-version history-version--active"
-                    : "history-version"
-                }
-                key={historyVersion.id}
-                disabled={contextLoading || isSubmitting}
-                onClick={() => void load(historyVersion)}
-                type="button"
-              >
-                版本 #{historyVersion.version_number}
-              </button>
-            ))}
-          </div>
-        </details>
-      ) : null}
+      {historyBlock}
     </section>
   );
 }

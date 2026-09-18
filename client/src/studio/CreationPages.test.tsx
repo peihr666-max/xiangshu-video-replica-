@@ -348,24 +348,18 @@ describe("V1.4 创作页面", () => {
     value.data.assets.push(asset);
     useStudio.mockReturnValue(value);
     const view = render(<ReplicaPage />);
-    const grid = view.container.querySelector(
-      ".creation-replica-stage-grid",
-    ) as HTMLElement;
-    const video = grid.querySelector("video");
+    const row = view.container.querySelector(".media-row") as HTMLElement;
+    const video = row.querySelector("video");
     if (!video) throw new Error("replica source preview missing");
     Object.defineProperties(video, {
       videoWidth: { value: 1920 },
       videoHeight: { value: 1080 },
     });
     fireEvent.loadedMetadata(video);
-    expect(grid.style.getPropertyValue("--replica-source-ratio")).toBe(
-      String(1920 / 1080),
-    );
+    expect(row.style.getPropertyValue("--row-ratio")).toBe(String(1920 / 1080));
     asset.url = "/next.mp4";
     view.rerender(<ReplicaPage />);
-    expect(grid.style.getPropertyValue("--replica-source-ratio")).toBe(
-      String(9 / 16),
-    );
+    expect(row.style.getPropertyValue("--row-ratio")).toBe(String(9 / 16));
   });
 
   it("提取原文后不显示二创编辑框或终稿按钮", () => {
@@ -842,12 +836,10 @@ describe("V1.4 创作页面", () => {
     const { container } = render(<ReplicaPage />);
 
     expect(container.querySelectorAll(".creation-shot-card")).toHaveLength(0);
-    expect(screen.getByText(/0.0–5.0秒/).closest("p")).toHaveTextContent(
-      "镜头缓推庭院",
-    );
-    expect(screen.getByText(/5.0–10.0秒/).closest("p")).toHaveTextContent(
-      "人物出镜讲解",
-    );
+    // 摘要卡片与完整分镜合并为一张可编辑表后，镜头内容落在单元格输入框里。
+    expect(container.querySelectorAll(".shot-table tbody tr")).toHaveLength(3);
+    expect(screen.getByDisplayValue("镜头缓推庭院")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("人物出镜讲解")).toBeInTheDocument();
     expect(
       screen.getByRole("columnheader", { name: "运动" }),
     ).toBeInTheDocument();
@@ -1302,8 +1294,8 @@ describe("V1.4 创作页面", () => {
 
     const { container } = render(<ReplacementPage />);
 
-    expect(screen.getByText("原画面")).toBeInTheDocument();
-    expect(screen.getByText("人物场景")).toBeInTheDocument();
+    expect(screen.getByText("源画面")).toBeInTheDocument();
+    expect(screen.getByText("场景形象")).toBeInTheDocument();
     const sceneSelect = screen.getByLabelText("人物场景形象");
     expect(sceneSelect).toBeDisabled();
     expect(
@@ -1314,20 +1306,22 @@ describe("V1.4 创作页面", () => {
     expect(
       container.querySelectorAll(".creation-review-candidates figure"),
     ).toHaveLength(3);
-    expect(
-      container.querySelector(".creation-replica-stage-grid"),
-    ).not.toBeNull();
-    expect(container.querySelector(".creation-final-grid")).not.toBeNull();
+    // 三段示例与最终预览都改由媒体行承载，不再使用旧的 stage/final 网格。
+    expect(container.querySelector(".creation-replica-video")).not.toBeNull();
+    expect(container.querySelector(".creation-final-preview")).not.toBeNull();
     const analysisPanel = container.querySelector(".creation-replica-analyze");
     expect(analysisPanel).not.toBeNull();
+    // 拆解控制只保留标题与操作，镜头细节全部落在同一张可编辑分镜表里。
+    const shotList = container.querySelector(".creation-shot-list");
+    expect(shotList).not.toBeNull();
     expect(
-      within(analysisPanel as HTMLElement).getByText(/运镜：推进/),
+      within(shotList as HTMLElement).getByDisplayValue("推进"),
     ).toBeInTheDocument();
     expect(
-      within(analysisPanel as HTMLElement).getByText(/景别：中景/),
+      within(shotList as HTMLElement).getByDisplayValue("中景"),
     ).toBeInTheDocument();
     expect(
-      within(analysisPanel as HTMLElement).getAllByText(/转场：切镜/),
+      within(shotList as HTMLElement).getAllByDisplayValue("切镜"),
     ).toHaveLength(3);
     expect(
       container.querySelector(
@@ -3084,7 +3078,7 @@ describe("视频复刻（模块①）", () => {
     useStudio.mockReturnValue(value);
     const view = render(<ReplicaPage />);
     fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
-    await screen.findAllByText(/院落/);
+    await screen.findAllByDisplayValue(/院落/);
     expect(
       screen.getByRole("heading", { name: "2 首帧置换" }),
     ).toBeInTheDocument();
@@ -3124,7 +3118,7 @@ describe("视频复刻（模块①）", () => {
       screen.getByRole("button", { name: "确认费用并送生成" }),
     ).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "保存分镜" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存为自定义" }));
     value.state = {
       ...value.state,
       draft: { ...value.state.draft, projectId: "project-2" },
@@ -3472,7 +3466,9 @@ describe("视频复刻（模块①）", () => {
     expect(await screen.findByText(/读取超时/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "重试读取历史分镜" }));
 
-    expect((await screen.findAllByText(/院落/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByDisplayValue(/院落/)).length).toBeGreaterThan(
+      0,
+    );
     expect(replicaApi.getLatestProjectShotCards).toHaveBeenCalledTimes(2);
     expect(replicaApi.startVideoAnalysis).not.toHaveBeenCalled();
   });
@@ -3485,7 +3481,7 @@ describe("视频复刻（模块①）", () => {
     useStudio.mockReturnValue(value);
     const view = render(<ReplicaPage />);
     fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
-    await screen.findAllByText(/院落/);
+    await screen.findAllByDisplayValue(/院落/);
     view.rerender(<ReplicaPage />);
     return value;
   }
@@ -3928,7 +3924,7 @@ describe("视频复刻（模块①）", () => {
     useStudio.mockReturnValue(value);
     const view = render(<ReplicaPage />);
     fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
-    await screen.findAllByText(/院落/);
+    await screen.findAllByDisplayValue(/院落/);
     view.rerender(<ReplicaPage />);
     await prepareFinalReplica();
     fireEvent.click(

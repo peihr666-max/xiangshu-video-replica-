@@ -83,6 +83,7 @@ import {
   hasCopyResult,
   isReferenceAsset,
   MAX_REFERENCE_MEDIA_SECONDS,
+  mergeStudioAssets,
   navigateStudioState,
   pageTitles,
   patchStudioDraft,
@@ -169,22 +170,6 @@ function videoQuoteInput(draft: StudioDraft): GenerationQuoteInput {
         : 8,
     quantity: draft.count === 2 || draft.count === 4 ? draft.count : 1,
   };
-}
-
-function mergeStudioAssets(
-  current: StudioAsset[],
-  incoming: StudioAsset[],
-): StudioAsset[] {
-  const merged = new Map(current.map((asset) => [asset.id, asset]));
-  for (const asset of incoming) {
-    const existing = merged.get(asset.id);
-    merged.set(asset.id, {
-      ...existing,
-      ...asset,
-      url: existing?.url ?? asset.url,
-    });
-  }
-  return [...merged.values()];
 }
 
 const emptyData: StudioData = {
