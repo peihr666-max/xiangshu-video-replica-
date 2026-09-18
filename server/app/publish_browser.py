@@ -11,12 +11,16 @@ from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.db_portable import BusinessConnection
+from app.publish_avatars import rehost_avatar
+from app.storage import StorageAdapter
 
 Platform = Literal["douyin", "wechat_channels", "xiaohongshu"]
 AccountSource = Literal["cloud", "desktop"]
 
 MAX_STORAGE_STATE_BYTES = 2_000_000
-_ACCOUNT_COLUMNS = "id,platform,platform_user_id,username,verified_at,status,error_message,source"
+_ACCOUNT_COLUMNS = (
+    "id,platform,platform_user_id,username,verified_at,status,error_message,source,avatar_url"
+)
 
 
 class BrowserLoginRequest(BaseModel):
@@ -29,6 +33,8 @@ class BrowserIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid")
     platform_user_id: str = Field(min_length=1, max_length=256)
     username: str = Field(min_length=1, max_length=256)
+    # The platform CDN link as seen by the official page; re-hosted before storage.
+    avatar_url: str | None = Field(default=None, max_length=1024)
 
 
 class BrowserAccountImportRequest(BaseModel):
@@ -49,6 +55,8 @@ class BrowserAccount(BaseModel):
     status: Literal["connected", "invalid"] = "connected"
     error_message: str | None = None
     source: AccountSource = "cloud"
+    # Storage URI of the re-hosted avatar, never a platform CDN link.
+    avatar_url: str | None = None
 
 
 def account_response(row: Any) -> BrowserAccount:
@@ -61,6 +69,7 @@ def account_response(row: Any) -> BrowserAccount:
         status=row["status"],
         error_message=row["error_message"],
         source=row["source"],
+        avatar_url=row["avatar_url"],
     )
 
 
@@ -99,11 +108,13 @@ def upsert_browser_account(
     fernet: Fernet,
     source: AccountSource,
     account_id: str | None = None,
+    avatar_url: str | None = None,
 ) -> BrowserAccount:
     """Insert or refresh one (owner, platform, platform_user_id) login state.
 
     A refresh resets ``status`` to connected: a fresh scan supersedes any
-    earlier platform rejection.
+    earlier platform rejection. A refresh that could not re-host an avatar keeps
+    the one already stored rather than blanking the account's picture.
     """
     uid, username = identity["platform_user_id"].strip(), identity["username"].strip()
     if not uid or len(uid) > 256 or not username or len(username) > 256:
@@ -113,10 +124,11 @@ def upsert_browser_account(
         raise HTTPException(422, "平台登录状态过大，请重新扫码。")
     row = conn.execute(
         "INSERT INTO publish_browser_accounts"
-        "(id,user_id,platform,platform_user_id,username,storage_state_enc,source) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(user_id,platform,platform_user_id) "
+        "(id,user_id,platform,platform_user_id,username,storage_state_enc,source,avatar_url) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(user_id,platform,platform_user_id) "
         "DO UPDATE SET username=EXCLUDED.username,"
         "storage_state_enc=EXCLUDED.storage_state_enc,source=EXCLUDED.source,"
+        "avatar_url=COALESCE(EXCLUDED.avatar_url,publish_browser_accounts.avatar_url),"
         "status='connected',error_message=NULL,verified_at=clock_timestamp() "
         f"RETURNING {_ACCOUNT_COLUMNS}",  # noqa: S608 - fixed column literal
         (
@@ -127,6 +139,7 @@ def upsert_browser_account(
             username,
             fernet.encrypt(raw).decode("ascii"),
             source,
+            avatar_url,
         ),
     ).fetchone()
     return account_response(row)
@@ -137,16 +150,30 @@ def import_browser_account(
     owner: str,
     request: BrowserAccountImportRequest,
     fernet: Fernet,
+    media_storage: StorageAdapter | None = None,
 ) -> BrowserAccount:
-    storage = validate_storage_state(request.storage_state)
+    state = validate_storage_state(request.storage_state)
+    # Copy the avatar before it is stored; a link to the platform CDN is never kept.
+    avatar_url = (
+        rehost_avatar(
+            request.identity.avatar_url,
+            storage=media_storage,
+            owner=owner,
+            platform=request.platform,
+            platform_user_id=request.identity.platform_user_id.strip(),
+        )
+        if media_storage is not None
+        else None
+    )
     return upsert_browser_account(
         conn,
         owner,
         platform=request.platform,
         identity=request.identity.model_dump(),
-        storage=storage,
+        storage=state,
         fernet=fernet,
         source="desktop",
+        avatar_url=avatar_url,
     )
 
 

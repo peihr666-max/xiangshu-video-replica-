@@ -52,3 +52,11 @@
     margin-left: 0;
   }
 }
+
+.publish-account-avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  /* A transparent avatar must not blend into the row behind it. */
+  background: var(--surface-muted, #f2f3f5);
+}

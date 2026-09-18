@@ -55,7 +55,7 @@ MIGRATIONS_DIR = SERVER_DIR / "migrations"
 REPO_ROOT = SERVER_DIR.parent
 
 # 当前链尾。与 test_postgres_migrations.HEAD_REVISION 同源（main→090 + 20260912T1400）。
-HEAD_REVISION = "20260917T1000_publish_records"
+HEAD_REVISION = "20260918T1200_publish_account_avatar"
 
 # 最后一个已发布（受支持）起点。其后的 056…090 与本迁移尚未随任何受支持版本发布，
 # 故冻结范围止于此——把未发布 revision 也纳入哈希会让每次新增迁移都必须改常量，
@@ -100,7 +100,7 @@ FAILSTATE_DATABASE = "cw056_failstate_test"
 # BEFORE DELETE 各算一行），故 18 行对应 10 个 distinct trigger，不是 10 行。
 HEAD_SCHEMA_COUNTS = {
     "check_constraints": 309,
-    "columns": 1158,
+    "columns": 1159,
     "foreign_keys": 184,
     "identity_columns": 0,
     "jsonb_columns": 3,
@@ -255,7 +255,7 @@ HEAD_TABLE_NAMES = (
 # video_asset/cover_asset）、check_constraints +7（records 5 条 + accounts status/source）、
 # jsonb_columns +3（tags/options/stats）、partial_indexes +2（account_active/sync）、
 # timestamptz_columns +6；unique_constraints 不变。同样以 --print-schema 重算。
-HEAD_SCHEMA_DIGEST = "0628591eb1ae124b02030a30041b314216a6960059bb657d2a6cf1ff8e3e8c0c"
+HEAD_SCHEMA_DIGEST = "0d0d0b6f89b79c81c48d00b8d82ab9d402d09729b17694637994853ff8bfcf55"
 
 _SCHEMA_COUNT_QUERIES: dict[str, str] = {
     "tables": (

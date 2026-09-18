@@ -18,6 +18,7 @@ import {
   startLocalPublishLogin,
 } from "./localPublishAccounts";
 import {
+  AccountAvatar,
   PlatformLogo,
   type PublishPlatform,
   publishPlatformNames,
@@ -139,6 +140,7 @@ export function LocalPublishAccountsPanel({
       {
         platform_user_id: account.platform_user_id,
         username: account.username,
+        avatar_url: account.avatar_url ?? null,
       },
       storageState,
     );
@@ -396,7 +398,7 @@ export function LocalPublishAccountsPanel({
             className="studio-publish-account publish-account"
             key={account.id}
           >
-            <PlatformLogo platform={account.platform} size={32} />
+            <AccountAvatar account={account} size={32} />
             <span>
               {publishPlatformNames[account.platform]} · {account.username}
               <small>账号 ID：{account.platform_user_id}</small>
