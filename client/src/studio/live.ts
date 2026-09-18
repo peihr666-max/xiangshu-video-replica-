@@ -945,11 +945,16 @@ export async function uploadWorkbenchSourceVideo(
     reference_asset_id: assetId,
     reference_upload_status: "READY",
   };
+  // 上传路径不经过 loadProjects，拿不到签名预览地址；缺了它左栏来源视频只能退化成
+  // 纯文字占位。取不到地址与 loadProjects 的降级一致，不阻断已经成功的上传。
+  const url = await signedUrl(assetId, getAssetDownloadUrl).catch(
+    () => undefined,
+  );
   return {
     projectId: project.id,
     assetId,
     project: uploadedProject,
-    asset: projectAsset(uploadedProject),
+    asset: projectAsset(uploadedProject, url),
     analysisTaskId,
     analysisTaskStatus,
   };

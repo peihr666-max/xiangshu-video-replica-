@@ -1,5 +1,6 @@
 import {
   type ButtonHTMLAttributes,
+  type CSSProperties,
   cloneElement,
   isValidElement,
   type ReactElement,
@@ -96,11 +97,17 @@ export function Button({
 export function Panel({
   children,
   className = "",
+  style,
 }: {
   children: ReactNode;
   className?: string;
+  style?: CSSProperties;
 }) {
-  return <section className={`studio-panel ${className}`}>{children}</section>;
+  return (
+    <section className={`studio-panel ${className}`} style={style}>
+      {children}
+    </section>
+  );
 }
 export function Field({
   label,

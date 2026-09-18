@@ -1,8 +1,18 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { App } from "./App";
+import { StudioWorkspace } from "./studio/StudioWorkspace";
 import { createState } from "./studio/state";
+
+/** 生产入口唯一路径：main.tsx → RootApp → CustomerWorkspace → StudioWorkspace。
+ *  内部壳 App.tsx 已随 CW-019 后的死代码清理删除，本套件改为直挂 studio 泳道，
+ *  断言不变（它们描述的本来就是 studio 行为）。 */
+const testUser = {
+  id: "employee_1",
+  username: "employee_1",
+  display_name: "林夏",
+  role: "employee" as const,
+};
 
 const studioLive = vi.hoisted(() => ({
   loadProjectDraft: vi.fn(),
@@ -120,7 +130,7 @@ describe("App canonical replica entry", () => {
     const fetchMock = createAppFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    render(<StudioWorkspace currentUser={testUser} />);
     await openCanonicalReplica();
 
     expect(window.location.hash).toBe("#studio/replica");
@@ -145,7 +155,7 @@ describe("App canonical replica entry", () => {
       window.location.hash = "";
       vi.stubGlobal("fetch", createAppFetchMock());
 
-      render(<App />);
+      render(<StudioWorkspace currentUser={testUser} />);
       await openCanonicalReplica(entry);
 
       expect(window.location.hash).toBe("#studio/replica");
@@ -168,7 +178,7 @@ describe("App canonical replica entry", () => {
         throw new DOMException("storage blocked", "SecurityError");
       });
 
-    render(<App />);
+    render(<StudioWorkspace currentUser={testUser} />);
     await openCanonicalReplica();
 
     expect(window.location.hash).toBe("#studio/replica");

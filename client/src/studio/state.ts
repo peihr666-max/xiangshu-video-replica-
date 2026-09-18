@@ -320,6 +320,8 @@ export function patchStudioDraft(
       next.replicaPromptBasis = undefined;
     if (!Object.hasOwn(patch, "replicaPreparationPending"))
       next.replicaPreparationPending = undefined;
+    // 终稿指纹属于上一个项目/来源，换项目后必然对不上，留着只会随草稿一起复活。
+    if (!Object.hasOwn(patch, "finalSnapshot")) next.finalSnapshot = undefined;
     if (!Object.hasOwn(patch, "prompt")) next.prompt = "";
     if (!Object.hasOwn(patch, "promptEdited")) next.promptEdited = false;
     if (!patch.script) next.script = blank.script;
@@ -400,6 +402,23 @@ export function buildOralInput(draft: StudioDraft, mode: "text" | "audio") {
 }
 
 // ---- C2 独立创作（视频生成页）----
+
+/** 把新读取的素材并入列表：保留已有签名地址，避免同一次会话内重复取地址。 */
+export function mergeStudioAssets(
+  current: StudioAsset[],
+  incoming: StudioAsset[],
+): StudioAsset[] {
+  const merged = new Map(current.map((asset) => [asset.id, asset]));
+  for (const asset of incoming) {
+    const existing = merged.get(asset.id);
+    merged.set(asset.id, {
+      ...existing,
+      ...asset,
+      url: existing?.url ?? asset.url,
+    });
+  }
+  return [...merged.values()];
+}
 
 export const SUPPORTED_VIDEO_RATIOS = [
   "adaptive",

@@ -969,7 +969,7 @@ describe("V1.4 workspace integration", () => {
   });
 
   it.each(["生成测试项目", "查看测试项目"])(
-    "%s 导入后进入同一个复刻页并显示项目标题",
+    "%s 导入后进入同一个复刻页并展开项目流程",
     async (entry) => {
       const imported = createReviewState("workbench").draft;
       imported.projectId = livePanel.project.id;
@@ -984,9 +984,10 @@ describe("V1.4 workspace integration", () => {
       fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
       fireEvent.click(screen.getByRole("button", { name: entry }));
 
-      expect(
-        await screen.findByText("来源视频 · 张工预算项目"),
-      ).toBeInTheDocument();
+      // 拆解控制头部右侧显示当前项目名（复刻页曾整个丢掉项目名）。
+      expect(await screen.findByText("拆解控制")).toBeInTheDocument();
+      expect(screen.getByText("张工预算项目")).toBeInTheDocument();
+      expect(screen.queryByText("先导入参考视频")).not.toBeInTheDocument();
       expect(
         screen.queryByLabelText("模拟已有功能工作区"),
       ).not.toBeInTheDocument();
@@ -1027,9 +1028,8 @@ describe("V1.4 workspace integration", () => {
     fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
     fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(2));
-    expect(
-      await screen.findByText("来源视频 · 张工预算项目"),
-    ).toBeInTheDocument();
+    // 重试成功后同样以「拆解控制」作为复刻页已按项目展开的标记。
+    expect(await screen.findByText("拆解控制")).toBeInTheDocument();
   });
 
   it("关闭项目列表后忽略迟到的导入结果且不覆盖草稿", async () => {

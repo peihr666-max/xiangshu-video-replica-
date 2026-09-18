@@ -136,10 +136,10 @@ const POSITIVE_CONTROL_NEEDLES = Object.freeze([
 /** 禁止内容特征串（内部入口域）。CW-015 后应已从客户入口链路消失；
  *  若在内部 P0 兼容路径仍合法存在，PR 内说明依据后再调整，不得为过门禁而放宽。
  *  实测三条在压缩产物里均恒不命中（标识符被 mangle / 仅存在于类型与注释 /
- *  活代码已删），且内部壳 `client/src/App.tsx` 只被测试引用、不进任何生产制品，
- *  因此产物层没有可用的阳性对照样本。它们按 §5.5 item 4 原文保留在此（不删、
- *  不放宽），实际检测力由源码级 `entryContract.test.ts` 承担：断言客户入口
- *  `main.tsx` / `RootApp.tsx` 不引用内部壳 `./App`。 */
+ *  活代码已删），因此产物层没有可用的阳性对照样本。它们按 §5.5 item 4 原文保留
+ *  在此（不删、不放宽），实际检测力由源码级 `entryContract.test.ts` 承担：断言
+ *  内部壳 `client/src/App.tsx` 文件不存在（已于泳道 A 死代码清理中删除），
+ *  且客户入口 `main.tsx` / `RootApp.tsx` 不引用该壳。 */
 const FORBIDDEN_CONTENT_INTERNAL = Object.freeze([
   "getDevelopmentUserId",
   "X-Dev-User-Id",

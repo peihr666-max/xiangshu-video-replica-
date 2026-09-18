@@ -1,5 +1,4 @@
 import {
-  type CSSProperties,
   type ReactNode,
   useCallback,
   useEffect,
@@ -46,11 +45,13 @@ import {
 import { CharacterSelection } from "../CharacterSelection";
 import { FirstFrameSelection } from "../FirstFrameSelection";
 import { isInsufficientCredits } from "../insufficientCredits";
+import { PromptMarkdown } from "../PromptMarkdown";
 import { ShotCardEditor } from "../ShotCardEditor";
 import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
 import {
+  loadDraftMaterials,
   loadSavedScriptList,
   readAudioDuration,
   readVideoDuration,
@@ -92,6 +93,7 @@ import {
   DEFAULT_MAX_REFERENCE_VIDEOS,
   hasCopyResult,
   MAX_REFERENCE_MEDIA_SECONDS,
+  mergeStudioAssets,
   SUPPORTED_VIDEO_RATIOS,
   validateReferences,
 } from "./state";
@@ -114,6 +116,7 @@ import {
   StudioDialog,
   Tabs,
 } from "./ui";
+import { type MediaRowStyle, useMediaRowFit } from "./useMediaRowFit";
 import "./creation.css";
 import { OralJourney } from "./OralJourney";
 
@@ -175,6 +178,33 @@ function SourceStrip({ source }: { source?: StudioAsset }) {
       </span>
     </div>
   );
+}
+
+/**
+ * 媒体行：左右两栏的媒体框等高（底部对齐）由 useMediaRowFit 迭代测量保证。
+ * 必须独立成组件——hook 不能在循环或条件中调用，每行需各持一个实例。
+ */
+function ReplicaMediaRow({
+  ratio,
+  children,
+}: {
+  ratio: number;
+  children: ReactNode;
+}) {
+  const { rowRef, rowStyle } = useMediaRowFit({ ratio });
+  return (
+    <div className="media-row" ref={rowRef} style={rowStyle}>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * 面板级比例覆盖：行的 --row-ratio 是给「左栏宽度」算的单一值，两栏素材比例不同时
+ * 各面板必须各自覆盖，否则比例小的那栏会被撑出黑边。
+ */
+function panelRatioStyle(ratio: number): MediaRowStyle {
+  return { "--row-ratio": `${ratio}` };
 }
 
 function ControlGroup({
@@ -1256,6 +1286,19 @@ export function ReplicaPage() {
   const previewRatio =
     sourceRatio?.source === sourceMediaKey ? sourceRatio.ratio : 9 / 16;
   const selectedFirstFrame = findAsset(data.assets, state.draft.firstFrameId);
+  const firstFrameMediaKey =
+    selectedFirstFrame?.url ||
+    selectedFirstFrame?.poster ||
+    selectedFirstFrame?.id ||
+    "";
+  const [firstFrameRatio, setFirstFrameRatio] = useState<{
+    source: string;
+    ratio: number;
+  }>();
+  const firstFramePreviewRatio =
+    firstFrameRatio?.source === firstFrameMediaKey
+      ? firstFrameRatio.ratio
+      : 9 / 16;
   const [stage, setStage] = useState<ReplicaStage>(() =>
     state.draft.projectId ? "ready" : "source",
   );
@@ -1269,7 +1312,9 @@ export function ReplicaPage() {
   const [analysisBusy, setAnalysisBusy] = useState(false);
   const [promptText, setPromptText] = useState(state.draft.prompt);
   const [finalSnapshot, setFinalSnapshot] =
-    useState<FinalReplicaSnapshot | null>(null);
+    useState<FinalReplicaSnapshot | null>(() =>
+      state.draft.projectId ? (state.draft.finalSnapshot ?? null) : null,
+    );
   const finalInput = {
     projectId: state.draft.projectId ?? "",
     scriptText: state.draft.script.text,
@@ -1282,6 +1327,19 @@ export function ReplicaPage() {
     shotCardVersionId,
   };
   const finalReady = finalSnapshot?.inputKey === replicaInputKey(finalInput);
+  // finalSnapshot 只在挂载时读一次草稿：草稿是异步恢复的，挂载时 projectId 还没到，
+  // 刷新后草稿里的快照就再也读不进来，「已完成」状态凭空消失。项目 id 变化时补读一次。
+  // 不能无差别跟随草稿：改镜头会就地清空快照（不落库），跟随会把清空结果复原。
+  const snapshotProjectIdRef = useRef(state.draft.projectId);
+  useEffect(() => {
+    if (snapshotProjectIdRef.current === state.draft.projectId) {
+      return;
+    }
+    snapshotProjectIdRef.current = state.draft.projectId;
+    setFinalSnapshot(
+      state.draft.projectId ? (state.draft.finalSnapshot ?? null) : null,
+    );
+  }, [state.draft.projectId, state.draft.finalSnapshot]);
   const [promptNameOpen, setPromptNameOpen] = useState(false);
   const [promptName, setPromptName] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
@@ -1363,6 +1421,29 @@ export function ReplicaPage() {
     [],
   );
 
+  // 终稿指纹只存在内存里的话，刷新或重进页面就会退回"待合成"，而上游其实没有任何变化。
+  // 与草稿一起持久化，恢复时按 inputKey 比对即可判定是否仍然有效。
+  const applyFinalSnapshot = (snapshot: FinalReplicaSnapshot | null) => {
+    setFinalSnapshot(snapshot);
+    patchDraftRef.current({ finalSnapshot: snapshot ?? undefined });
+  };
+
+  // promptText 是否由"合成最终提示词"写入（而非用户手敲）：上游变化时只作废这一种。
+  const compiledPromptRef = useRef(false);
+
+  // 上游内容变化后旧稿已作废：留着它会让用户在"待合成"下点击送生成并撞 409。
+  // 返回是否真的清掉了由合成写入的正文，交给调用方决定怎么提示。
+  const invalidateStaleFinalPrompt = () => {
+    applyFinalSnapshot(null);
+    if (!compiledPromptRef.current) return false;
+    compiledPromptRef.current = false;
+    setPromptText("");
+    promptTextRef.current = "";
+    promptEditedRef.current = false;
+    patchDraftRef.current({ prompt: "", promptEdited: false });
+    return true;
+  };
+
   const resetReplicaState = () => {
     setShots([]);
     shotSaveOperationRef.current += 1;
@@ -1372,7 +1453,8 @@ export function ReplicaPage() {
     setShotsDirty(false);
     setShotSaveError("");
     setOriginalScript("");
-    setFinalSnapshot(null);
+    compiledPromptRef.current = false;
+    applyFinalSnapshot(null);
     analysisProjectRef.current = undefined;
   };
 
@@ -1655,6 +1737,8 @@ export function ReplicaPage() {
       restoreSuppressedRef.current = false;
       setStage("ready");
       notify("参考视频已上传，继续拆解会恢复已有任务，不重复创建分析。");
+      // 上传即进入复刻流程：来源视频已在手，留在原页只是多一次手工跳转。
+      if (state.page !== "replica") navigate("replica");
     } catch {
       if (operation !== uploadOperationRef.current) return;
       restoreSuppressedRef.current = false;
@@ -1774,22 +1858,28 @@ export function ReplicaPage() {
       setShotSaveError("");
       setOriginalScript(script);
       // Analysis contains source facts only. Preserve any user-edited final draft.
+      // 以内容判断"是否用户改过"：scriptEdited 一旦置位就不会自动复位，
+      // 用它做守卫会让后续拆解结果永远回填不进草稿。
+      const draftScript = latestDraftRef.current.script;
+      const scriptUntouched = draftScript.text === draftScript.original;
       if (
-        !latestDraftRef.current.scriptEdited &&
-        !latestDraftRef.current.script.confirmed
+        !draftScript.confirmed &&
+        scriptUntouched &&
+        draftScript.original !== script
       ) {
         patchDraft({
           script: {
-            ...latestDraftRef.current.script,
+            ...draftScript,
             original: script,
             text: script,
             confirmed: false,
           },
+          // 回填的是拆解原文，不是用户改动；显式复位否则下一次守卫会误判为"已编辑"。
+          scriptEdited: false,
         });
       }
-      setFinalSnapshot(null);
+      invalidateStaleFinalPrompt();
       setStage("ready");
-      setAnalysisBusy(false);
       notify("拆解完成。请确认文案和置换首帧，再合成最终提示词。");
     } catch (cause: unknown) {
       if (!isCurrentAnalysis()) return;
@@ -1800,11 +1890,13 @@ export function ReplicaPage() {
         if (task?.status === "FAILED")
           patchDraft({ analysisTaskStatus: "FAILED" });
       }
-      setAnalysisBusy(false);
       setStage("ready");
       notify(customerVisibleErrorMessage(cause, "AI 拆解失败，请稍后重试。"));
       // 服务端已给出需要多少积分；把钱包侧栏一并打开，省掉用户自己找入口。
       if (isInsufficientCredits(cause)) openLive("wallet");
+    } finally {
+      // 守卫提前返回时也要解除忙碌态，否则按钮会永久停在“拆解中”。
+      setAnalysisBusy(false);
     }
   };
 
@@ -1913,7 +2005,7 @@ export function ReplicaPage() {
         return;
       }
       if (firstFrameAssetId !== draft.firstFrameId) {
-        setFinalSnapshot(null);
+        applyFinalSnapshot(null);
         throw new Error("首帧已更新，请加载新首帧并重新合成最终提示词。");
       }
       const request = {
@@ -1993,7 +2085,12 @@ export function ReplicaPage() {
         return;
       setShotCardVersionId(saved.id);
       setShotsDirty(false);
-      notify("分镜已保存。");
+      // 分镜换了新版本，之前合成的终稿已不对应，留着只会误导用户去点送生成。
+      notify(
+        invalidateStaleFinalPrompt()
+          ? "分镜已保存；上游内容已变化，请重新合成最终提示词。"
+          : "分镜已保存。",
+      );
     } catch (cause: unknown) {
       if (
         operation !== shotSaveOperationRef.current ||
@@ -2016,6 +2113,11 @@ export function ReplicaPage() {
   const sourceDuration = displayShots.reduce(
     (duration, shot) => Math.max(duration, shot.end_time),
     0,
+  );
+  // 「首帧未就绪」在面板内（有文案没首帧）和面板外（两者都没有）两处出现：
+  // 分支结构不同、位置也不同，共用一份文案，免得两处措辞各自漂移。
+  const missingFirstFrameHint = (
+    <Hint>请先完成首帧置换并选定图片，再合成最终提示词。</Hint>
   );
   return (
     <section className="creation-page creation-replica">
@@ -2065,15 +2167,13 @@ export function ReplicaPage() {
             </Panel>
           ) : (
             <>
-              <div
-                className="creation-replica-stage-grid"
-                style={
-                  { "--replica-source-ratio": previewRatio } as CSSProperties
-                }
-              >
-                <div className="creation-replica-media-column">
+              <ReplicaMediaRow ratio={previewRatio}>
+                <Panel className="creation-replica-video">
+                  <div className="creation-panel-title-row">
+                    <span>参考视频</span>
+                  </div>
                   <SourceStrip source={source} />
-                  <Panel className="creation-replica-video">
+                  <div className="media-frame">
                     <Media
                       asset={source}
                       alt="参考视频"
@@ -2084,17 +2184,19 @@ export function ReplicaPage() {
                       presentation="video"
                       aspectRatio="adaptive"
                     />
-                  </Panel>
-                </div>
+                  </div>
+                </Panel>
                 <Panel className="creation-replica-analyze">
                   <div className="creation-panel-title-row">
-                    <span>
-                      来源视频 ·{" "}
-                      {project?.name ?? state.draft.projectId ?? "未命名项目"}
+                    <span>拆解控制</span>
+                    <span className="creation-replica-meta">
+                      <span className="creation-replica-project-name">
+                        {project?.name}
+                      </span>
+                      {displayShots.length > 0 && (
+                        <small>已拆解 {displayShots.length} 个镜头</small>
+                      )}
                     </span>
-                    {displayShots.length > 0 && (
-                      <small>已拆解 {displayShots.length} 个镜头</small>
-                    )}
                   </div>
                   <div className="creation-upload-row">
                     <Button
@@ -2116,7 +2218,6 @@ export function ReplicaPage() {
                       更换来源视频
                     </Button>
                   </div>
-                  <Hint>核对分镜后，在下方置换首帧。</Hint>
                   {restoreBusy && (
                     <Hint>正在读取已保存的分镜、文案和 Prompt…</Hint>
                   )}
@@ -2133,38 +2234,31 @@ export function ReplicaPage() {
                       </Button>
                     </div>
                   )}
-                  {hasShots && (
-                    <div className="creation-shot-summary-list">
-                      {displayShots.map((shot) => (
-                        <p key={shot.shot_id}>
-                          <strong>
-                            {shot.start_time.toFixed(1)}–
-                            {shot.end_time.toFixed(1)}秒
-                          </strong>
-                          {[
-                            ["动作", shot.action],
-                            ["主体", shot.subject],
-                            ["场景", shot.scene],
-                            ["口播", shot.spoken_text],
-                            ["运镜", shot.camera_motion],
-                            ["景别", shot.shot_type],
-                            ["构图", shot.composition],
-                            ["转场", shot.transition],
-                          ]
-                            .filter(([, value]) => value)
-                            .map(([label, value]) => `${label}：${value}`)
-                            .join("；") || "待补充镜头内容"}
-                        </p>
-                      ))}
-                    </div>
-                  )}
                 </Panel>
-              </div>
+              </ReplicaMediaRow>
               {hasShots && (
                 <Panel className="creation-shot-list">
-                  <div className="creation-panel-title">
-                    完整分镜表 · {displayShots.length} 个镜头
+                  <div className="creation-panel-title-row">
+                    <span>分镜表 · {displayShots.length} 个镜头</span>
+                    <span className="creation-shot-list-actions">
+                      {/* 有已保存版本且无未保存改动，才算「已保存为自定义」。 */}
+                      {!shotsDirty && shotCardVersionId ? (
+                        <small>已保存为自定义 ✓</small>
+                      ) : null}
+                      <Button
+                        disabled={readOnly || savingShots || !shotsDirty}
+                        onClick={() => void saveShotEdits()}
+                        variant="outline"
+                      >
+                        {savingShots ? "保存中…" : "保存为自定义"}
+                      </Button>
+                    </span>
                   </div>
+                  {shotSaveError ? (
+                    <p className="settings-error" role="alert">
+                      {shotSaveError}
+                    </p>
+                  ) : null}
                   <details className="creation-shot-details" open>
                     <summary>编辑完整分镜</summary>
                     <ShotCardEditor
@@ -2172,18 +2266,6 @@ export function ReplicaPage() {
                       readOnly={readOnly || savingShots}
                       onChange={(index, shot) => updateShot(index, shot)}
                     />
-                    {shotSaveError ? (
-                      <p className="settings-error" role="alert">
-                        {shotSaveError}
-                      </p>
-                    ) : null}
-                    <Button
-                      disabled={readOnly || savingShots || !shotsDirty}
-                      onClick={() => void saveShotEdits()}
-                      variant="outline"
-                    >
-                      {savingShots ? "保存中…" : "保存分镜"}
-                    </Button>
                   </details>
                 </Panel>
               )}
@@ -2193,172 +2275,207 @@ export function ReplicaPage() {
         <section className="creation-workflow-section">
           <h2>2 首帧置换</h2>
           <ReplicaFirstFrameSection
+            ratio={firstFramePreviewRatio}
             videoDurationSeconds={sourceDuration || null}
           />
         </section>
         <section className="creation-workflow-section">
           <h2>3 文案与生成</h2>
-          {!hasShots ? (
+          {/* 门禁按项目判定：拆解未完成时也要挂载口播文案占位，否则用户看不到还差哪一步。 */}
+          {!replicaProjectId ? (
             <Hint>先完成视频拆解，再确认首帧与文案。</Hint>
           ) : (
-            <div className="creation-final-grid">
+            <ReplicaMediaRow ratio={firstFramePreviewRatio}>
               <Panel className="creation-final-preview">
-                <div className="creation-panel-title">已选首帧</div>
-                <Media
-                  asset={selectedFirstFrame}
-                  alt="已选首帧"
-                  aspectRatio="adaptive"
-                  className="creation-final-preview__media"
-                />
+                <div className="creation-panel-title-row">
+                  <span>已选首帧</span>
+                </div>
+                <div className="media-frame">
+                  <Media
+                    asset={selectedFirstFrame}
+                    alt="已选首帧"
+                    aspectRatio="adaptive"
+                    className="creation-final-preview__media"
+                    onAspectRatioChange={(ratio) =>
+                      setFirstFrameRatio({
+                        source: firstFrameMediaKey,
+                        ratio,
+                      })
+                    }
+                  />
+                </div>
               </Panel>
               <div className="creation-final-copy">
                 <ReplicaNarration />
-                {state.draft.firstFrameId ? (
+                {/* 提示词渲染与「合成」是两条独立的可用性：拆解完成即有文案可看，
+                    但必须选定首帧才能合成，故门禁分开判定。 */}
+                {state.draft.firstFrameId || promptText ? (
                   <Panel className="creation-prompt-output">
                     <div className="creation-panel-title-row">
-                      <span>最终提示词（可编辑）</span>
+                      <span>最终提示词</span>
                       {displayShots.length === 0 && (
                         <small>确认文案与首帧后合成</small>
                       )}
                     </div>
-                    <ReplicaFinalPromptControls
-                      input={finalInput}
-                      sourceDuration={sourceDuration}
-                      sourceFrameTimestamp={
-                        state.draft.sourceFrameTimestampSeconds
-                      }
-                      showScriptPreview={false}
-                      value={promptText}
-                      snapshot={finalSnapshot}
-                      onPrepared={setFinalSnapshot}
-                      readOnly={readOnly || review}
-                      restoreEnabled={!review}
-                      onChange={(text) => {
-                        setPromptText(text);
-                        promptTextRef.current = text;
-                        promptEditedRef.current = true;
-                        promptTypedThisMountRef.current = true;
-                        promptEditVersionRef.current += 1;
-                        patchDraft({ prompt: text, promptEdited: true });
-                      }}
-                    />
-                    <details className="creation-final-prompt-details">
-                      <summary>查看或编辑提示词</summary>
-                      <PromptEditor
-                        label="最终提示词"
-                        readOnly={readOnly}
-                        optimizationDisabled={review}
+                    {promptText ? (
+                      <PromptMarkdown
+                        readOnly={review}
                         scope={`${user.id}:${state.draft.projectId ?? ""}`}
-                        context={{
-                          route: "replica",
-                          project_id: state.draft.projectId,
-                          source_asset_id: state.draft.sourceAssetId,
-                          shot_card_version_id: shotCardVersionId,
-                          script_version_id: finalSnapshot?.scriptVersionId,
-                          first_frame_asset_id: state.draft.firstFrameId,
-                          duration_seconds: replicaDuration,
-                          ratio: state.draft.ratio as GenerationRatio,
-                        }}
-                        onChange={(text) => {
-                          setPromptText(text);
-                          promptTextRef.current = text;
-                          promptEditedRef.current = true;
-                          promptTypedThisMountRef.current = true;
-                          promptEditVersionRef.current += 1;
-                          patchDraft({
-                            prompt: text,
-                            promptEdited: true,
-                          });
-                        }}
-                        placeholder="确认文案和新首帧后合成最终提示词。"
-                        rows={10}
-                        value={promptText}
+                        text={promptText}
                       />
-                    </details>
-                    <div className="creation-upload-row">
-                      {promptNameOpen ? (
-                        <>
-                          <input
-                            aria-label="自定义提示词名称"
-                            className="creation-project-select"
-                            disabled={readOnly || review}
-                            onChange={(event) =>
-                              setPromptName(event.target.value)
-                            }
-                            placeholder="提示词名称"
-                            value={promptName}
+                    ) : null}
+                    {state.draft.firstFrameId ? (
+                      <>
+                        <ReplicaFinalPromptControls
+                          input={finalInput}
+                          sourceDuration={sourceDuration}
+                          sourceFrameTimestamp={
+                            state.draft.sourceFrameTimestampSeconds
+                          }
+                          showScriptPreview={false}
+                          value={promptText}
+                          snapshot={finalSnapshot}
+                          onPrepared={(snapshot) => {
+                            compiledPromptRef.current = true;
+                            applyFinalSnapshot(snapshot);
+                          }}
+                          readOnly={readOnly || review}
+                          restoreEnabled={!review}
+                          onChange={(text) => {
+                            compiledPromptRef.current = false;
+                            setPromptText(text);
+                            promptTextRef.current = text;
+                            promptEditedRef.current = true;
+                            promptTypedThisMountRef.current = true;
+                            promptEditVersionRef.current += 1;
+                            patchDraft({ prompt: text, promptEdited: true });
+                          }}
+                        />
+                        <details className="creation-final-prompt-details">
+                          <summary>查看或编辑提示词</summary>
+                          <PromptEditor
+                            label="最终提示词"
+                            readOnly={readOnly}
+                            optimizationDisabled={review}
+                            scope={`${user.id}:${state.draft.projectId ?? ""}`}
+                            context={{
+                              route: "replica",
+                              project_id: state.draft.projectId,
+                              source_asset_id: state.draft.sourceAssetId,
+                              shot_card_version_id: shotCardVersionId,
+                              script_version_id: finalSnapshot?.scriptVersionId,
+                              first_frame_asset_id: state.draft.firstFrameId,
+                              duration_seconds: replicaDuration,
+                              ratio: state.draft.ratio as GenerationRatio,
+                            }}
+                            onChange={(text) => {
+                              compiledPromptRef.current = false;
+                              setPromptText(text);
+                              promptTextRef.current = text;
+                              promptEditedRef.current = true;
+                              promptTypedThisMountRef.current = true;
+                              promptEditVersionRef.current += 1;
+                              patchDraft({
+                                prompt: text,
+                                promptEdited: true,
+                              });
+                            }}
+                            placeholder="确认文案和新首帧后合成最终提示词。"
+                            rows={10}
+                            value={promptText}
                           />
-                          <Button
-                            disabled={readOnly || review || savingPrompt}
-                            onClick={() => void saveAsCustomPrompt()}
-                            variant="primary"
-                          >
-                            {savingPrompt ? "保存中…" : "确认保存"}
-                          </Button>
-                          <Button
-                            onClick={() => setPromptNameOpen(false)}
-                            variant="quiet"
-                          >
-                            取消
-                          </Button>
-                        </>
-                      ) : (
-                        <>
-                          <Button
-                            disabled={readOnly || review}
-                            onClick={() => setPromptNameOpen(true)}
-                            variant="outline"
-                          >
-                            保存为自定义提示词
-                          </Button>
-                          {replicaQuoteStatus === "loading" ? (
-                            <Hint>正在读取复刻报价…</Hint>
-                          ) : null}
-                          {replicaQuoteError ? (
-                            <div className="settings-error" role="alert">
-                              <p>{replicaQuoteError}</p>
+                        </details>
+                        <div className="creation-upload-row">
+                          {promptNameOpen ? (
+                            <>
+                              <input
+                                aria-label="自定义提示词名称"
+                                className="creation-project-select"
+                                disabled={readOnly || review}
+                                onChange={(event) =>
+                                  setPromptName(event.target.value)
+                                }
+                                placeholder="提示词名称"
+                                value={promptName}
+                              />
                               <Button
-                                onClick={retryReplicaQuote}
+                                disabled={readOnly || review || savingPrompt}
+                                onClick={() => void saveAsCustomPrompt()}
+                                variant="primary"
+                              >
+                                {savingPrompt ? "保存中…" : "确认保存"}
+                              </Button>
+                              <Button
+                                onClick={() => setPromptNameOpen(false)}
+                                variant="quiet"
+                              >
+                                取消
+                              </Button>
+                            </>
+                          ) : (
+                            <>
+                              <Button
+                                disabled={readOnly || review}
+                                onClick={() => setPromptNameOpen(true)}
                                 variant="outline"
                               >
-                                重新获取复刻报价
+                                保存为自定义提示词
                               </Button>
-                            </div>
-                          ) : null}
-                          {replicaQuoteReady ? (
-                            <Hint>
-                              预计费用{" "}
-                              {replicaQuote.estimated_credits !== undefined
-                                ? `${replicaQuote.estimated_credits} 积分（${replicaQuote.unit_credits} 积分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`
-                                : `${(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元（${replicaQuote.unit_price_fen_per_second} 分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`}
-                            </Hint>
-                          ) : null}
-                          <Button
-                            disabled={
-                              readOnly ||
-                              review ||
-                              generating ||
-                              analysisBusy ||
-                              shotsDirty ||
-                              displayShots.length === 0 ||
-                              !finalReady ||
-                              !replicaQuoteReady
-                            }
-                            onClick={() => void sendToGeneration()}
-                            variant="primary"
-                          >
-                            {generating ? "提交中…" : "确认费用并送生成"}
-                          </Button>
-                        </>
-                      )}
-                    </div>
-                    <Hint>生成前核对文案和费用。</Hint>
+                              {replicaQuoteStatus === "loading" ? (
+                                <Hint>正在读取复刻报价…</Hint>
+                              ) : null}
+                              {replicaQuoteError ? (
+                                <div className="settings-error" role="alert">
+                                  <p>{replicaQuoteError}</p>
+                                  <Button
+                                    onClick={retryReplicaQuote}
+                                    variant="outline"
+                                  >
+                                    重新获取复刻报价
+                                  </Button>
+                                </div>
+                              ) : null}
+                              {replicaQuoteReady ? (
+                                <Hint>
+                                  {(replicaQuote.estimated_credits ?? 0) > 0
+                                    ? `预计费用 ${replicaQuote.estimated_credits} 积分（${replicaQuote.unit_credits} 积分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`
+                                    : replicaQuote.estimated_price_fen > 0
+                                      ? `预计费用 ${(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元（${replicaQuote.unit_price_fen_per_second} 分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`
+                                      : // 后端在计费目录缺项时只把原因写进 free_reason（客户端 schema 会丢掉该字段），
+                                        // credits 与价格同时为 0，直接渲染就成了"预计费用 0 积分"。
+                                        "预计费用暂不可用"}
+                                </Hint>
+                              ) : null}
+                              <Button
+                                disabled={
+                                  readOnly ||
+                                  review ||
+                                  generating ||
+                                  analysisBusy ||
+                                  shotsDirty ||
+                                  displayShots.length === 0 ||
+                                  !finalReady ||
+                                  !replicaQuoteReady
+                                }
+                                onClick={() => void sendToGeneration()}
+                                variant="primary"
+                              >
+                                {generating ? "提交中…" : "确认费用并送生成"}
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                        <Hint>生成前核对文案和费用。</Hint>
+                      </>
+                    ) : (
+                      missingFirstFrameHint
+                    )}
                   </Panel>
                 ) : (
-                  <Hint>请先完成首帧置换并选定图片，再合成最终提示词。</Hint>
+                  missingFirstFrameHint
                 )}
               </div>
-            </div>
+            </ReplicaMediaRow>
           )}
         </section>
       </div>
@@ -2392,11 +2509,15 @@ export function ReplicaPage() {
 }
 
 function ReplicaFirstFrameSection({
+  ratio,
   videoDurationSeconds,
 }: {
+  /** 首帧素材宽高比，供媒体行推算左栏宽度；未知时为 9:16。 */
+  ratio: number;
   videoDurationSeconds: number | null;
 }) {
-  const { state, data, review, patchDraft, notify, user } = useStudio();
+  const { state, data, review, patchDraft, notify, updateData, user } =
+    useStudio();
   const readOnly = user.role === "auditor";
   const project = data.projects.find(
     (item) => item.id === state.draft.projectId,
@@ -2414,6 +2535,8 @@ function ReplicaFirstFrameSection({
   const [firstFrameSelection, setFirstFrameSelection] =
     useState<AnalysisVersion | null>(null);
   const [, setLeafBusy] = useState(false);
+  /** 场景形象素材自身的宽高比，由左栏预览图 onLoad 回报；未知时退回首帧比例。 */
+  const [sceneRatio, setSceneRatio] = useState<number | null>(null);
   const referenceMatchInFlightRef = useRef<string | undefined>(undefined);
   const referenceRetryScheduledRef = useRef(false);
   const readOnlyRef = useRef(readOnly);
@@ -2430,9 +2553,17 @@ function ReplicaFirstFrameSection({
   // patchDraft 每次壳层渲染都是新引用，effect 依赖一律走 ref，避免无限置位循环。
   const patchDraftRef = useRef(patchDraft);
   patchDraftRef.current = patchDraft;
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
+  const updateDataRef = useRef(updateData);
+  updateDataRef.current = updateData;
+  const draftRef = useRef(state.draft);
+  draftRef.current = state.draft;
   const confirmedSelectionKeyRef = useRef<string | undefined>(undefined);
   const previousProjectIdRef = useRef<string | undefined>(undefined);
   const projectEffectMountedRef = useRef(false);
+  /** 草稿素材补取的世代号：换项目或重选首帧后，旧请求的结果都作废。 */
+  const draftMaterialsRequestRef = useRef(0);
 
   const firstFrameAssetId = firstFrameSelection
     ? (readFirstFrameSelectionPayload(firstFrameSelection)
@@ -2449,8 +2580,12 @@ function ReplicaFirstFrameSection({
     } as Partial<StudioDraft>);
   }, []);
 
-  // 换项目时重置全部下游状态与草稿中的旧首帧。
+  // 只认真实存在于 data.projects 的项目。早先会在列表非空时拿草稿里的 id 兜底，
+  // 但那个 id 可能已经被删/换号，于是用一份不存在的项目渲染出空壳界面（缺陷 A4）。
   const projectId = project?.id;
+  const referenceAssetId =
+    project?.reference_asset_id ?? state.draft.sourceAssetId ?? null;
+  // 换项目时重置全部下游状态与草稿中的旧首帧。
   useEffect(() => {
     const projectChanged =
       projectEffectMountedRef.current &&
@@ -2468,6 +2603,7 @@ function ReplicaFirstFrameSection({
     characterVersionIdRef.current = undefined;
     sourceFrameSelectionIdRef.current = undefined;
     confirmedSelectionKeyRef.current = undefined;
+    draftMaterialsRequestRef.current += 1;
     if (projectChanged && projectId && !review && !readOnlyRef.current) {
       patchDraftRef.current({
         firstFrameId: undefined,
@@ -2604,11 +2740,31 @@ function ReplicaFirstFrameSection({
       const selectionKey = `${selection.id}:${assetId}`;
       if (confirmedSelectionKeyRef.current === selectionKey) return;
       confirmedSelectionKeyRef.current = selectionKey;
-      patchDraftRef.current({
+      const firstFramePatch = {
         firstFrameId: assetId,
         firstFrameSelectionVersionId: selection.id,
         frameConfirmed: true,
-      });
+      };
+      patchDraftRef.current(firstFramePatch);
+      // 确认首帧此前只写了 id，asset 从未注册进 data.assets，「已选首帧」与左栏就
+      // 永远取不到图。复用草稿素材读取（会解析 firstFrameId 并取签名地址）补上，
+      // 按 id 合并以免覆盖已有地址。
+      const requestId = ++draftMaterialsRequestRef.current;
+      void loadDraftMaterials({ ...draftRef.current, ...firstFramePatch })
+        .then((loaded) => {
+          if (draftMaterialsRequestRef.current !== requestId) return;
+          if (!loaded.assets.length) return;
+          updateDataRef.current((current) => ({
+            ...current,
+            assets: mergeStudioAssets(current.assets, loaded.assets),
+          }));
+        })
+        .catch(() => {
+          // 过期请求的失败与当前首帧无关，弹提示会把用户误导去重选一次。
+          if (draftMaterialsRequestRef.current !== requestId) return;
+          // 已确认的首帧不因取图失败回滚；下次进页面或重选首帧会再取一次。
+          notifyRef.current("首帧预览暂时加载失败，重新选择首帧可重试。");
+        });
     },
     [clearConfirmedFirstFrame],
   );
@@ -2662,7 +2818,7 @@ function ReplicaFirstFrameSection({
 
   return (
     <div className="creation-replacement">
-      {!project ? (
+      {!projectId ? (
         <Panel className="creation-empty-workspace">
           <Empty
             title="先在视频复刻中准备好项目"
@@ -2703,80 +2859,167 @@ function ReplicaFirstFrameSection({
       ) : review ? (
         <>
           <Hint>审核示例 · 只读</Hint>
-          <div className="creation-replacement-grid">
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">原画面</div>
+          {/* 审核示例必须与生产分支同构（三带 + .media-frame），否则复刻页在
+              审核入口下的真实布局无法被验证；这里只把真实组件换成静态示例数据。 */}
+          <Panel className="creation-replacement-source">
+            <div className="creation-panel-title-row">
+              <span>源画面</span>
+            </div>
+            <div className="media-frame">
               <Media
                 asset={reviewOriginal}
                 alt="审核示例原画面"
                 aspectRatio="adaptive"
               />
-            </Panel>
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">人物场景</div>
-              <select
-                aria-label="人物场景形象"
-                className="creation-project-select"
-                disabled
-                value={reviewScene?.id ?? ""}
-              >
-                {reviewSceneOptions.map((option) => (
-                  <option key={option.id} value={option.id}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <Media
-                asset={reviewScene}
-                alt="审核示例场景图"
-                aspectRatio="adaptive"
-              />
-            </Panel>
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">置换首帧</div>
-              <div className="creation-review-candidates">
-                {reviewCandidates.map(({ id, asset }, index) => (
-                  <figure key={id}>
-                    <Media
-                      asset={asset}
-                      alt={`审核示例候选 ${index + 1}`}
-                      aspectRatio="adaptive"
-                    />
-                    <figcaption>候选 {index + 1}</figcaption>
-                  </figure>
-                ))}
+            </div>
+          </Panel>
+          {/* 与生产分支同构：行的比例取两栏较大者，两侧面板各自覆盖。 */}
+          <ReplicaMediaRow ratio={Math.max(sceneRatio ?? ratio, ratio)}>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(sceneRatio ?? ratio)}
+            >
+              <div className="creation-panel-title-row">
+                <span>场景形象</span>
               </div>
+              <section className="flow-character-row flow-character-row--banded">
+                <div className="band-ctrl">
+                  <select
+                    aria-label="人物场景形象"
+                    className="creation-project-select"
+                    disabled
+                    value={reviewScene?.id ?? ""}
+                  >
+                    {reviewSceneOptions.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="media-frame">
+                  <Media
+                    asset={reviewScene}
+                    alt="审核示例场景图"
+                    aspectRatio="adaptive"
+                    onAspectRatioChange={setSceneRatio}
+                  />
+                </div>
+                <div className="band-act" />
+              </section>
             </Panel>
-          </div>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(ratio)}
+            >
+              <div className="creation-panel-title-row">
+                <span>置换首帧</span>
+              </div>
+              <section className="first-frame-selection first-frame-selection--compact first-frame-selection--banded">
+                {/* 首个子元素必须是标题块：creation.css 用它做视觉隐藏，
+                    同时把它排除在带布局之外，示例这里也要保持同构。 */}
+                <div>
+                  <h3 id="first-frame-title">人物置换首帧</h3>
+                </div>
+                <div className="band-ctrl">
+                  <select
+                    aria-label="画面比例"
+                    className="creation-project-select"
+                    disabled
+                    value="9:16"
+                  >
+                    <option value="9:16">9:16 竖屏</option>
+                  </select>
+                </div>
+                <div className="media-frame">
+                  <Media
+                    asset={reviewCandidates[0]?.asset}
+                    alt="审核示例候选 1"
+                    aspectRatio="adaptive"
+                  />
+                </div>
+                <div className="band-act center">
+                  <span className="status-note">审核示例</span>
+                </div>
+                <div className="creation-review-candidates">
+                  {reviewCandidates.map(({ id, asset }, index) => (
+                    <figure key={id}>
+                      <Media
+                        asset={asset}
+                        alt={`审核示例候选 ${index + 1}`}
+                        aspectRatio="adaptive"
+                      />
+                      <figcaption>候选 {index + 1}</figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </section>
+            </Panel>
+          </ReplicaMediaRow>
         </>
       ) : (
         <>
-          <div className="creation-replacement-grid">
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">原画面</div>
-              <SourceFrameSelection
-                onBusyChange={setLeafBusy}
-                onSelectionChange={handleSourceFrameChange}
-                projectId={project.id}
-                readOnly={readOnly}
-                referenceAssetId={project.reference_asset_id}
-                simplified
-                videoDurationSeconds={videoDurationSeconds}
-              />
-            </Panel>
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">人物场景</div>
+          {/* 源画面自带三个候选帧与取帧工具，独占一行横排，不再挤在置换首帧左栏。 */}
+          <Panel className="creation-replacement-source">
+            <div className="creation-panel-title-row">
+              <span>源画面</span>
+            </div>
+            <SourceFrameSelection
+              candidatesAlwaysVisible
+              onBusyChange={setLeafBusy}
+              onSelectionChange={handleSourceFrameChange}
+              projectId={projectId}
+              readOnly={readOnly}
+              referenceAssetId={referenceAssetId}
+              simplified
+              videoDurationSeconds={videoDurationSeconds}
+            />
+          </Panel>
+          {/* 行上只能有一份 --row-ratio，取两栏较大者，左栏宽度才装得下较宽的那张图；
+              两侧面板各自覆盖回自己的比例。 */}
+          <ReplicaMediaRow ratio={Math.max(sceneRatio ?? ratio, ratio)}>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(sceneRatio ?? ratio)}
+            >
+              <div className="creation-panel-title-row">
+                <span>场景形象</span>
+              </div>
               <CharacterSelection
-                sceneOnly
+                banded
+                onAspectRatioChange={setSceneRatio}
                 onBusyChange={setLeafBusy}
                 onVersionChange={handleCharacterChange}
-                projectId={project.id}
+                projectId={projectId}
                 readOnly={readOnly}
+                sceneOnly
                 variant="inline"
               />
             </Panel>
-            <Panel className="creation-replacement-step">
-              <div className="creation-panel-title">置换首帧</div>
+            <Panel
+              className="creation-replacement-step banded"
+              style={panelRatioStyle(ratio)}
+            >
+              <div className="creation-panel-title-row">
+                <span>置换首帧</span>
+              </div>
+              {characterSelection && sourceFrameSelection ? (
+                <FirstFrameSelection
+                  banded
+                  onBusyChange={setLeafBusy}
+                  onSelectionChange={handleFirstFrameChange}
+                  projectId={projectId}
+                  readOnly={readOnly}
+                  referenceSelection={referenceSelection}
+                  simplified
+                  sourceFrameSelectionId={sourceFrameSelection.id}
+                />
+              ) : (
+                <Empty
+                  title="等待前置步骤"
+                  description="选择场景形象并确认源画面后，即可替换原视频中的人物。"
+                />
+              )}
               {referenceError ? (
                 <>
                   <p className="settings-error" role="alert">
@@ -2791,24 +3034,8 @@ function ReplicaFirstFrameSection({
                   </Button>
                 </>
               ) : null}
-              {characterSelection && sourceFrameSelection ? (
-                <FirstFrameSelection
-                  onBusyChange={setLeafBusy}
-                  onSelectionChange={handleFirstFrameChange}
-                  projectId={project.id}
-                  readOnly={readOnly}
-                  referenceSelection={referenceSelection}
-                  simplified
-                  sourceFrameSelectionId={sourceFrameSelection.id}
-                />
-              ) : (
-                <Empty
-                  title="等待前置步骤"
-                  description="选择场景形象并确认源画面后，即可替换原视频中的人物。"
-                />
-              )}
             </Panel>
-          </div>
+          </ReplicaMediaRow>
           <Hint>
             {firstFrameAssetId
               ? "首帧已确认"

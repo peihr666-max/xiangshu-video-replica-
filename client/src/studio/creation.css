@@ -930,9 +930,25 @@
   gap: 10px;
 }
 
+/* 项目名回到「拆解控制」标题行右侧（复刻页曾整个丢掉项目名）。 */
+.creation-replica-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.creation-replica-project-name {
+  color: #b6afa2;
+  font-size: var(--font-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 宽度交给 useMediaRowFit 的 --media-col 驱动；max-height 会把竖版素材压成窄高条。 */
 .creation-replica-video__media {
   width: min(100%, 960px);
-  max-height: 62dvh;
   margin: 0 auto;
 }
 
@@ -966,8 +982,9 @@
   padding: 8px 0;
 }
 
+/* 宽度由 .media-row 的 --media-col 决定；560px 上限会把竖版素材压成窄高条。 */
 .creation-final-preview__media {
-  width: min(100%, 560px);
+  width: 100%;
   margin: 12px auto 0;
 }
 
@@ -1439,53 +1456,15 @@
   font-weight: 600;
   margin: 0;
 }
-.creation-replica-stage-grid,
-.creation-final-grid {
-  align-items: start;
-  display: grid;
-  gap: 20px;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
-}
-.creation-replica-stage-grid {
-  --image-preview-height: clamp(260px, 52dvh, 520px);
-  grid-template-columns: minmax(
-      0,
-      min(
-        52%,
-        calc(
-          var(--image-preview-height) *
-          var(--replica-source-ratio, 0.5625) +
-          42px
-        )
-      )
-    ) minmax(0, 1fr);
-}
-.creation-replica-stage-grid > * {
-  min-width: 0;
-}
-.creation-replica-stage-grid .creation-source-strip > span:last-child {
-  min-width: 0;
-}
-.creation-replica-stage-grid .creation-status-dot {
-  flex-shrink: 0;
-}
 .creation-replica-analyze .creation-panel-title-row {
   flex-wrap: wrap;
   overflow-wrap: anywhere;
 }
-.creation-replica-analyze .creation-shot-summary-list {
-  overflow-wrap: anywhere;
-}
-.creation-replica-media-column,
 .creation-final-copy {
   display: grid;
   gap: 16px;
   min-width: 0;
 }
-.creation-replica-stage-grid > .studio-panel,
-.creation-replica-media-column > .studio-panel,
-.creation-replica-media-column > .creation-source-strip,
-.creation-final-grid > .studio-panel,
 .creation-final-copy > .studio-panel {
   margin: 0;
 }
@@ -1536,15 +1515,9 @@
   grid-template-columns: 1fr;
 }
 .creation-replacement-grid img,
-.creation-replacement-grid video,
-.creation-final-preview img,
-.creation-final-preview video {
+.creation-replacement-grid video {
   max-height: 520px;
   object-fit: contain;
-}
-.creation-final-preview__media {
-  margin-inline: auto;
-  max-width: 520px;
 }
 .creation-handoff {
   margin: 20px;
@@ -1573,8 +1546,7 @@
 }
 
 @media (max-width: 900px) {
-  .creation-replica-stage-grid,
-  .creation-final-grid {
+  .media-row {
     grid-template-columns: 1fr;
   }
 }
@@ -1912,4 +1884,149 @@
   .creation-video-workspace--split .creation-frame-card > .video-preview {
     --image-preview-height: 200px;
   }
+}
+/* ---------------------------------------------------------------------------
+ * 比例驱动的媒体行（useMediaRowFit）
+ *
+ * 左栏宽度不是均分出来的，而是由素材宽高比反推：列宽 = 媒体高度 × 比例 + 42px 补偿。
+ * --media-col / --row-ratio / --media-min-h 由 useMediaRowFit 写在行元素上。
+ * ------------------------------------------------------------------------- */
+
+/* 行内两栏等高（底部对齐），左栏宽度由 --media-col 决定 */
+.media-row {
+  display: grid;
+  gap: 20px;
+  align-items: stretch;
+  grid-template-columns: var(--media-col, 240px) minmax(0, 1fr);
+}
+
+/* 刻意保持低特异性：页面级 .studio-panel 规则仍能覆盖这里的布局属性。 */
+.media-row > .studio-panel,
+.media-row > div {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  min-width: 0;
+}
+
+/* 媒体框：按比例收缩 + 弹性填满面板剩余高度 */
+.media-frame {
+  flex: 1 1 auto;
+  min-height: var(--media-min-h, 320px);
+  aspect-ratio: var(--row-ratio, 0.5625);
+  width: auto;
+  max-width: 100%;
+  /* 不可省：column flex 默认 align-items: stretch 会把子项横向拉满，
+     覆盖 width:auto + aspect-ratio，媒体框被拉成大宽条、比例失真。 */
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0c0b;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* 撞上 40% 列宽上限时，max-width 会先把宽度卡住，高度改由 flex 决定，
+   aspect-ratio 反向失效（1440 视口下 16:9 素材实测 428×306，比例 1.400）。
+   故从列宽反推高度上限：列宽 = 高度 × 比例 + 42px（与 useMediaRowFit 的
+   padCompensation 同源），反过来即 (列宽 - 42) / 比例。
+   min-height 必须一起压低——CSS 里 min-height 优先于 max-height，
+   只写 max-height 会被 --media-min-h 顶回去，比例照旧失真。
+   只在 .media-row 内生效：--media-col 由该行提供，行外没有这个量，
+   行外的媒体框（如源画面面板）不该被一个不存在的列宽卡住。 */
+.media-row .media-frame {
+  --media-fit-max-h: calc(
+    (var(--media-col, 240px) - 42px) /
+    var(--row-ratio, 0.5625)
+  );
+  max-height: var(--media-fit-max-h);
+  min-height: min(var(--media-min-h, 320px), var(--media-fit-max-h));
+}
+
+/* 三带法：左右两侧头部带/底部带等高，媒体自然上下对齐 */
+.studio-panel.banded {
+  display: flex;
+  flex-direction: column;
+}
+
+.band-ctrl {
+  height: var(--band-ctrl, 62px);
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  /* 固定带高不参与伸缩，否则两侧内容多少不同就会把带高拉不开、对不齐。 */
+  flex: 0 0 auto;
+}
+
+.band-act {
+  height: var(--band-act, 44px);
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.band-act.center {
+  justify-content: center;
+}
+
+/* 复刻页第 2 节（置换首帧）：源画面独占一行，下面一行两栏三带对齐。
+   选择器带上 .creation-replica 是为了与页面上方
+   .creation-workflow-section > .creation-replacement 的特异性持平，
+   否则低特异性规则写在后面会被 lint 判为 noDescendingSpecificity。 */
+.creation-replica .creation-replacement {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.creation-replacement-source {
+  min-width: 0;
+}
+
+/* 两栏媒体框钉死同高：banded 面板在媒体框之后还跟着费用提示、候选折叠区等
+   尾随内容，用 flex:1 自适应时右栏媒体框会被这些内容挤矮，两栏既不同高、
+   也就得不到同宽。--image-preview-height 必须同步，VideoPreview 的内联宽度按它算。 */
+.creation-replacement .media-frame {
+  flex: 0 0 auto;
+  height: var(--media-min-h, 320px);
+  --image-preview-height: var(--media-min-h, 320px);
+}
+
+.creation-replacement .media-frame img,
+.creation-replacement .media-frame video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* 带内控件收进左栏宽度：默认 min-width 240px 会把窄栏顶出格。 */
+.creation-replacement .band-ctrl > label,
+.creation-replacement .band-ctrl > select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.creation-replacement .band-ctrl select {
+  width: 100%;
+}
+
+/* 三带布局里候选与历史收进折叠区，媒体框高度不受其展开影响。 */
+.first-frame-band-extras > summary {
+  width: fit-content;
+  color: #b6afa2;
+  font-size: var(--font-label);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* 两侧三带容器都必须是零间距纵向带，否则左栏媒体框会比右栏差出一个 gap。 */
+.creation-replacement .flow-character-row--banded,
+.creation-replacement
+  .first-frame-selection--compact.first-frame-selection--banded {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
 }
