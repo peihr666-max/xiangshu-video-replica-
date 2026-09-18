@@ -488,7 +488,7 @@ describe("复刻页 C 类：素材签名与提示词渲染", () => {
     expect(result.asset?.url).toBe("https://signed.example/asset-c1.mp4");
   });
 
-  it("C5 提示词时间码按分镜块渲染（待 Wave 2 接线后转绿）", async () => {
+  it("C5 拆解后的提示词在单一文本框中直接展示与编辑", async () => {
     const value = replicaStudio();
     value.state = {
       ...value.state,
@@ -513,10 +513,13 @@ describe("复刻页 C 类：素材签名与提示词渲染", () => {
       RED_TIMEOUT,
     );
 
-    await waitFor(
-      () =>
-        expect(view.container.querySelector(".prompt-md__shot")).not.toBeNull(),
-      RED_TIMEOUT,
-    );
+    // 单一文本框契约：提示词正文直接在可编辑框中展示，不再有第二渲染体。
+    await waitFor(() => {
+      const box = screen.getByLabelText("最终提示词") as HTMLTextAreaElement;
+      expect(box.value.includes("镜头缓推庭院")).toBe(true);
+    }, RED_TIMEOUT);
+    expect(
+      screen.getByRole("button", { name: "去 AI 视频创作" }),
+    ).toBeEnabled();
   });
 });
