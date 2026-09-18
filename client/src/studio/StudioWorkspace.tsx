@@ -2507,16 +2507,18 @@ function StudioPicker({
       ),
     ).then((results) => {
       if (operation !== cloudImageOperationRef.current) return;
-      setCloudImageUrls(
-        Object.fromEntries(
-          visible.flatMap((asset, index) => {
-            const result = results[index];
-            return result?.status === "fulfilled" && result.value
-              ? [[asset.id, result.value]]
-              : [];
-          }),
-        ),
+      const resolved = Object.fromEntries(
+        visible.flatMap((asset, index) => {
+          const result = results[index];
+          return result?.status === "fulfilled" && result.value
+            ? [[asset.id, result.value]]
+            : [];
+        }),
       );
+      // REFERENCE-MATERIAL-PREVIEW：按 id 合并而不是整表替换——翻页后上一页已
+      // 签发的地址必须保留，否则已选中的素材缩略图会随翻页变空。
+      if (!Object.keys(resolved).length) return;
+      setCloudImageUrls((previous) => ({ ...previous, ...resolved }));
     });
     return () => {
       cloudImageOperationRef.current += 1;
@@ -2642,7 +2644,11 @@ function StudioPicker({
                     type="button"
                     key={asset.id}
                     onClick={() => {
-                      if (usesCloudImages && asset.url) {
+                      // REFERENCE-MATERIAL-PREVIEW：云素材选中即写回 data.assets，
+                      // 不再要求「签名地址已就绪」——按页签发的地址是异步的，等它
+                      // 就绪才回写会让用户在签发完成前选中的素材永远没有预览。
+                      // 缺地址由参考页的批量解析补齐（mergeStudioAssets 保留已有 url）。
+                      if (usesCloudImages) {
                         updateData((current) => ({
                           ...current,
                           assets: mergeStudioAssets(current.assets, [asset]),

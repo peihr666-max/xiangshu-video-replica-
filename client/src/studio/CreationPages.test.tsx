@@ -18,6 +18,7 @@ vi.mock("./context", () => ({ useStudio }));
 // 复刻模块（模块①）：部分 mock api/live，其余保持原实现。
 const replicaApi = vi.hoisted(() => ({
   getAssetDownloadUrl: vi.fn(),
+  getMaterialBatchPreviews: vi.fn(),
   selectCharacterReferences: vi.fn(),
   startVideoAnalysis: vi.fn(),
   waitForAnalysisTask: vi.fn(),
@@ -41,6 +42,7 @@ const replicaApi = vi.hoisted(() => ({
 const replicaLive = vi.hoisted(() => ({
   readAudioDuration: vi.fn(),
   readVideoDuration: vi.fn(),
+  readVideoFirstFrame: vi.fn(),
   uploadOralAudioMaterial: vi.fn(),
   uploadReferenceAudioMaterial: vi.fn(),
   uploadWorkbenchSourceVideo: vi.fn(),
@@ -304,6 +306,18 @@ function studio(
   };
 }
 
+const referenceCapabilities = {
+  extended_modes_enabled: true,
+  t2v_enabled: true,
+  i2v_enabled: true,
+  r2v_enabled: true,
+  last_frame_enabled: true,
+  max_reference_images: 8,
+  max_reference_videos: 3,
+  max_reference_audios: 3,
+  max_quantity: 4,
+};
+
 describe("V1.4 创作页面", () => {
   beforeEach(() => {
     useStudio.mockReset();
@@ -324,6 +338,13 @@ describe("V1.4 创作页面", () => {
     replicaLive.uploadVideoMaterial.mockReset();
     replicaLive.readAudioDuration.mockReset();
     replicaLive.readVideoDuration.mockReset();
+    replicaLive.readVideoFirstFrame.mockReset();
+    replicaLive.readVideoFirstFrame.mockResolvedValue(undefined);
+    replicaApi.getMaterialBatchPreviews.mockReset();
+    replicaApi.getMaterialBatchPreviews.mockResolvedValue({
+      previews: {},
+      thumbnails: {},
+    });
     replicaLive.uploadReferenceAudioMaterial.mockReset();
     replicaLive.uploadOralAudioMaterial.mockReset();
     replicaLive.validateOralAudioFile.mockReset();
@@ -2338,6 +2359,215 @@ describe("V1.4 创作页面", () => {
     );
 
     view.unmount();
+  });
+
+  it("参考素材缩略图：视频取服务端首帧，图片取签名地址，音频只出波形占位", async () => {
+    const value = studio({
+      videoCapabilities: referenceCapabilities,
+    });
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: {
+        ...value.state.draft,
+        referenceIds: ["reference-1", "reference-video", "reference-audio"],
+      },
+    };
+    value.data.assets = value.data.assets.map((asset) =>
+      asset.id === "reference-1" ? { ...asset, assetId: "asset-image" } : asset,
+    );
+    value.data.assets.push(
+      {
+        id: "reference-video",
+        assetId: "asset-video",
+        name: "庭院运镜.mp4",
+        kind: "video",
+        group: "参考素材",
+        source: "素材库",
+        saved: true,
+      },
+      {
+        id: "reference-audio",
+        assetId: "asset-audio",
+        name: "环境声.wav",
+        kind: "audio",
+        group: "参考素材",
+        source: "素材库",
+        saved: true,
+      },
+    );
+    replicaApi.getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "asset-image": { url: "https://signed.example/asset-image.jpg" },
+        "asset-video": { url: "https://signed.example/asset-video.mp4" },
+      },
+      thumbnails: {
+        "asset-video": "https://signed.example/asset-video.thumb.jpg",
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const videoRow = screen.getByRole("button", { name: "预览 庭院运镜.mp4" });
+    await waitFor(() =>
+      expect(videoRow.querySelector("img")).toHaveAttribute(
+        "src",
+        "https://signed.example/asset-video.thumb.jpg",
+      ),
+    );
+    const imageRow = screen.getByRole("button", { name: "预览 乡墅外观.jpg" });
+    await waitFor(() =>
+      expect(imageRow.querySelector("img")).toHaveAttribute(
+        "src",
+        "https://signed.example/asset-image.jpg",
+      ),
+    );
+    // 音频不出图像，也不会为它发批量请求
+    const audioRow = screen.getByRole("button", { name: "预览 环境声.wav" });
+    expect(audioRow.querySelector("img")).toBeNull();
+    expect(replicaApi.getMaterialBatchPreviews).toHaveBeenCalledWith(
+      "customer-1",
+      [
+        { id: "asset-image", populate: false },
+        { id: "asset-video", populate: false },
+      ],
+      {},
+    );
+  });
+
+  it("参考素材缩略图解析失败给出占位与重试入口，重试后恢复", async () => {
+    const value = studio({
+      videoCapabilities: referenceCapabilities,
+    });
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: {
+        ...value.state.draft,
+        referenceIds: ["reference-video"],
+      },
+    };
+    value.data.assets.push({
+      id: "reference-video",
+      assetId: "asset-video",
+      name: "庭院运镜.mp4",
+      kind: "video",
+      group: "参考素材",
+      source: "素材库",
+      saved: true,
+    });
+    replicaApi.getMaterialBatchPreviews.mockResolvedValueOnce({
+      previews: {},
+      thumbnails: {},
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const videoRow = screen.getByRole("button", { name: "预览 庭院运镜.mp4" });
+    await waitFor(() =>
+      expect(
+        within(videoRow).getByText("缩略图暂不可用，请重试。"),
+      ).toBeInTheDocument(),
+    );
+
+    replicaApi.getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "asset-video": { url: "https://signed.example/asset-video.mp4" },
+      },
+      thumbnails: {
+        "asset-video": "https://signed.example/asset-video.thumb.jpg",
+      },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "重试 庭院运镜.mp4 的缩略图" }),
+    );
+    await waitFor(() =>
+      expect(videoRow.querySelector("img")).toHaveAttribute(
+        "src",
+        "https://signed.example/asset-video.thumb.jpg",
+      ),
+    );
+    expect(replicaApi.getMaterialBatchPreviews).toHaveBeenCalledTimes(2);
+  });
+
+  it("参考素材列表落在上传输入框下方，计数独立成行", () => {
+    const value = studio({
+      videoCapabilities: referenceCapabilities,
+    });
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: { ...value.state.draft, referenceIds: ["reference-1"] },
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const dropzone = screen.getByRole("button", { name: "上传文件" });
+    const library = screen.getByRole("button", { name: /从素材库选择/ });
+    const preview = screen.getByRole("button", { name: "预览 乡墅外观.jpg" });
+    const counter = screen.getByText("参考图 1/8 · 视频 0/3 · 音频 0/3");
+
+    // 素材库入口与上传框同属一个合并上传区，素材列表在其下方
+    expect(dropzone.parentElement?.contains(library)).toBe(true);
+    expect(
+      dropzone.compareDocumentPosition(preview) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      library.compareDocumentPosition(preview) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      preview.compareDocumentPosition(counter) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // 计数不再挤在按钮文案里
+    expect(within(library).queryByText(/参考图 1\/8/)).toBeNull();
+  });
+
+  it("本机上传视频后立即用本地首帧作为缩略图", async () => {
+    replicaLive.readVideoDuration.mockResolvedValue(10);
+    replicaLive.readVideoFirstFrame.mockResolvedValue(
+      "data:image/jpeg;base64,FRAME",
+    );
+    replicaLive.uploadVideoMaterial.mockResolvedValue({
+      id: "dropped-video",
+      name: "庭院.mp4",
+      kind: "video",
+      group: "参考素材",
+      source: "本机上传",
+      saved: true,
+    });
+    const updateData = vi.fn();
+    const value = studio({
+      review: false,
+      updateData,
+      videoCapabilities: referenceCapabilities,
+    });
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: { ...value.state.draft, referenceIds: [] },
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.change(screen.getByLabelText("上传参考素材"), {
+      target: {
+        files: [new File(["video"], "庭院.mp4", { type: "video/mp4" })],
+      },
+    });
+
+    await waitFor(() => expect(updateData).toHaveBeenCalled());
+    const updater = updateData.mock.calls[0]?.[0];
+    const next = updater({ ...value.data });
+    expect(next.materials[0]).toMatchObject({
+      id: "dropped-video",
+      poster: "data:image/jpeg;base64,FRAME",
+    });
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      referenceIds: ["dropped-video"],
+    });
   });
 
   it("移除参考素材不会误打开预览", () => {

@@ -261,6 +261,53 @@ export function readVideoDuration(file: File): Promise<number> {
   });
 }
 
+/** 参考素材缩略图的本地兜底（REFERENCE-MATERIAL-PREVIEW）：把刚选中的视频文件
+ * 在浏览器里抽一帧 JPEG data URL。服务端首帧缩略图（MATERIAL-THUMBS-B）是主
+ * 通道；这里保证「上传后立刻可见」，并覆盖服务端抽帧失败/历史素材的情况。
+ * 纯本地、无网络、失败只返回 undefined，绝不影响上传结果。 */
+export function readVideoFirstFrame(
+  file: File,
+  maxWidth = 480,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    const finish = (value?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      video.onloadeddata = null;
+      video.onerror = null;
+      video.removeAttribute("src");
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(), 5_000);
+    video.preload = "auto";
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadeddata = () => {
+      try {
+        const sourceWidth = video.videoWidth || maxWidth;
+        const sourceHeight = video.videoHeight || Math.round(maxWidth * 0.5625);
+        const scale = Math.min(1, maxWidth / sourceWidth);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+        canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+        const context = canvas.getContext("2d");
+        if (!context) return finish();
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        finish(canvas.toDataURL("image/jpeg", 0.72));
+      } catch {
+        finish();
+      }
+    };
+    video.onerror = () => finish();
+    video.src = url;
+  });
+}
+
 function draftAssetIds(draft: StudioDraft): string[] {
   return [
     draft.sourceAssetId,

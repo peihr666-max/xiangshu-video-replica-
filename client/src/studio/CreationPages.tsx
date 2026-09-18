@@ -21,6 +21,7 @@ import {
   getLatestProjectShotCards,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
+  getMaterialBatchPreviews,
   getScriptRewriteTask,
   listUserSavedPrompts,
   type Project,
@@ -54,6 +55,7 @@ import {
   loadSavedScriptList,
   readAudioDuration,
   readVideoDuration,
+  readVideoFirstFrame,
   runReplicaGeneration,
   uploadReferenceAudioMaterial,
   uploadVideoMaterial,
@@ -66,6 +68,17 @@ import {
   replicaInputKey,
 } from "./PromptEditor";
 import { ReplicaNarration } from "./ReplicaPreparation";
+import {
+  clearReferencePreview,
+  markReferencePreviewsLoading,
+  mergeReferencePreviews,
+  type ReferencePreviewMap,
+  referencePreviewAssetId,
+  referencePreviewEntries,
+  referencePreviewTargets,
+  referencePreviewView,
+  releaseReferencePreviews,
+} from "./referenceMaterialPreview";
 import {
   clearScriptRewriteIdempotencyKey,
   resolvePendingRewrite,
@@ -3381,6 +3394,12 @@ function VideoMaterialUpload({
             ? await uploadVideoMaterial(file, group, setProgress)
             : await uploadReferenceAudioMaterial(file, duration, setProgress);
       }
+      if (kind === "video") {
+        // REFERENCE-MATERIAL-PREVIEW：本机上传的视频就地抽一帧，列表立刻有图，
+        // 不必等服务端首帧缩略图；失败只损失缩略图，不影响上传结果。
+        const poster = await readVideoFirstFrame(file);
+        if (poster) asset = { ...asset, poster };
+      }
       if (mountedRef.current) {
         onUploadedRef.current(asset);
         notify(`${label}「${file.name}」已上传到素材库。`);
@@ -3539,6 +3558,87 @@ function VideoFrameCard({
   );
 }
 
+/** 参考素材缩略图/预览解析（REFERENCE-MATERIAL-PREVIEW）：一次批量授权换整表
+ * 地址——图片直出本体签名地址，视频额外拿服务端首帧缩略图；结果按 id 增量合并
+ * 并缓存，只对尚未就绪的 id 发请求，卸载时释放持有的本机 Blob URL。
+ * 依赖只跟「可解析 id 集合 / 用户 / 重试令牌」，不跟每次都新建的素材数组。 */
+function useReferencePreviews(assets: StudioAsset[], userId: string) {
+  const [entries, setEntries] = useState<ReferencePreviewMap>({});
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+  const [retryToken, setRetryToken] = useState(0);
+  const operationRef = useRef(0);
+  const targetKey = referencePreviewTargets(assets).join("|");
+
+  useEffect(() => {
+    // retryToken 只作为「同一批 id 重新解析」的触发器参与依赖。
+    void retryToken;
+    const ids = targetKey ? targetKey.split("|") : [];
+    if (!ids.length) {
+      releaseReferencePreviews(entriesRef.current);
+      setEntries({});
+      return;
+    }
+    const operation = ++operationRef.current;
+    const pending = ids.filter(
+      (id) => entriesRef.current[id]?.status !== "ready",
+    );
+    if (!pending.length) return;
+    setEntries((previous) => markReferencePreviewsLoading(previous, pending));
+    // 放进 then 里调用：解析器在缺少缓存上下文等场景可能同步抛错，这里统一收敛
+    // 成「可见的失败 + 可重试」，绝不让参考列表把整页渲染带崩。
+    void Promise.resolve()
+      .then(() =>
+        getMaterialBatchPreviews(
+          userId,
+          pending.map((id) => ({ id, populate: false })),
+          {},
+        ),
+      )
+      .then((batch) => {
+        if (operation !== operationRef.current) return;
+        setEntries((previous) => {
+          const resolved = referencePreviewEntries(
+            assetsRef.current,
+            pending,
+            batch,
+          );
+          // 被替换的旧结果可能持有 Blob URL，先释放再合并。
+          for (const id of pending) {
+            if (resolved[id]) previous[id]?.release?.();
+          }
+          return mergeReferencePreviews(previous, resolved);
+        });
+      })
+      .catch((cause: unknown) => {
+        if (operation !== operationRef.current) return;
+        const message = customerVisibleErrorMessage(
+          cause,
+          "缩略图暂不可用，请重试。",
+        );
+        setEntries((previous) => {
+          const failed: ReferencePreviewMap = {};
+          for (const id of pending) failed[id] = { status: "error", message };
+          return mergeReferencePreviews(previous, failed);
+        });
+      });
+    return () => {
+      operationRef.current += 1;
+    };
+  }, [targetKey, userId, retryToken]);
+
+  useEffect(() => () => releaseReferencePreviews(entriesRef.current), []);
+
+  const retry = useCallback((assetId: string) => {
+    setEntries((previous) => clearReferencePreview(previous, assetId));
+    setRetryToken((token) => token + 1);
+  }, []);
+
+  return { entries, retry };
+}
+
 export function VideoPage() {
   const {
     state,
@@ -3682,6 +3782,7 @@ export function VideoPage() {
     },
   );
   const references = referenceValidation.assets;
+  const referencePreviews = useReferencePreviews(references, user.id);
   const referencePreviewDialogAsset = references.find(
     (asset) => asset.id === referencePreviewDialogId,
   );
@@ -3701,6 +3802,20 @@ export function VideoPage() {
     }
     if (referencePreviewDialogAsset.url) {
       setResolvedReferencePreview(referencePreviewDialogAsset);
+      setReferencePreviewLoading(false);
+      setReferencePreviewError("");
+      return;
+    }
+    // 列表已经批量解析过的地址直接复用，弹窗不再重复授权一次。
+    const resolvedFromList =
+      referencePreviews.entries[
+        referencePreviewAssetId(referencePreviewDialogAsset)
+      ];
+    if (resolvedFromList?.status === "ready" && resolvedFromList.mediaUrl) {
+      setResolvedReferencePreview({
+        ...referencePreviewDialogAsset,
+        url: resolvedFromList.mediaUrl,
+      });
       setReferencePreviewLoading(false);
       setReferencePreviewError("");
       return;
@@ -3729,7 +3844,7 @@ export function VideoPage() {
       if (referencePreviewRequestRef.current === requestId)
         referencePreviewRequestRef.current += 1;
     };
-  }, [referencePreviewDialogAsset]);
+  }, [referencePreviewDialogAsset, referencePreviews.entries]);
   const effectiveCapabilitiesStatus = review
     ? "ready"
     : (videoCapabilitiesStatus ?? (videoCapabilities ? "ready" : "loading"));
@@ -3758,6 +3873,16 @@ export function VideoPage() {
     referenceValidation.imageCount >= referenceValidation.imageLimit &&
     referenceValidation.videoCount >= referenceValidation.videoLimit &&
     referenceValidation.audioCount >= referenceValidation.audioLimit;
+  // 合并上传区（上传框 + 从素材库选择）共用同一套禁用条件。
+  const referenceAddingDisabled =
+    readOnly ||
+    referenceCapabilityPending ||
+    referenceCapabilityError ||
+    referenceModeDisabled ||
+    referenceHasIssues ||
+    referenceAssetsPending ||
+    referenceAssetsError ||
+    referenceAtLimit;
   const ready =
     Boolean(state.draft.prompt.trim()) &&
     !state.draft.replicaPreparationPending &&
@@ -3866,31 +3991,6 @@ export function VideoPage() {
                 </>
               }
             >
-              <div className="creation-upload-row">
-                <button
-                  className="creation-upload"
-                  disabled={
-                    readOnly ||
-                    referenceCapabilityPending ||
-                    referenceCapabilityError ||
-                    referenceModeDisabled ||
-                    referenceHasIssues ||
-                    referenceAssetsPending ||
-                    referenceAssetsError ||
-                    referenceAtLimit
-                  }
-                  onClick={() => openPicker("reference")}
-                  type="button"
-                >
-                  <Icon name="upload" />
-                  <span>从素材库选择</span>
-                  <small>
-                    {referenceAtLimit
-                      ? "已达参考素材上限，需移除后才能继续添加。"
-                      : `参考图 ${referenceValidation.imageCount}/${referenceValidation.imageLimit} · 视频 ${referenceValidation.videoCount}/${referenceValidation.videoLimit} · 音频 ${referenceValidation.audioCount}/${referenceValidation.audioLimit}`}
-                  </small>
-                </button>
-              </div>
               {referenceCapabilityPending && (
                 <p className="settings-error" role="status">
                   正在读取参考生视频能力，请稍候。
@@ -3950,104 +4050,151 @@ export function VideoPage() {
                   整理参考素材
                 </Button>
               )}
-              <div className="creation-reference-materials">
+              <div className="creation-reference-upload">
                 <VideoMaterialUpload
                   key={`reference-upload-${state.draft.id}`}
-                  disabled={
-                    readOnly ||
-                    referenceCapabilityPending ||
-                    referenceCapabilityError ||
-                    referenceModeDisabled ||
-                    referenceHasIssues ||
-                    referenceAssetsPending ||
-                    referenceAssetsError ||
-                    referenceAtLimit
-                  }
+                  disabled={referenceAddingDisabled}
                   acceptKinds={["image", "video", "audio"]}
                   dropzone
                   group="参考素材"
                   label="参考素材"
                   onUploaded={addReference}
                 />
-                <div className="creation-reference-list">
-                  {references.map((asset, index) => (
-                    <div className="creation-reference-row" key={asset.id}>
-                      <button
-                        type="button"
-                        className="creation-reference-preview-button"
-                        aria-label={`预览 ${asset.name}`}
-                        aria-pressed={previewReferenceId === asset.id}
-                        onClick={(event) => {
-                          referencePreviewTriggerRef.current =
-                            event.currentTarget;
-                          setPreviewReferenceId(asset.id);
-                          setReferencePreviewDialogId(asset.id);
-                        }}
-                      >
-                        <Media
-                          asset={
-                            asset.kind === "image"
-                              ? asset
-                              : asset.kind === "video" && asset.poster
-                                ? { ...asset, kind: "image", url: asset.poster }
-                                : undefined
-                          }
-                          alt={asset.kind === "audio" ? "音频预览" : asset.name}
-                        />
-                      </button>
-                      <span className="creation-reference-copy">
-                        <strong>
-                          @{index + 1} → &lt;
-                          {asset.kind === "image"
-                            ? "Picture"
-                            : asset.kind === "video"
-                              ? "Video"
-                              : "Audio"}{" "}
-                          {
-                            references
-                              .slice(0, index + 1)
-                              .filter((item) => item.kind === asset.kind).length
-                          }
-                          &gt; {asset.name}
-                        </strong>
-                        <small>
-                          {assetKindNames[asset.kind]} · {asset.source}
-                        </small>
-                      </span>
-                      <input
-                        aria-label={`${asset.name}的参考用途`}
-                        placeholder="参考用途，如人物、服装、场景"
-                        disabled={readOnly}
-                        value={state.draft.referencePurposes?.[asset.id] ?? ""}
-                        maxLength={200}
-                        onChange={(event) =>
-                          patchDraft({
-                            referencePurposes: {
-                              ...state.draft.referencePurposes,
-                              [asset.id]: event.target.value,
-                            },
-                          })
-                        }
-                      />
-                      <Button
-                        aria-label={`移除 ${asset.name}`}
-                        className="creation-reference-remove"
-                        disabled={readOnly}
-                        onClick={() =>
-                          patchDraft({
-                            referenceIds: state.draft.referenceIds.filter(
-                              (id) => id !== asset.id,
-                            ),
-                          })
-                        }
-                        variant="quiet"
-                      >
-                        <Icon name="close" size={18} />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
+                <Button
+                  disabled={referenceAddingDisabled}
+                  onClick={() => openPicker("reference")}
+                  variant="outline"
+                >
+                  <Icon name="upload" />
+                  <span>从素材库选择</span>
+                </Button>
               </div>
+              <div className="creation-reference-materials">
+                {references.length ? (
+                  <div className="creation-reference-list">
+                    {references.map((asset, index) => {
+                      const entry =
+                        referencePreviews.entries[
+                          referencePreviewAssetId(asset)
+                        ];
+                      const view = referencePreviewView(asset, entry);
+                      return (
+                        <div className="creation-reference-row" key={asset.id}>
+                          <button
+                            type="button"
+                            className="creation-reference-preview-button"
+                            aria-label={`预览 ${asset.name}`}
+                            aria-pressed={previewReferenceId === asset.id}
+                            onClick={(event) => {
+                              referencePreviewTriggerRef.current =
+                                event.currentTarget;
+                              setPreviewReferenceId(asset.id);
+                              setReferencePreviewDialogId(asset.id);
+                            }}
+                          >
+                            <Media
+                              asset={view.asset}
+                              alt={
+                                asset.kind === "audio" ? "音频预览" : asset.name
+                              }
+                              fallback={
+                                view.placeholder ? (
+                                  <span className="creation-reference-placeholder">
+                                    <span className="creation-reference-name">
+                                      {asset.kind === "audio"
+                                        ? "音频预览"
+                                        : asset.name}
+                                    </span>
+                                    <small>{view.placeholder}</small>
+                                  </span>
+                                ) : undefined
+                              }
+                            />
+                          </button>
+                          <span className="creation-reference-copy">
+                            <strong>
+                              @{index + 1} → &lt;
+                              {asset.kind === "image"
+                                ? "Picture"
+                                : asset.kind === "video"
+                                  ? "Video"
+                                  : "Audio"}{" "}
+                              {
+                                references
+                                  .slice(0, index + 1)
+                                  .filter((item) => item.kind === asset.kind)
+                                  .length
+                              }
+                              &gt; {asset.name}
+                            </strong>
+                            <small>
+                              {assetKindNames[asset.kind]} · {asset.source}
+                            </small>
+                            {entry?.status === "error" ? (
+                              <button
+                                className="creation-reference-retry"
+                                type="button"
+                                aria-label={`重试 ${asset.name} 的缩略图`}
+                                onClick={() =>
+                                  referencePreviews.retry(
+                                    referencePreviewAssetId(asset),
+                                  )
+                                }
+                              >
+                                重试缩略图
+                              </button>
+                            ) : null}
+                          </span>
+                          <input
+                            aria-label={`${asset.name}的参考用途`}
+                            placeholder="参考用途，如人物、服装、场景"
+                            disabled={readOnly}
+                            value={
+                              state.draft.referencePurposes?.[asset.id] ?? ""
+                            }
+                            maxLength={200}
+                            onChange={(event) =>
+                              patchDraft({
+                                referencePurposes: {
+                                  ...state.draft.referencePurposes,
+                                  [asset.id]: event.target.value,
+                                },
+                              })
+                            }
+                          />
+                          <Button
+                            aria-label={`移除 ${asset.name}`}
+                            className="creation-reference-remove"
+                            disabled={readOnly}
+                            onClick={() =>
+                              patchDraft({
+                                referenceIds: state.draft.referenceIds.filter(
+                                  (id) => id !== asset.id,
+                                ),
+                              })
+                            }
+                            variant="quiet"
+                          >
+                            <Icon name="close" size={18} />
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="creation-reference-empty">
+                    还没有参考素材。上传本机文件或从素材库选择，第一项即 @1。
+                  </p>
+                )}
+              </div>
+              <p className="creation-reference-counter">
+                <span>{`参考图 ${referenceValidation.imageCount}/${referenceValidation.imageLimit} · 视频 ${referenceValidation.videoCount}/${referenceValidation.videoLimit} · 音频 ${referenceValidation.audioCount}/${referenceValidation.audioLimit}`}</span>
+                <small data-state={referenceAtLimit ? "limited" : undefined}>
+                  {referenceAtLimit
+                    ? "已达参考素材上限，需移除后才能继续添加。"
+                    : `视频、音频各累计 ≤${MAX_REFERENCE_MEDIA_SECONDS} 秒`}
+                </small>
+              </p>
               {referencePreviewDialogAsset ? (
                 <StudioDialog
                   title={`预览 ${referencePreviewDialogAsset.name}`}

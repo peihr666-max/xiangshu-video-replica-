@@ -2463,7 +2463,11 @@ describe("发布账号官方扫码", () => {
     await waitFor(() =>
       expect(nativeAccounts.importCloudPublishAccount).toHaveBeenCalledWith(
         "xiaohongshu",
-        { platform_user_id: "platform-uid", username: "平台真实昵称" },
+        {
+          platform_user_id: "platform-uid",
+          username: "平台真实昵称",
+          avatar_url: null,
+        },
         storage,
       ),
     );
