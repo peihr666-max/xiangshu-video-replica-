@@ -119,6 +119,21 @@ export default defineConfig({
       // 入口，但同目录出现 admin.html 时可能被自动扫描卷入客户包，破坏
       // scripts/verify_customer_bundle.mjs 的管理代码排除断言。
       input: resolve(scriptDir, "index.html"),
+      // MATERIAL-PERF-D（P1-4）：react/react-dom 拆 vendor chunk——业务代码
+      // 迭代时框架代码继续命中浏览器长效缓存。不动页面级分包（页面组件
+      // 经 StudioWorkspace 静态导入，lazy 化涉及渲染语义，归后续任务）。
+      // Vite 8 底层为 rolldown：分包用 output.advancedChunks 而非 rollup 的
+      // manualChunks。
+      output: {
+        advancedChunks: {
+          groups: [
+            {
+              name: "react-vendor",
+              test: /node_modules[\\/](react|react-dom)[\\/]/,
+            },
+          ],
+        },
+      },
     },
   },
   test: {

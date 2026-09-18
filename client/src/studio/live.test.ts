@@ -78,8 +78,26 @@ import {
   publishScriptVersion,
   reloadTasks,
   retryStudioTask,
+  sameTasks,
 } from "./live";
 import type { StudioTask } from "./types";
+
+it("sameTasks 判定任务清单是否无实质变化（P1-3）", () => {
+  const task = {
+    id: "task-1",
+    type: "视频生成" as const,
+    title: "任务",
+    status: "running" as const,
+    progress: 40,
+    submitted: "2026-09-17 10:00:00",
+  };
+  expect(sameTasks([task], [{ ...task }])).toBe(true);
+  expect(sameTasks([task], [{ ...task, status: "completed" as const }])).toBe(
+    false,
+  );
+  expect(sameTasks([task], [{ ...task, progress: 60 }])).toBe(false);
+  expect(sameTasks([task], [])).toBe(false);
+});
 
 const user: CurrentUser = {
   id: "user-1",

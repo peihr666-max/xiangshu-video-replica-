@@ -61,6 +61,7 @@ import {
   publishScriptVersion,
   reloadStats,
   reloadTasks,
+  sameTasks,
   studioAssetFromMaterial,
 } from "./live";
 import {
@@ -1140,14 +1141,15 @@ export function StudioWorkspace({
       void reloadTasks(currentUser)
         .then((tasks) => {
           setData((previous) => {
+            // MATERIAL-PERF-D（P1-3）：任务无实质变化时返回原引用，跳过
+            // 全树重渲染（此前每 20s 必然重渲染整个工作区）。
             const refreshedIds = new Set(tasks.map((task) => task.id));
-            return {
-              ...previous,
-              tasks: [
-                ...tasks,
-                ...previous.tasks.filter((task) => !refreshedIds.has(task.id)),
-              ],
-            };
+            const merged = [
+              ...tasks,
+              ...previous.tasks.filter((task) => !refreshedIds.has(task.id)),
+            ];
+            if (sameTasks(previous.tasks, merged)) return previous;
+            return { ...previous, tasks: merged };
           });
         })
         .catch(() => {});
