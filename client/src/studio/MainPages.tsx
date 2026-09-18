@@ -3,6 +3,7 @@ import {
   type CustomerProfile,
   createViralImportTask,
   customerVisibleErrorMessage,
+  getPublishSummary,
   getStudioNotificationPreferences,
   getViralImportTask,
   resolveViralLink,
@@ -25,6 +26,7 @@ import {
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { PlatformLogo } from "./PlatformLogo";
+import { readPageCache, writePageCache } from "./pageCache";
 import { draftFromTask } from "./state";
 import type { StudioAsset, StudioData, StudioTask, StudioVideo } from "./types";
 import {
@@ -224,6 +226,29 @@ export function WorkbenchPage() {
     };
   }
   const accountContextKey = `${accountId}:${accountGenerationRef.current.generation}`;
+  // PUBLISH-DELIVERY-20260917: the home metric reads real publish records;
+  // null keeps the honest "—" until the summary arrives (or fails).
+  const [publishedTotal, setPublishedTotal] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    setPublishedTotal(null);
+    if (review || !user.id) return;
+    void (async () => {
+      // MATERIAL-PERF-C（P1-1）：先回放上次摘要（切页立即出数），再后台刷新。
+      const cached = readPageCache<number>(`publish-summary:${user.id}`);
+      if (cached !== undefined && active) setPublishedTotal(cached);
+      try {
+        const summary = await getPublishSummary();
+        writePageCache(`publish-summary:${user.id}`, summary.published_total);
+        if (active) setPublishedTotal(summary.published_total);
+      } catch {
+        if (active && cached === undefined) setPublishedTotal(null);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [review, user.id]);
   const [sourceLinkState, setSourceLinkState] = useState({
     accountContextKey,
     value: "",
@@ -543,6 +568,8 @@ export function WorkbenchPage() {
         );
       },
       abortController.signal,
+      // 首页上传尚未选择复刻或文案提取；只存素材，复刻入口再恢复/启动视觉分析。
+      "script",
     )
       .then((uploaded) => {
         if (
@@ -560,6 +587,10 @@ export function WorkbenchPage() {
           projectId,
           sourceId: assetId,
           sourceAssetId: assetId,
+          analysisTaskId: uploaded.analysisTaskId,
+          analysisTaskStatus: uploaded.analysisTaskStatus,
+          firstFrameId: undefined,
+          firstFrameSelectionVersionId: undefined,
         });
         if (uploaded.project || uploaded.asset) {
           updateData((current) => ({
@@ -685,7 +716,8 @@ export function WorkbenchPage() {
           </p>
         )}
         <p className="studio-start-helper">
-          支持抖音、小红书视频链接；其他平台请上传 MP4/MOV 文件。
+          支持抖音、小红书的 App
+          分享链接、网页链接与主页视频链接；其他平台请上传 MP4/MOV 文件。
         </p>
         {linkState.status === "error" && (
           <p className="viral-media-status is-error" role="alert">
@@ -723,10 +755,16 @@ export function WorkbenchPage() {
           },
           {
             label: "累计已发布",
-            // C5 第一阶段只交付账号授权；published_total 属正式发布记录
-            // （第二阶段），眼下没有真实发布数据源，保持 "—" 不伪造。
-            value: review ? "156" : "—",
-            hint: review ? "本周 +21" : "等待发布统计",
+            value: review
+              ? "156"
+              : publishedTotal === null
+                ? "—"
+                : String(publishedTotal),
+            hint: review
+              ? "本周 +21"
+              : publishedTotal === null
+                ? "等待发布统计"
+                : "已发布作品",
             tone: "success",
             icon: "upload",
             page: "publishing" as const,
@@ -1128,10 +1166,6 @@ export function TasksPage() {
         {!review && (
           <Button onClick={() => openLive("tasks")}>历史任务与下载</Button>
         )}
-        <Button variant="primary" onClick={() => navigate("replica")}>
-          <Icon name="play" />
-          视频复刻
-        </Button>
       </div>
       <div className="studio-filter-bar">
         <Tabs

@@ -10,12 +10,12 @@ html:has(.studio-shell) {
   --studio-muted: #999b95;
   --studio-gold: #e5aa36;
   --studio-border: #292a27;
-  --studio-sidebar: 264px;
+  --studio-sidebar: 224px;
   min-height: 100vh;
   background: var(--studio-bg);
   color: var(--studio-text);
   font:
-    16px / 1.5 "PingFang SC",
+    var(--font-body) / 1.5 "PingFang SC",
     "Microsoft YaHei",
     system-ui,
     sans-serif;
@@ -49,7 +49,7 @@ html:has(.studio-shell) {
 }
 .studio-shell h1 {
   color: #eee;
-  font-size: 30px;
+  font-size: var(--font-title);
   font-weight: 500;
   line-height: 1.4;
   letter-spacing: 0.015em;
@@ -57,7 +57,7 @@ html:has(.studio-shell) {
 }
 .studio-shell h2 {
   color: #e7e7e3;
-  font-size: 20px;
+  font-size: var(--font-section);
   font-weight: 500;
   margin: 0 0 18px;
 }
@@ -116,28 +116,10 @@ html:has(.studio-shell) {
 .studio-shell button.studio-brand:hover:not(:disabled) {
   background: transparent;
 }
-.studio-brand > span {
-  display: flex;
-  align-items: center;
-  white-space: nowrap;
-  justify-content: center;
-  gap: 3px;
-}
-.studio-brand img {
-  width: 155px;
-  height: 36px;
-  object-fit: contain;
-  filter: invert(1) grayscale(1) sepia(1) saturate(3) hue-rotate(355deg);
-  mix-blend-mode: screen;
-}
-.studio-brand b {
-  font-weight: 500;
-  font-size: 20px;
-}
 .studio-brand small {
   display: block;
   margin-top: 10px;
-  font-size: 15px;
+  font-size: var(--font-caption);
   color: #c8c8c1;
 }
 .studio-button {
@@ -177,7 +159,7 @@ html:has(.studio-shell) {
   width: calc(100% - 12px);
   align-self: center;
   min-height: 49px;
-  font-size: 19px;
+  font-size: var(--font-body);
   margin: 0 0 23px;
 }
 .studio-nav-group {
@@ -186,7 +168,7 @@ html:has(.studio-shell) {
 .studio-nav-label {
   display: block;
   color: #a6a79e;
-  font-size: 15px;
+  font-size: var(--font-caption);
   padding: 9px 9px 10px;
 }
 .studio-nav-group button {
@@ -198,7 +180,7 @@ html:has(.studio-shell) {
   border: 1px solid transparent;
   background: transparent;
   border-radius: 8px;
-  font-size: 19px;
+  font-size: var(--font-body);
   padding: 9px 13px;
   min-height: 47px;
   margin-bottom: 5px;
@@ -221,10 +203,10 @@ html:has(.studio-shell) {
   display: grid;
   place-content: center;
   color: #f0efe8;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-account-entry {
-  width: max-content;
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -253,7 +235,7 @@ html:has(.studio-shell) {
   place-items: center;
   background: #302918;
   color: #e6ba51;
-  font-size: 20px;
+  font-size: var(--font-section);
   flex: none;
 }
 .studio-user-avatar {
@@ -264,15 +246,12 @@ html:has(.studio-shell) {
   border-radius: 50%;
   flex: none;
 }
-.studio-account-points {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  color: #e7b339;
-}
-.studio-account-points small,
-.studio-account-points strong {
-  font-size: 15px;
+.studio-account-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-body);
   font-weight: 500;
 }
 .studio-main {
@@ -306,12 +285,13 @@ html:has(.studio-shell) {
   border: 0;
   background: none;
   padding: 9px 15px;
-  font-size: 15px;
+  font-size: var(--font-body);
 }
 .studio-global-search button,
 .studio-notifications,
 .studio-top-avatar,
-.studio-menu-button {
+.studio-menu-button,
+.studio-sidebar-toggle {
   background: none;
   border: 0;
   padding: 3px;
@@ -329,7 +309,7 @@ html:has(.studio-shell) {
   min-width: 19px;
   height: 19px;
   color: white;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .studio-top-avatar .studio-user-avatar,
 .studio-top-avatar .studio-user-initial {
@@ -337,10 +317,19 @@ html:has(.studio-shell) {
   height: 39px;
 }
 .studio-top-avatar .studio-user-initial {
-  font-size: 17px;
+  font-size: var(--font-subtitle);
 }
-.studio-menu-button {
+.studio-menu-button,
+.studio-sidebar-toggle {
   display: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .studio-sidebar {
+    transition: width 0.18s ease;
+  }
+  .studio-main {
+    transition: margin-left 0.18s ease;
+  }
 }
 .studio-stage {
   padding: 29px 28px 0;
@@ -406,7 +395,7 @@ html:has(.studio-shell) {
   margin-bottom: 10px;
 }
 .studio-stage .people-toolbar p {
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .studio-stage .creation-heading {
   padding-right: 380px;
@@ -417,7 +406,7 @@ html:has(.studio-shell) {
   margin: 0;
 }
 .studio-stage .creation-heading p {
-  font-size: 14px;
+  font-size: var(--font-body);
   margin: 3px 0 0;
 }
 .studio-creation-nav {
@@ -441,7 +430,7 @@ html:has(.studio-shell) {
   border: 1px solid #272a24;
   color: #babcb5;
   padding: 11px 25px;
-  font-size: 17px;
+  font-size: var(--font-body);
   min-height: 45px;
   flex-shrink: 0;
 }
@@ -468,7 +457,7 @@ html:has(.studio-shell) {
   background: transparent;
   border-radius: 0;
   padding: 13px 20px;
-  font-size: 20px;
+  font-size: var(--font-subtitle);
 }
 .studio-creation-nav .studio-tabs > button.is-active {
   border-bottom-color: #d8aa25;
@@ -497,7 +486,7 @@ html:has(.studio-shell) {
   border: 1px solid #272a24;
   color: #babcb5;
   padding: 11px 16px;
-  font-size: 17px;
+  font-size: var(--font-subtitle);
   min-height: 45px;
   border-radius: 6px;
   cursor: pointer;
@@ -533,7 +522,7 @@ html:has(.studio-shell) {
   background: none;
   border: none;
   color: #e8e6dc;
-  font-size: 14px;
+  font-size: var(--font-body);
   text-align: left;
   padding: 9px 10px;
   border-radius: 6px;
@@ -548,12 +537,12 @@ html:has(.studio-shell) {
 }
 .studio-filter-select-count {
   color: #858e7c;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .studio-result-count {
   margin: 0 0 10px;
   color: #858e7c;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-panel {
   background: #101111;
@@ -567,7 +556,7 @@ html:has(.studio-shell) {
   flex-direction: column;
   gap: 11px;
   margin-bottom: 18px;
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .studio-field > span {
   color: #e1e1d8;
@@ -581,7 +570,7 @@ html:has(.studio-shell) {
   display: flex;
   gap: 9px;
   color: #a0a39a;
-  font-size: 14px;
+  font-size: var(--font-body);
   line-height: 1.7;
   margin-top: 16px;
 }
@@ -603,12 +592,12 @@ html:has(.studio-shell) {
 .studio-empty h3 {
   color: #c0c3b9;
   margin: 14px 0 6px;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
 }
 .studio-empty p {
   margin: 0 0 16px;
   max-width: 480px;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-media {
   display: block;
@@ -644,7 +633,7 @@ html:has(.studio-shell) {
   border-radius: 4px;
   background: #000b;
   color: #e3e3dd;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .studio-media--audio {
   padding: 25px;
@@ -673,7 +662,7 @@ html:has(.studio-shell) {
 }
 .studio-tag {
   display: inline-block;
-  font-size: 13px;
+  font-size: var(--font-label);
   color: #babbb1;
   border: 1px solid #35352b;
   padding: 3px 9px;
@@ -706,12 +695,12 @@ html:has(.studio-shell) {
 }
 .studio-details small {
   display: block;
-  font-size: 13px;
+  font-size: var(--font-label);
   color: #858c7d;
   margin-top: 5px;
 }
 .studio-shell .studio-home-page-title {
-  font-size: 22px;
+  font-size: var(--font-lead);
   line-height: 1.3;
   margin: 0;
   width: max-content;
@@ -721,7 +710,7 @@ html:has(.studio-shell) {
   margin: 42px 0 28px;
 }
 .studio-hero h1 {
-  font-size: 31px;
+  font-size: var(--font-title);
   font-weight: 600;
   letter-spacing: 0.015em;
   margin: 0;
@@ -764,7 +753,7 @@ html:has(.studio-shell) {
   padding: 14px 16px;
 }
 .studio-home-cell > .studio-panel > h2 {
-  font-size: 17px;
+  font-size: var(--font-subtitle);
   font-weight: 500;
   margin: 0 0 8px;
 }
@@ -813,23 +802,23 @@ html:has(.studio-shell) {
   width: 100%;
   min-width: 0;
   padding: 5px 0;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-source-input .studio-button {
   flex: none;
-  font-size: 14px;
+  font-size: var(--font-body);
   min-height: 48px;
   padding: 8px 18px;
   white-space: nowrap;
 }
 .studio-upload-status {
   color: #999c93;
-  font-size: 13px;
+  font-size: var(--font-label);
   margin: 9px 0 0;
 }
 .studio-start .studio-start-helper {
   color: #999c93;
-  font-size: 14px;
+  font-size: var(--font-body);
   margin: 22px 0 0;
   line-height: 1.8;
   text-align: center;
@@ -851,7 +840,7 @@ html:has(.studio-shell) {
   align-items: center;
   gap: 12px;
   white-space: nowrap;
-  font-size: 17px;
+  font-size: var(--font-subtitle);
 }
 .studio-home-metrics svg {
   color: #e4b73c;
@@ -859,7 +848,7 @@ html:has(.studio-shell) {
 .studio-home-metrics strong {
   display: block;
   width: 100%;
-  font-size: 31px;
+  font-size: var(--font-metric);
   line-height: 1.2;
   font-weight: 500;
   margin-top: 5px;
@@ -871,7 +860,7 @@ html:has(.studio-shell) {
 .studio-metric-hint {
   display: block;
   margin-top: 1px;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .studio-metric-hint.is-success {
   color: #47c66d;
@@ -901,17 +890,17 @@ html:has(.studio-shell) {
   border-radius: 6px;
 }
 .studio-running-row h3 {
-  font-size: 16px;
+  font-size: var(--font-body);
   margin: 0 0 7px;
 }
 .studio-running-row p {
-  font-size: 14px;
+  font-size: var(--font-body);
   margin: 0;
   color: #acafa2;
 }
 .studio-running-row > .studio-button {
   margin-left: auto;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-running-progress {
   flex: 1;
@@ -940,7 +929,7 @@ html:has(.studio-shell) {
   border-radius: 5px;
 }
 .studio-running-percent {
-  font-size: 14px;
+  font-size: var(--font-body);
   color: #acafa2;
   min-width: 40px;
   text-align: right;
@@ -983,7 +972,7 @@ html:has(.studio-shell) {
   background: none;
   border: none;
   color: #e8e6dc;
-  font-size: 13px;
+  font-size: var(--font-label);
   text-align: left;
   padding: 8px 10px;
   border-radius: 6px;
@@ -996,7 +985,7 @@ html:has(.studio-shell) {
 }
 .studio-status {
   color: #eec237;
-  font-size: 16px;
+  font-size: var(--font-body);
   white-space: nowrap;
 }
 .studio-status--failed,
@@ -1017,14 +1006,14 @@ html:has(.studio-shell) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 15px;
+  font-size: var(--font-body);
 }
 .studio-status-cell .studio-status svg {
   flex: none;
 }
 .studio-status-cell small {
   color: #858c7d;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .studio-home-section-heading {
   display: flex;
@@ -1035,7 +1024,7 @@ html:has(.studio-shell) {
 }
 .studio-home-section-heading .studio-button {
   min-height: 30px;
-  font-size: 13px;
+  font-size: var(--font-label);
   padding: 4px 6px;
 }
 .studio-home-viral-grid {
@@ -1073,7 +1062,7 @@ html:has(.studio-shell) {
 .studio-home-viral-duration {
   position: absolute;
   z-index: 1;
-  font-size: 11px;
+  font-size: var(--font-caption);
   line-height: 1;
   color: #fff;
   background: rgba(13, 14, 13, 0.72);
@@ -1091,7 +1080,7 @@ html:has(.studio-shell) {
 .studio-home-viral-card h3 {
   overflow: hidden;
   margin: 6px 7px 2px;
-  font-size: 13px;
+  font-size: var(--font-label);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1109,7 +1098,7 @@ html:has(.studio-shell) {
   align-items: center;
   min-width: 0;
   gap: 3px;
-  font-size: 10px;
+  font-size: var(--font-caption);
   white-space: nowrap;
 }
 .studio-home-viral-meta > span svg {
@@ -1127,7 +1116,7 @@ html:has(.studio-shell) {
   border: 1px solid #5c461d;
   border-radius: 5px;
   padding: 3px 6px;
-  font-size: 10px;
+  font-size: var(--font-caption);
 }
 .studio-activity {
   min-height: 287px;
@@ -1142,12 +1131,12 @@ html:has(.studio-shell) {
   padding: 7px 0;
   width: 100%;
   line-height: 1.35;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .studio-activity small {
   display: block;
   color: #acafa2;
-  font-size: 12px;
+  font-size: var(--font-caption);
   margin-top: 2px;
 }
 .studio-activity > .studio-button {
@@ -1211,7 +1200,7 @@ html:has(.studio-shell) {
 .studio-shortcuts small {
   display: block;
   color: #a6aa9d;
-  font-size: 11px;
+  font-size: var(--font-caption);
   margin-top: 3px;
 }
 .studio-page-actions {
@@ -1236,7 +1225,7 @@ html:has(.studio-shell) {
 .studio-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .studio-table th {
   text-align: left;
@@ -1276,7 +1265,7 @@ html:has(.studio-shell) {
   gap: 15px;
 }
 .studio-task-detail header h2 {
-  font-size: 27px;
+  font-size: var(--font-title);
   margin: 0;
 }
 .studio-task-detail > p {
@@ -1329,19 +1318,19 @@ html:has(.studio-shell) {
   object-position: 50% 20%;
 }
 .studio-profile-identity h2 {
-  font-size: 28px;
+  font-size: var(--font-title);
   margin: 0;
   display: flex;
   gap: 20px;
   align-items: center;
 }
 .studio-profile-identity .studio-tag {
-  font-size: 14px;
+  font-size: var(--font-body);
   border-radius: 20px;
   color: #e0b242;
 }
 .studio-profile-identity p {
-  font-size: 20px;
+  font-size: var(--font-section);
   margin: 7px 0;
   color: #dedfd4;
 }
@@ -1382,7 +1371,7 @@ html:has(.studio-shell) {
   text-align: right;
 }
 .studio-profile-grid h2 {
-  font-size: 22px;
+  font-size: var(--font-lead);
 }
 .studio-publish-account {
   display: flex;
@@ -1395,7 +1384,7 @@ html:has(.studio-shell) {
 }
 .studio-publish-account small {
   color: #66b961;
-  font-size: 13px;
+  font-size: var(--font-label);
   margin-left: auto;
 }
 .studio-profile-grid .studio-panel > .studio-button {
@@ -1437,14 +1426,14 @@ html:has(.studio-shell) {
 .studio-profile-save > button {
   width: 265px;
   height: 52px;
-  font-size: 19px;
+  font-size: var(--font-section);
 }
 .studio-version {
   position: absolute;
   right: 28px;
   bottom: 15px;
   color: #777e70;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .studio-toast {
   position: fixed;
@@ -1461,7 +1450,7 @@ html:has(.studio-shell) {
   color: #eeeadd;
   z-index: 55;
   box-shadow: 0 8px 35px #0008;
-  font-size: 15px;
+  font-size: var(--font-body);
 }
 .studio-toast > svg {
   flex-shrink: 0;
@@ -1480,7 +1469,7 @@ html:has(.studio-shell) {
   background: #262218;
   color: #dfc782;
   margin: 55px 0 18px;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-dialog {
   position: fixed;
@@ -1511,7 +1500,7 @@ html:has(.studio-shell) {
   margin-bottom: 15px;
 }
 .studio-dialog h2 {
-  font-size: 23px;
+  font-size: var(--font-lead);
   font-weight: 500;
   margin: 0;
 }
@@ -1558,7 +1547,7 @@ html:has(.studio-shell) {
 }
 .studio-picker-grid small {
   color: #97a384;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .studio-new-options,
 .studio-search-results {
@@ -1576,7 +1565,7 @@ html:has(.studio-shell) {
 .studio-live-panel input,
 .studio-live-panel select,
 .studio-live-panel textarea {
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .studio-live-panel button:not(.studio-button) {
   border-radius: 6px;
@@ -1594,20 +1583,14 @@ html:has(.studio-shell) {
 }
 @media (max-width: 1380px) {
   .studio-shell {
-    --studio-sidebar: 246px;
-    font-size: 14px;
-  }
-  .studio-brand img {
-    width: 133px;
-  }
-  .studio-brand b {
-    font-size: 17px;
+    --studio-sidebar: 224px;
+    font-size: var(--font-body);
   }
   .studio-sidebar {
     padding: 20px 14px;
   }
   .studio-nav-group button {
-    font-size: 17px;
+    font-size: var(--font-body);
     min-height: 43px;
     padding: 8px 12px;
   }
@@ -1638,7 +1621,7 @@ html:has(.studio-shell) {
     padding: 15px 12px;
   }
   .studio-home-metrics span {
-    font-size: 14px;
+    font-size: var(--font-body);
     gap: 7px;
   }
   .studio-running-row {
@@ -1649,7 +1632,7 @@ html:has(.studio-shell) {
     height: 114px;
   }
   .studio-running-row h3 {
-    font-size: 14px;
+    font-size: var(--font-body);
   }
   .studio-running-row .studio-button {
     padding: 8px;
@@ -1664,7 +1647,7 @@ html:has(.studio-shell) {
     gap: 7px;
   }
   .studio-home-viral-meta > span {
-    font-size: 9px;
+    font-size: var(--font-caption);
   }
   .studio-home-viral-actions .studio-button {
     padding-inline: 4px;
@@ -1676,7 +1659,7 @@ html:has(.studio-shell) {
     gap: 8px;
   }
   .studio-result-actions button {
-    font-size: 14px;
+    font-size: var(--font-body);
   }
   .studio-home-cell > .studio-panel {
     padding: 12px 14px;
@@ -1741,7 +1724,7 @@ html:has(.studio-shell) {
     gap: 0;
   }
   .studio-creation-nav .studio-tabs > button {
-    font-size: 16px;
+    font-size: var(--font-subtitle);
     padding: 12px 16px;
   }
 }
@@ -1800,7 +1783,7 @@ html:has(.studio-shell) {
     margin-top: 10px;
   }
   .studio-hero h1 {
-    font-size: 25px;
+    font-size: var(--font-title);
   }
   .studio-start {
     width: 100%;
@@ -1829,7 +1812,7 @@ html:has(.studio-shell) {
     min-width: 780px;
   }
   .studio-home-metrics span {
-    font-size: 12px;
+    font-size: var(--font-caption);
   }
   .studio-home-metrics button {
     padding: 12px 9px;
@@ -1838,7 +1821,7 @@ html:has(.studio-shell) {
     width: 17px;
   }
   .studio-home-metrics strong {
-    font-size: 27px;
+    font-size: var(--font-metric);
   }
   .studio-running-progress {
     min-width: 80px;
@@ -1859,10 +1842,10 @@ html:has(.studio-shell) {
     margin-top: 0;
   }
   .studio-profile-identity h2 {
-    font-size: 25px;
+    font-size: var(--font-title);
   }
   .studio-version {
-    font-size: 11px;
+    font-size: var(--font-caption);
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1909,4 +1892,107 @@ html:has(.studio-shell) {
 .studio-media-duration {
   z-index: 2;
   pointer-events: none;
+}
+
+.studio-shell--creation .studio-topbar {
+  position: relative;
+  inset: auto;
+  min-height: 64px;
+  height: auto;
+  padding: 12px 24px;
+  gap: 18px;
+  justify-content: flex-end;
+  border-bottom: 1px solid var(--studio-border);
+}
+.studio-shell--creation .studio-global-search {
+  width: 230px;
+}
+.studio-shell--creation .studio-stage {
+  padding: 0;
+}
+.studio-shell--creation .studio-main {
+  padding-bottom: 0;
+}
+.studio-shell--creation .studio-version {
+  display: none;
+}
+.studio-shell--creation .studio-creation-nav {
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--studio-border);
+  border-radius: 0;
+}
+.studio-shell--creation .studio-creation-nav .studio-tabs {
+  justify-content: flex-start;
+  padding-left: 20px;
+}
+.studio-shell--creation .studio-creation-nav .studio-tabs > button {
+  flex: 0 0 auto;
+  min-width: 140px;
+  padding: 16px 24px;
+}
+@media (min-width: 801px) {
+  .studio-sidebar-toggle {
+    display: block;
+  }
+  /* 收起态＝原 88px 图标栏；由顶栏开关与 localStorage 记忆驱动，不再按屏宽强制 */
+  .studio-shell--sidebar-collapsed {
+    --studio-sidebar: 88px;
+  }
+  .studio-shell--sidebar-collapsed .studio-sidebar {
+    padding: 16px 6px;
+  }
+  .studio-shell--sidebar-collapsed .studio-brand .brand-identity__text,
+  .studio-shell--sidebar-collapsed .studio-brand small,
+  .studio-shell--sidebar-collapsed .studio-nav-label {
+    display: none;
+  }
+  .studio-shell--sidebar-collapsed .studio-new-button {
+    font-size: 0;
+    min-height: 40px;
+    margin-bottom: 12px;
+  }
+  .studio-shell--sidebar-collapsed .studio-new-button .studio-icon {
+    width: 20px;
+  }
+  .studio-shell--sidebar-collapsed .studio-nav-group {
+    margin-bottom: 8px;
+  }
+  .studio-shell--sidebar-collapsed .studio-nav-group button {
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 2px;
+    font-size: 12px;
+    text-align: center;
+    min-height: 56px;
+  }
+  .studio-shell--sidebar-collapsed .studio-account-entry {
+    flex-direction: column;
+    padding: 8px 2px;
+    gap: 4px;
+  }
+  .studio-shell--sidebar-collapsed .studio-account-name {
+    font-size: 12px;
+    max-width: 72px;
+  }
+}
+@media (max-width: 1280px) {
+  .studio-shell--creation .studio-global-search {
+    width: 170px;
+  }
+}
+@media (max-width: 900px) {
+  .studio-shell--creation .studio-global-search {
+    display: none;
+  }
+}
+@media (max-width: 600px) {
+  .studio-shell--creation .studio-creation-nav .studio-tabs > button {
+    min-width: 0;
+    flex: 1;
+    padding: 14px 10px;
+  }
+  .studio-shell--creation .studio-topbar {
+    padding: 10px 16px;
+  }
 }

@@ -47,6 +47,7 @@ from app.api_key_service import (
     touch_last_used,
 )
 from app.auth import CurrentUser
+from app.auth_headers import bearer_token as _bearer_token
 from app.customer_auth import (
     CustomerSessionContext,
     SessionFencingError,
@@ -74,8 +75,6 @@ from app.security_rate_limit import (
     record_auth_failure,
 )
 
-AUTHORIZATION_HEADER = "Authorization"
-BEARER_SCHEME = "bearer"
 FENCING_FAILURE_DIMENSION = "session:fencing"
 # CW-078: the API-Key lane is detected by this fixed plaintext scheme prefix, so
 # get_business_db / customer_read_transaction route an ``xsk_live_`` bearer to
@@ -83,17 +82,6 @@ FENCING_FAILURE_DIMENSION = "session:fencing"
 API_KEY_BEARER_PREFIX = "xsk_live_"
 RETRY_AFTER_HEADER = "Retry-After"
 logger = logging.getLogger(__name__)
-
-
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get(AUTHORIZATION_HEADER, "").strip()
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != BEARER_SCHEME:
-        return None
-    token = parts[1].strip()
-    return token or None
 
 
 def _customer_database_configured() -> bool:

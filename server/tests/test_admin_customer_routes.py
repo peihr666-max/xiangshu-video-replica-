@@ -1809,6 +1809,49 @@ def test_customer_code_materials_never_reach_control_csv_exports(
     assert code_digest not in response.text
 
 
+def test_customers_csv_escapes_formula_prefix_usernames(client: TestClient) -> None:
+    """C15 (2026-09-17 收敛): customers.csv 的用户可控 username 列必须以撇号
+    转义危险公式前缀 (= + - @ \t \r)，阻断 CSV/表格公式注入。
+
+    端点级回归锁——若将来把导出改回裸 ``str(value)`` (丢掉
+    ``spreadsheet_safe_cell``)，本测试立即失败；既有安全 username
+    (``customer_u``) 不得被过度转义。
+    """
+    import csv
+    import io
+
+    admin = _admin_session(client)
+    # role='customer' + registration_source='activation_code' 命中导出的 OR
+    # 分支 (无需激活链); username 为 text 无字符集 CHECK，可承载公式前缀探针。
+    with psycopg.connect(_t23_dsn(), autocommit=True) as conn:
+        for user_id, username in (
+            ("cust_csv_eq", "=1+1cmd"),
+            ("cust_csv_minus", "-2danger"),
+        ):
+            conn.execute(
+                "INSERT INTO users (id, username, display_name, role, registration_source) "
+                "VALUES (%s, %s, 'CSV 注入探针', 'customer', 'activation_code') "
+                "ON CONFLICT DO NOTHING",
+                (user_id, username),
+            )
+
+    response = client.get("/api/control/customers.csv", headers=admin)
+    assert response.status_code == 200, response.text
+
+    rows = list(csv.reader(io.StringIO(response.text)))
+    username_idx = rows[0].index("username")
+    usernames = {row[username_idx] for row in rows[1:] if row}
+
+    # 危险前缀被撇号转义成惰性文本……
+    assert "'=1+1cmd" in usernames
+    assert "'-2danger" in usernames
+    # ……裸公式绝不作为活动单元格出现。
+    assert "=1+1cmd" not in usernames
+    assert "-2danger" not in usernames
+    # 安全 username 不被过度转义。
+    assert "customer_u" in usernames
+
+
 @pytest.mark.parametrize("timezone", ["UTC", "Asia/Tokyo", "America/Los_Angeles"])
 def test_w15_order_and_wallet_exports_match_shanghai_filters(
     route_state: str, timezone: str

@@ -498,10 +498,14 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
         "AND EXISTS(SELECT 1 FROM billing_operations o WHERE o.source_id=t.id "
         "AND o.service='link_resolution' AND o.state='PENDING')"
     )
-    # Select terminal candidates in SQL; old active tasks must not starve newer completions.
-    # 可对账性由「租约到期」或「任务已进入终态」决定（见上方 link receipt 的 lease 收敛），
-    # 不设墙钟宽限期——否则刚进入终态的操作会被无谓推迟数十分钟。
-    # SKIP LOCKED 让多实例各自认领不同行，避免同一批候选被并发重复扫描。
+    # Expired paid requests are never requeued. Pending work has not been sent.
+    conn.execute(
+        "UPDATE prompt_optimization_receipts SET status=CASE WHEN provider_started_at IS NULL "
+        "THEN 'FAILED' ELSE 'SUBMISSION_UNCERTAIN' END, completed_at=CURRENT_TIMESTAMP, "
+        "updated_at=CURRENT_TIMESTAMP, error_code='PROMPT_WORKER_INTERRUPTED', "
+        "error_message_redacted='优化任务中断，原文已保留。' "
+        "WHERE status='RUNNING' AND lease_expires_at::timestamptz<now()"
+    )
     operations = conn.execute(
         """SELECT o.id,o.service,o.source_id FROM billing_operations o WHERE o.state='PENDING'
         AND (
@@ -532,6 +536,8 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
             ('SUCCEEDED','FAILED'))
           OR EXISTS(SELECT 1 FROM viral_link_resolution_receipts t WHERE t.id=o.source_id AND
             t.status IN ('SUCCEEDED','FAILED_SAFE','UNCERTAIN'))
+          OR EXISTS(SELECT 1 FROM prompt_optimization_receipts t WHERE t.id=o.source_id AND
+            t.status IN ('SUCCEEDED','FAILED','NEEDS_INPUT','SUBMISSION_UNCERTAIN'))
         ) ORDER BY o.created_at,o.id LIMIT %s
         FOR UPDATE OF o SKIP LOCKED""",
         (limit,),
@@ -546,6 +552,7 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
         "avatar_clone": "oral_avatars",
         "voice_clone": "oral_voices",
         "link_resolution": "viral_link_resolution_receipts",
+        "prompt_optimize": "prompt_optimization_receipts",
         "quality_inspection": "source_frame_tasks",
     }
     for operation in operations:
@@ -598,7 +605,14 @@ def reconcile_operations(conn: BusinessConnection, *, limit: int = 100) -> int:
                 (source,),
             )  # noqa: S608 - fixed clone table map
             status = "FAILED"
-        if status in {"FAILED", "CANCELLED", "SUBMISSION_UNCERTAIN", "FAILED_SAFE", "UNCERTAIN"}:
+        if status in {
+            "FAILED",
+            "CANCELLED",
+            "SUBMISSION_UNCERTAIN",
+            "FAILED_SAFE",
+            "UNCERTAIN",
+            "NEEDS_INPUT",
+        }:
             finish_operation(
                 conn,
                 operation_id=str(operation["id"]),

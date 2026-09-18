@@ -1,0 +1,89 @@
+[
+  {
+    "route": "workbench",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "tasks",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "viral",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "copy",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "replica",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "video",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "oral",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "people",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "materials",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "publishing",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "analytics",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "route": "profile",
+    "sidebar": 88,
+    "topbarBrands": 0,
+    "scroll": 1440,
+    "viewport": 1440
+  },
+  {
+    "mobileNavigation": true
+  }
+]

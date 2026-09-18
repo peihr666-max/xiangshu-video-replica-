@@ -26,6 +26,7 @@ import {
   updateStudioNotificationPreferences,
   type WalletTransactionPage,
 } from "../api";
+import { BrandIdentity } from "../BrandIdentity";
 import { useStudio } from "../studio/context";
 import { PublishAccountsPanel } from "../studio/MainPages";
 import { Icon } from "../studio/ui";
@@ -709,8 +710,7 @@ export function CustomerCenterPage({
     <section className="uc-center" aria-label="用户中心">
       <header className="uc-brandbar">
         <div className="uc-brand">
-          <img src="/studio/brand.png" alt="众墅之家" />
-          <span>AI 即创</span>
+          <BrandIdentity />
         </div>
         <nav aria-label="账号导航">
           <button type="button" onClick={() => navigate("workbench")}>

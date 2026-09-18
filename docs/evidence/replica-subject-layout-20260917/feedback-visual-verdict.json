@@ -1,0 +1,21 @@
+{
+  "score": 96,
+  "pass": true,
+  "areas": {
+    "textarea": "textarea/visual-verdict.json",
+    "video_frame_cards": "video-frame-cards/visual-verdict.json",
+    "reference_materials": "reference-materials/visual-verdict.json",
+    "voice": "voice/visual-verdict.json"
+  },
+  "evidence": "三组判定覆盖目标桌面和手机视口；包含真实浏览器几何、截图、交互、无溢出检查及组件级媒体播放回归。",
+  "reference_preview_focus": {
+    "close_button": true,
+    "escape": true,
+    "prevent_scroll": true,
+    "viewports": [
+      1440,
+      390
+    ],
+    "evidence": "reference-materials/geometry.json"
+  }
+}

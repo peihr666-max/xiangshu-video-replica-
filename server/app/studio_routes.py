@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta, timezone
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, ConfigDict
@@ -635,6 +635,7 @@ def mark_studio_notifications_read(db: BusinessDbDep) -> StudioNotificationReadR
 
 
 class SavedPromptListItem(BaseModel):
+    generation_context: dict[str, Any] | None = None
     model_config = ConfigDict(extra="forbid")
 
     id: str
@@ -687,6 +688,7 @@ def read_user_saved_prompts(
                 project_id=str(row["project_id"]),
                 name=str(payload.get("name") or "未命名提示词"),
                 prompt_text=str(payload.get("prompt_text") or ""),
+                generation_context=payload.get("generation_context"),
                 created_at=str(row["created_at"]),
             )
         )

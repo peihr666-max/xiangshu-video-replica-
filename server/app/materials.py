@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,12 @@ from app.content_store import (
     retain_existing_content_object,
 )
 from app.db_portable import BusinessConnection
-from app.media import MAX_UPLOAD_BYTES, UPLOAD_INTENT_EXPIRES_IN
+from app.material_thumbs import extract_thumbnail_jpeg, store_video_thumbnail
+from app.media import (
+    MAX_UPLOAD_BYTES,
+    UPLOAD_INTENT_EXPIRES_IN,
+    storage_key_from_uri,
+)
 from app.media_tools import (
     MediaToolFailed,
     MediaToolUnavailable,
@@ -53,6 +59,7 @@ MaterialDelivery = Literal["stored", "direct"]
 AudioPurpose = Literal["oral_audio", "voice_clone", "reference"]
 
 IMAGE_UPLOAD_LIMIT = 10 * 1024 * 1024
+VOICE_CLONE_UPLOAD_LIMIT = 20 * 1024 * 1024
 # R2V 参考音频时长上限：与参考视频一致（前端拦截 + 后端音频探测双保险）。
 MAX_REFERENCE_AUDIO_SECONDS = 15.0
 ALLOWED_UPLOADS: dict[tuple[str, str], tuple[MaterialMediaType, str]] = {
@@ -60,6 +67,26 @@ ALLOWED_UPLOADS: dict[tuple[str, str], tuple[MaterialMediaType, str]] = {
     (".jpeg", "image/jpeg"): ("image", ".jpg"),
     (".png", "image/png"): ("image", ".png"),
     (".mp3", "audio/mpeg"): ("audio", ".mp3"),
+    (".wav", "audio/wav"): ("audio", ".wav"),
+    (".wav", "audio/x-wav"): ("audio", ".wav"),
+    (".m4a", "audio/mp4"): ("audio", ".m4a"),
+    (".m4a", "audio/x-m4a"): ("audio", ".m4a"),
+    (".aac", "audio/aac"): ("audio", ".aac"),
+    (".flac", "audio/flac"): ("audio", ".flac"),
+    (".flac", "audio/x-flac"): ("audio", ".flac"),
+    (".ogg", "audio/ogg"): ("audio", ".ogg"),
+    (".opus", "audio/ogg"): ("audio", ".opus"),
+    (".opus", "audio/opus"): ("audio", ".opus"),
+    (".wma", "audio/x-ms-wma"): ("audio", ".wma"),
+    (".wma", "audio/wma"): ("audio", ".wma"),
+    (".aiff", "audio/aiff"): ("audio", ".aiff"),
+    (".aiff", "audio/x-aiff"): ("audio", ".aiff"),
+    (".aif", "audio/aiff"): ("audio", ".aif"),
+    (".aif", "audio/x-aiff"): ("audio", ".aif"),
+    (".amr", "audio/amr"): ("audio", ".amr"),
+    # WMV is accepted as a voice sample container only; its audio track is
+    # decoded and normalized before the voice provider sees it.
+    (".wmv", "video/x-ms-wmv"): ("audio", ".wmv"),
     (".mp4", "video/mp4"): ("video", ".mp4"),
     (".mov", "video/quicktime"): ("video", ".mov"),
 }
@@ -100,6 +127,8 @@ class MaterialItem(BaseModel):
     saved: bool
     composite: bool = False
     preview_asset_id: str | None = None
+    # MATERIAL-THUMBS-B：缩略图对象键（assets.metadata_json 派生；历史素材为 None）。
+    thumbnail_key: str | None = None
     character_views: list[MaterialCharacterView] = Field(default_factory=list)
     allowed_uses: list[str]
     allowed_actions: list[str]
@@ -181,6 +210,9 @@ class ProbedMaterialUpload:
     sha256: str
     size_bytes: int
     duration_seconds: float | None = None
+    # MATERIAL-THUMBS-B：视频素材的首帧 JPEG 字节（探测期抽出；落存储与记键
+    # 延后到持久化之后——dedup 可能改写最终对象键，且外部 I/O 不得进入写事务）。
+    thumbnail_jpeg: bytes | None = None
 
 
 def material_error(status: int, code: str, message: str) -> HTTPException:
@@ -203,7 +235,7 @@ def validate_upload_request(
         raise material_error(
             415,
             "MATERIAL_TYPE_UNSUPPORTED",
-            "仅支持 JPG、PNG、MP3、MP4 和 MOV 素材。",
+            "仅支持常见图片、视频和音频格式。",
         )
     media_type, safe_suffix = matched
     limit = IMAGE_UPLOAD_LIMIT if media_type == "image" else MAX_UPLOAD_BYTES
@@ -232,6 +264,10 @@ def validate_audio_contract(
             "MATERIAL_AUDIO_PURPOSE_REQUIRED",
             "音频素材必须声明完整口播、声音克隆或参考用途。",
         )
+    if duration_seconds is None and audio_purpose == "voice_clone":
+        # Some browsers cannot read WMA/WMV duration. Upload completion probes
+        # the actual bytes and enforces the authoritative 5–180 second limit.
+        return
     if duration_seconds is None:
         raise material_error(
             422,
@@ -253,6 +289,7 @@ def validate_audio_contract(
 
 
 def probe_audio_duration(content: bytes) -> float | None:
+    """Probe legacy MP3 upload duration without adding a full decode pass."""
     try:
         ffprobe = resolve_media_binary("ffprobe")
         # Windows does not let ffprobe reopen an active delete-on-close handle.
@@ -626,6 +663,11 @@ def material_item(row: Any) -> MaterialItem:
         saved=ready and not direct,
         composite=composite,
         preview_asset_id=preferred.asset_id if composite and preferred else None,
+        thumbnail_key=(
+            metadata["thumbnail_key"]
+            if isinstance(metadata.get("thumbnail_key"), str) and metadata["thumbnail_key"]
+            else None
+        ),
         character_views=views if composite else [],
         allowed_uses=uses,
         allowed_actions=actions,
@@ -739,13 +781,31 @@ def _reuse_registered_material(
     # Only skip the transfer when the bytes are actually still there.
     if storage.head_object(existing.object_key) is None:
         return None
-    content = retain_existing_content_object(conn, existing.id)
     source = conn.execute(
         "SELECT id, metadata_json FROM assets WHERE content_object_id = %s "
-        "ORDER BY created_at LIMIT 1",
-        (content.id,),
+        "ORDER BY CASE WHEN metadata_json::jsonb ->> 'audio_duration_verified' = 'true' "
+        "THEN 0 ELSE 1 END, created_at LIMIT 1",
+        (existing.id,),
     ).fetchone()
     source_metadata = _metadata(source["metadata_json"]) if source is not None else {}
+    if media_type == "audio":
+        duration = source_metadata.get("duration_seconds")
+        if (
+            source_metadata.get("audio_duration_verified") is not True
+            or not isinstance(duration, (int, float))
+            or isinstance(duration, bool)
+            or not math.isfinite(duration)
+            or duration <= 0
+        ):
+            # Older rows may lack trustworthy probe metadata. Upload and probe
+            # again rather than blessing the duration supplied by the client.
+            return None
+        validate_audio_contract(
+            media_type=media_type,
+            audio_purpose=request.audio_purpose,
+            duration_seconds=duration,
+        )
+    content = retain_existing_content_object(conn, existing.id)
     asset_id = str(uuid4())
     metadata: dict[str, Any] = {
         "upload_status": "READY",
@@ -758,7 +818,8 @@ def _reuse_registered_material(
     }
     if request.audio_purpose is not None:
         metadata["audio_purpose"] = request.audio_purpose
-        metadata["duration_seconds"] = request.duration_seconds
+        metadata["duration_seconds"] = source_metadata["duration_seconds"]
+        metadata["audio_duration_verified"] = True
     elif "duration_seconds" in source_metadata:
         # Carry the probing work over from the upload that stored these bytes;
         # re-probing would cost a download and a media-tool invocation.
@@ -846,6 +907,14 @@ def create_material_upload_intent(
         audio_purpose=request.audio_purpose,
         duration_seconds=request.duration_seconds,
     )
+    if media_type == "audio" and safe_suffix != ".mp3" and request.audio_purpose != "voice_clone":
+        raise material_error(
+            415,
+            "MATERIAL_TYPE_UNSUPPORTED",
+            "该音频格式仅用于声音克隆。",
+        )
+    if request.audio_purpose == "voice_clone" and request.size_bytes > VOICE_CLONE_UPLOAD_LIMIT:
+        raise material_error(413, "MATERIAL_TOO_LARGE", "声音克隆样本不能超过 20MB。")
     reuse = _reuse_registered_material(
         conn,
         actor=actor,
@@ -1012,9 +1081,16 @@ def probe_material_upload(
         raise material_error(409, "MATERIAL_SIZE_MISMATCH", "上传文件大小不一致。") from exc
     except OSError as exc:
         raise StorageBackendUnavailable("material object read failed") from exc
-    if not _content_matches(prepared.media_type, content):
+    suffix = Path(prepared.storage_key).suffix.lower() or ".bin"
+    content_matches = (
+        _audio_content_matches_suffix(content, suffix)
+        if prepared.media_type == "audio"
+        else _content_matches(prepared.media_type, content)
+    )
+    if not content_matches:
         raise material_error(422, "MATERIAL_CONTENT_INVALID", "文件内容与素材类型不匹配。")
     duration_seconds = None
+    thumbnail_jpeg: bytes | None = None
     if prepared.media_type == "video":
         try:
             inspection = inspect_media_bytes(
@@ -1027,12 +1103,37 @@ def probe_material_upload(
             raise material_error(
                 503, "MATERIAL_VIDEO_PROBE_UNAVAILABLE", "视频校验服务暂不可用，请稍后重试。"
             ) from exc
+        thumbnail_jpeg = extract_thumbnail_jpeg(content)
     if prepared.media_type == "audio" and prepared.audio_purpose is not None:
-        duration_seconds = probe_audio_duration(content)
+        if prepared.audio_purpose == "voice_clone":
+            try:
+                inspection = inspect_media_bytes(
+                    content,
+                    suffix=suffix,
+                    expected_type="audio",
+                    min_duration_seconds=5,
+                    max_duration_seconds=180,
+                    local_input_only=True,
+                )
+                duration_seconds = inspection.duration_seconds
+            except MediaValidationFailed as exc:
+                raise material_error(
+                    422,
+                    "MATERIAL_AUDIO_INVALID",
+                    "无法读取有效音频或时长不符合要求。",
+                ) from exc
+            except (MediaToolFailed, MediaToolUnavailable) as exc:
+                raise material_error(
+                    503,
+                    "MATERIAL_AUDIO_PROBE_UNAVAILABLE",
+                    "音频校验服务暂不可用，请稍后重试。",
+                ) from exc
+        else:
+            duration_seconds = probe_audio_duration(content)
         if duration_seconds is None:
             raise material_error(422, "MATERIAL_AUDIO_INVALID", "无法读取音频时长。")
         requested_duration = prepared.requested_duration_seconds
-        if requested_duration is None or abs(duration_seconds - requested_duration) > 1:
+        if requested_duration is not None and abs(duration_seconds - requested_duration) > 1:
             raise material_error(
                 422,
                 "MATERIAL_AUDIO_DURATION_MISMATCH",
@@ -1054,7 +1155,44 @@ def probe_material_upload(
         sha256=digest,
         size_bytes=stored.size,
         duration_seconds=duration_seconds,
+        thumbnail_jpeg=thumbnail_jpeg,
     )
+
+
+def attach_video_thumbnail(
+    conn: BusinessConnection,
+    *,
+    asset_id: str,
+    thumbnail_jpeg: bytes,
+    storage: StorageAdapter,
+) -> None:
+    """MATERIAL-THUMBS-B：持久化完成后把首帧缩略图落到最终对象旁并记键.
+
+    必须在写事务之外调用（存储 PUT 是外部 I/O）；dedup 可能改写最终对象键，
+    因此读取持久化后的 storage_uri 派生缩略图键。任何失败只损失缩略图。
+    """
+    row = conn.execute(
+        "SELECT storage_uri, content_type FROM assets WHERE id = %s", (asset_id,)
+    ).fetchone()
+    if row is None or row["content_type"] is None:
+        return
+    if not str(row["content_type"]).startswith("video/"):
+        return
+    key = store_video_thumbnail(
+        storage, storage_key_from_uri(str(row["storage_uri"])), thumbnail_jpeg
+    )
+    if key is None:
+        return
+    with conn:
+        current = conn.execute(
+            "SELECT metadata_json FROM assets WHERE id = %s FOR UPDATE", (asset_id,)
+        ).fetchone()
+        metadata = _metadata(current["metadata_json"] if current is not None else "{}")
+        metadata["thumbnail_key"] = key
+        conn.execute(
+            "UPDATE assets SET metadata_json = %s WHERE id = %s",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), asset_id),
+        )
 
 
 def persist_material_upload(
@@ -1279,7 +1417,36 @@ def _content_matches(media_type: MaterialMediaType, content: bytes) -> bool:
     if media_type == "image":
         return content.startswith(b"\x89PNG\r\n\x1a\n") or content.startswith(b"\xff\xd8\xff")
     if media_type == "audio":
+        return bool(content)
+    return len(content) >= 12 and content[4:8] == b"ftyp"
+
+
+def _audio_content_matches_suffix(content: bytes, suffix: str) -> bool:
+    """Reject playlists and mislabeled containers before invoking media tools."""
+    if suffix == ".mp3":
         return content.startswith(b"ID3") or (
             len(content) >= 2 and content[0] == 0xFF and content[1] & 0xE0 == 0xE0
         )
-    return len(content) >= 12 and content[4:8] == b"ftyp"
+    if suffix == ".wav":
+        return len(content) >= 12 and content.startswith(b"RIFF") and content[8:12] == b"WAVE"
+    if suffix == ".m4a":
+        return len(content) >= 12 and content[4:8] == b"ftyp"
+    if suffix == ".aac":
+        return len(content) >= 2 and content[0] == 0xFF and content[1] & 0xF6 == 0xF0
+    if suffix == ".flac":
+        return content.startswith(b"fLaC")
+    if suffix in {".ogg", ".opus"}:
+        return content.startswith(b"OggS")
+    if suffix in {".wma", ".wmv"}:
+        return content.startswith(
+            b"\x30\x26\xb2\x75\x8e\x66\xcf\x11\xa6\xd9\x00\xaa\x00\x62\xce\x6c"
+        )
+    if suffix in {".aiff", ".aif"}:
+        return (
+            len(content) >= 12
+            and content.startswith(b"FORM")
+            and content[8:12] in {b"AIFF", b"AIFC"}
+        )
+    if suffix == ".amr":
+        return content.startswith((b"#!AMR\n", b"#!AMR-WB\n"))
+    return False

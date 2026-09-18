@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_REFERENCE_IMAGES,
   DEFAULT_MAX_REFERENCE_VIDEOS,
   draftFromTask,
+  hasCopyResult,
   patchStudioDraft,
   routeFromHash,
   studioHashForState,
@@ -17,6 +18,18 @@ import {
 import type { StudioAsset } from "./types";
 
 describe("V1.4 交接合同", () => {
+  it("新草稿默认使用竖屏生成比例", () => {
+    expect(createDraft().ratio).toBe("9:16");
+  });
+  it("提取原文不冒充二创结果，历史人工稿仍可编辑", () => {
+    const script = { ...createDraft().script, original: "原文", text: "原文" };
+    expect(hasCopyResult(script)).toBe(false);
+    expect(hasCopyResult({ ...script, text: "人工改写" })).toBe(true);
+    expect(hasCopyResult({ ...script, confirmed: true })).toBe(true);
+    expect(
+      hasCopyResult({ ...script, text: "", resultKind: "rewritten" }),
+    ).toBe(true);
+  });
   it("选择另一条来源时清空旧项目、资产和终稿，保留已选人物", () => {
     const draft = {
       ...createDraft(),
@@ -281,7 +294,7 @@ describe("V1.4 交接合同", () => {
   it("首页默认工作台，旧路由有确定映射", () => {
     expect(routeFromHash("")).toBe("workbench");
     expect(routeFromHash("#projects")).toBe("replica");
-    expect(routeFromHash("#studio/oral-audio")).toBe("oral-audio");
+    expect(routeFromHash("#studio/oral-audio")).toBe("oral");
     expect(routeFromHash("#settings")).toBe("settings");
     expect(routeFromHash("#admin")).toBe("workbench");
   });

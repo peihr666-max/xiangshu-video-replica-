@@ -92,7 +92,7 @@ async function loginThroughAccountForm() {
     target: { value: "test-6" },
   });
   fireEvent.click(screen.getByRole("button", { name: "登录" }));
-  await screen.findByRole("button", { name: "用户档案，积分 读取失败" });
+  await screen.findByRole("button", { name: "用户档案，user-1" });
 }
 
 describe("RootApp", () => {
@@ -159,6 +159,23 @@ describe("RootApp", () => {
         String(url).endsWith("/api/auth/me"),
       ),
     ).toBe(false);
+  });
+
+  it("keeps the welcome logo bounded and consistent after login", async () => {
+    vi.stubGlobal("fetch", stubCustomerWorkspaceFetch());
+    render(<RootApp path="/" />);
+    await screen.findByRole("heading", { name: "工作台" });
+
+    const welcomeLogo = screen.getByRole("img", { name: "众墅之家" });
+    expect(welcomeLogo).toHaveAttribute("src", "/studio/logo-mark.svg");
+    expect(welcomeLogo).toHaveAttribute("width", "50.4");
+    expect(welcomeLogo).toHaveAttribute("height", "43.2");
+    expect(screen.getByText("众墅之家")).toBeVisible();
+    expect(screen.getByText("AI 即创")).toBeVisible();
+
+    await loginThroughAccountForm();
+    const workspaceLogo = screen.getByRole("img", { name: "众墅之家" });
+    expect(workspaceLogo.outerHTML).toBe(welcomeLogo.outerHTML);
   });
 
   // 未认证的客户入口不得读写私有业务数据（V3 行 257/258）。
@@ -469,7 +486,7 @@ describe("RootApp", () => {
     // The workspace stub does not serve /api/customer/wallet pricing, so the
     // wallet summary settles to the error label instead of a credit count.
     expect(
-      await screen.findByRole("button", { name: "用户档案，积分 读取失败" }),
+      await screen.findByRole("button", { name: "用户档案，user-1" }),
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("内部访问令牌（云端模式）")).toBeNull();
   });

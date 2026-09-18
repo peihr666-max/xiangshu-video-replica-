@@ -16,7 +16,7 @@
   color: #eef0f4;
   background: #090a0b;
   min-height: 100vh;
-  font-size: 14px;
+  font-size: var(--font-body);
 }
 .uc-center * {
   box-sizing: border-box;
@@ -60,7 +60,7 @@
   margin: 0;
 }
 .uc-center h2 {
-  font-size: 19px;
+  font-size: var(--font-section);
   font-weight: 650;
 }
 .uc-center p {
@@ -83,17 +83,6 @@
   align-items: center;
   gap: 18px;
 }
-.uc-brand img {
-  width: 150px;
-  height: 45px;
-  object-fit: contain;
-}
-.uc-brand > span {
-  border-left: 1px solid #55503d;
-  padding-left: 18px;
-  color: var(--uc-gold);
-  font-size: 19px;
-}
 .uc-brandbar nav {
   gap: 22px;
 }
@@ -109,7 +98,7 @@
   margin-bottom: 24px;
 }
 .uc-title h1 {
-  font-size: 28px;
+  font-size: var(--font-title);
   margin-bottom: 6px;
 }
 .uc-card {
@@ -132,7 +121,7 @@
 }
 .uc-card h2 small {
   color: var(--uc-muted);
-  font-size: 12px;
+  font-size: var(--font-caption);
   margin-left: 10px;
   font-weight: 400;
 }
@@ -164,28 +153,28 @@
   background: #3b301b;
   color: #f1c35b;
   border: 1px solid #80632d;
-  font-size: 31px;
+  font-size: var(--font-title);
 }
 .uc-avatar-small {
   width: 32px;
   height: 32px;
-  font-size: 16px;
+  font-size: var(--font-body);
 }
 .uc-person h2 {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 16px;
-  font-size: 24px;
+  font-size: var(--font-title);
   overflow-wrap: anywhere;
 }
 .uc-person h2 button {
-  font-size: 12px;
+  font-size: var(--font-caption);
   color: var(--uc-muted);
 }
 .uc-person dl {
   margin: 12px 0 0;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .uc-person dl > div {
   display: flex;
@@ -205,7 +194,7 @@
   border-left: 1px solid #393429;
 }
 .uc-balance h3 {
-  font-size: 14px;
+  font-size: var(--font-body);
   color: #d9c48e;
   font-weight: 400;
 }
@@ -217,7 +206,7 @@
   margin: 6px 0 12px;
 }
 .uc-balance strong {
-  font-size: 43px;
+  font-size: var(--font-display);
   color: #f0c75f;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
@@ -227,7 +216,7 @@
   align-self: center;
 }
 .uc-balance p {
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .uc-balance p > span {
   margin-left: 24px;
@@ -276,7 +265,7 @@
 .uc-center table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
+  font-size: var(--font-caption);
   text-align: left;
 }
 .uc-center th {
@@ -302,13 +291,13 @@
   display: block;
   color: var(--uc-muted);
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--font-caption);
   margin-top: 4px;
 }
 .uc-center td code {
   white-space: nowrap;
   color: #c4c5cd;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .uc-tag {
   display: inline-block;
@@ -316,7 +305,7 @@
   border: 1px solid #61522f;
   border-radius: 4px;
   padding: 0 5px;
-  font-size: 10px;
+  font-size: var(--font-caption);
   margin-top: 4px;
 }
 .uc-valid {
@@ -331,7 +320,7 @@
   white-space: nowrap;
 }
 .uc-row-actions button {
-  font-size: 12px;
+  font-size: var(--font-caption);
   padding: 6px;
   color: #dec079;
 }
@@ -342,7 +331,7 @@
   display: flex;
   align-items: flex-start;
   gap: 7px;
-  font-size: 11px;
+  font-size: var(--font-caption);
   margin-top: 16px;
 }
 .uc-footnote svg {
@@ -360,11 +349,11 @@
   color: #d4b868;
 }
 .uc-preference strong {
-  font-size: 13px;
+  font-size: var(--font-label);
   font-weight: 500;
 }
 .uc-preference p {
-  font-size: 11px;
+  font-size: var(--font-caption);
   margin-top: 4px;
 }
 .uc-center .uc-switch {
@@ -424,7 +413,7 @@
 }
 .uc-center label {
   display: block;
-  font-size: 13px;
+  font-size: var(--font-label);
   margin: 18px 0 10px;
 }
 .uc-center input {
@@ -473,9 +462,6 @@
     padding: 16px 20px;
     gap: 12px;
   }
-  .uc-brand img {
-    width: 122px;
-  }
   .uc-brandbar nav {
     width: 100%;
     justify-content: space-between;
@@ -483,7 +469,7 @@
   }
   .uc-top-name {
     gap: 7px;
-    font-size: 12px;
+    font-size: var(--font-caption);
   }
   .uc-content {
     padding: 24px 16px 40px;
@@ -499,17 +485,17 @@
     gap: 14px;
   }
   .uc-person h2 {
-    font-size: 20px;
+    font-size: var(--font-section);
   }
   .uc-avatar {
     width: 58px;
     height: 58px;
-    font-size: 24px;
+    font-size: var(--font-title);
   }
   .uc-avatar-small {
     width: 27px;
     height: 27px;
-    font-size: 13px;
+    font-size: var(--font-label);
   }
   .uc-balance {
     border-left: 0;
@@ -517,7 +503,7 @@
     padding: 22px 0 0;
   }
   .uc-balance strong {
-    font-size: 36px;
+    font-size: var(--font-metric);
   }
   .uc-tabs {
     gap: 20px;

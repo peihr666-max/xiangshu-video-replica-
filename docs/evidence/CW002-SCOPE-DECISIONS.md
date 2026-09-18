@@ -54,7 +54,7 @@
 | F10 | 任务和结果 | `tasks`、`task-detail` | 已实现 | 保留 |
 | F11 | 钱包与充值 | `profile` 内客户钱包两个入口 | **已知缺陷**（两入口上下文不一致，CW-016 修复） | 保留（先红后绿） |
 | F12 | 管理和经营看板 | `analytics`（客户仅本人）+ `client/src/admin/`（管理员） | 已实现 | 保留 |
-| — | 发布管理（`publishing`） | `publishing` 页 | **未接通**：按钮为诚实提示"正式发布（接口未接通）"（`client/src/studio/ContentPages.tsx:2653-2657`；df7020c 校正，draft b211095 时为 :1764-1768，+1055/-166 漂移后移位，字符串不变）、"尚未连接发布账号 / 平台账号授权接口尚未接入"（`client/src/studio/MainPages.tsx:1782-1783`；df7020c 校正，draft b211095 时为 :1220 的"发布账号服务尚未接入"，+736/-61 漂移后移位且提示文案改写为 Empty 组件 title/description） | **09-09 原结论（不改写）**：不纳入本轮完工口径，保留诚实提示或按确认范围隐藏（V3 §5 发布管理条款）；若纳入须先补专用验收矩阵。<br>**2026-09-11 范围变更**：按 owner 决策改为**纳入，分两阶段**——第一阶段（CW-068）仅账号授权（抖音/视频号连接、密文落库、登录态探测、前端「发布账号」tab），第二阶段另立任务交付正式发布链路（records/worker publish round/封面/定时/published_total）。专用验收矩阵已按 §3 原要求补于本文 §8，CW-068 的 DoD 以 §8 第一阶段行为准。`publishing` 页与首页「累计已发布」指标属第二阶段，第一阶段保持诚实降级不变 |
+| — | 发布管理（`publishing`） | `publishing` 页 | **未接通**：按钮为诚实提示"正式发布（接口未接通）"（`client/src/studio/ContentPages.tsx:2653-2657`；df7020c 校正，draft b211095 时为 :1764-1768，+1055/-166 漂移后移位，字符串不变）、"尚未连接发布账号 / 平台账号授权接口尚未接入"（`client/src/studio/MainPages.tsx:1782-1783`；df7020c 校正，draft b211095 时为 :1220 的"发布账号服务尚未接入"，+736/-61 漂移后移位且提示文案改写为 Empty 组件 title/description） | **09-09 原结论（不改写）**：不纳入本轮完工口径，保留诚实提示或按确认范围隐藏（V3 §5 发布管理条款）；若纳入须先补专用验收矩阵。<br>**2026-09-11 范围变更**：按 owner 决策改为**纳入，分两阶段**——第一阶段（CW-068）仅账号授权（抖音/视频号连接、密文落库、登录态探测、前端「发布账号」tab），第二阶段另立任务交付正式发布链路（records/worker publish round/封面/定时/published_total）。专用验收矩阵已按 §3 原要求补于本文 §8，CW-068 的 DoD 以 §8 第一阶段行为准。`publishing` 页与首页「累计已发布」指标属第二阶段，第一阶段保持诚实降级不变<br>**2026-09-17 PR-A 落地**：`publishing` 页解锁立即/定时发布与记录面板，首页指标读真实 `published_total`；浏览器兜底与回收见 PR-B（§8.4） |
 
 ## 4. 游客浏览门禁决议（CW-014 条件依据）
 
@@ -133,4 +133,37 @@
 ### 8.3 第二阶段追加要求
 
 第二阶段任务开工时须在 §8.1 之后追加验收行并重新取得产品负责人签认，届时至少覆盖：records 草稿持久化与生命周期（draft→queued→publishing→published/failed/cancelled）、资产与封面归属校验、定时与状态 claim 条件、同账号发布串行化而其他账号可并行、发布成功回写平台 item id/短链、发布失败可置账号 invalid、`published_total` 真实计数、`publishing` 页正式动作解锁，以及 §3 表中 `publishing` 行结论的再次更新。不得以本阶段矩阵冒充第二阶段验收。
+
+### 8.4 第二阶段 PR-A 验收行（PUBLISH-DELIVERY-20260917，待产品负责人签认）
+
+用户 2026-09-17 决策：API（协议库）优先、Playwright 兜底；桌面扫码账号登录成功后加密上传服务端；本期抖音 + 视频号；结果/数据回收与浏览器兜底上传器留 PR-B。后端用例落在 `server/tests/test_publish_records.py`（专属库 `publish_records_test`）、`test_publish_credentials.py`、`test_publish_delivery.py`、`test_publish_browser.py`；前端落在 `ContentPages.test.tsx`、`MainPages.test.tsx`、`PublishRecordsPanel.test.tsx`。
+
+| # | 验收项 | 契约要求 | 测试用例 |
+| --- | --- | --- | --- |
+| B1 | 记录创建与凭据不回传 | `POST /records` 以扫码账号 id + `asset:` 素材创建 `queued` 记录；响应含平台/账号昵称/标签归一化，不含任何 storage/cookie 字段 | `test_create_immediate_record_queues_without_exposing_credentials` |
+| B2 | 定时校验 | `scheduled_at` 须带时区，提前 ≥2 分钟且 ≤30 天，否则 422 `PUBLISH_SCHEDULE_TOO_SOON / TOO_FAR / TIMEZONE_REQUIRED` | `test_create_scheduled_record_validates_lead_time` |
+| B3 | 去重 | 同用户同账号同视频存在 queued/publishing → 409 `PUBLISH_RECORD_DUPLICATE`；换账号可再排 | `test_create_rejects_duplicate_active_record_for_same_video_and_account` |
+| B4 | 账号/平台/素材规则 | 他人账号 404；小红书 422 `PUBLISH_PLATFORM_NOT_READY`；invalid 账号 409；他人素材 404；未上传完成 409 `ASSET_UPLOAD_NOT_COMPLETE`；视频/封面类型不匹配 422 | `test_create_enforces_account_platform_and_material_rules` |
+| B5 | 审计员禁写 | auditor 创建 403 且无落库 | `test_auditor_cannot_create_records` |
+| B6 | 用户隔离 | 列表/详情只见本人；状态筛选 422 校验 | `test_list_get_and_isolation` |
+| B7 | 状态机 | cancel 仅 queued、retry 仅 failed（清零 attempt/错误）、sync 仅 published、delete 仅终态，其余 409 | `test_cancel_retry_sync_delete_follow_the_state_machine` |
+| B8 | 汇总 | `published/queued/failed_total` 与 `play/like_total`（仅数字型 stats）按用户聚合 | `test_summary_counts_and_stat_totals` |
+| B9 | 到点与顺序 | claim 只取 `COALESCE(scheduled_at, created_at)` 已到者，按该时间升序；租约写入 `publishing` | `test_claim_respects_schedule_order_and_lease` |
+| B10 | 同账号串行、跨账号并行 | 同账号第二条等待，另一账号可并行 claim | `test_claim_serializes_per_account_but_parallelizes_across_accounts` |
+| B11 | 并发抢占 | 另一连接持锁时 claim 返回 None 不阻塞；释放后可 claim | `test_claim_skips_rows_locked_by_a_concurrent_claimer` |
+| B12 | 成功回写 | `published` 写 item id/短链/`delivery_mode`/`published_at`，租约清空；重放 finalize 抛 `PublishLeaseLostError` | `test_finalize_published_writes_platform_result` |
+| B13 | 瞬时失败重排 | `attempt_count<3` 回 queued 且 `scheduled_at` 延后 ≈5 分钟；第 3 次终态 failed | `test_finalize_transient_failure_requeues_until_attempts_exhausted` |
+| B14 | 登录态失效 | `account_invalid` → 记录 failed、账号 `status='invalid'`；同账号其余 queued 下一轮直接 failed | `test_finalize_account_invalid_marks_account_and_fails_record` |
+| B15 | 租约回收 | 过期 publishing 回 queued（`发布中断，已重新排队`），未过期不动；账号已删的 queued 置 failed | `test_expired_publishing_lease_is_requeued_and_unbound_records_fail` |
+| B16 | worker 闭环 | `run_publish_round` 解密 storage_state → 落盘视频/封面 → `deliver` → published；临时文件清理；第二轮 0 | `test_run_publish_round_delivers_and_finalizes` |
+| B17 | 凭据不可读 / 存储故障 | 解密失败 → failed + 账号 invalid 且不投递；存储解析失败 → 回 queued 重试 | `test_run_publish_round_unreadable_credentials_invalidate_account` / `test_run_publish_round_storage_outage_requeues` |
+| B18 | 凭据桥接 | storage_state → 按平台域名过滤的 Cookie 头；抖音 `security-sdk` 精确键或兜底扫描；缺失返回 None；repr 不含值 | `test_publish_credentials.py` 12 项 |
+| B19 | API 优先 / 兜底决策 | API 成功不触碰浏览器；瞬时失败且 flag 开则兜底；`account_invalid` 终态；flag 关不兜底；兜底不可用保留 API 失败；兜底崩溃合并报错 | `test_publish_delivery.py` 17 项 |
+| B20 | 桌面导入 | `POST /browser/accounts/import` 形状校验、密文入库、`source='desktop'`、同身份 upsert 复位 invalid、越权与审计员 | `test_publish_browser.py` 4 项 import 用例 |
+| B21 | 范围切分锁维持 | verify claim 在隐藏 `publish_records` 表后仍工作 | `test_claim_verify_does_not_touch_publish_records`（改写） |
+| B22 | 迁移链与冻结矩阵 | head → `20260917T1000_publish_records`；`HEAD_SCHEMA_COUNTS/DIGEST/TABLE_NAMES` 重算；manifest `--check` OK | `test_cw056_supported_head_matrix.py` / `test_postgres_migrations.py` |
+| B23 | 部署契约 | compose 8 个进程拓扑含 `worker-publish`；rollout 可选服务；基础镜像 Node + import 冒烟 | `test_cw032_delivery_package.py` / `test_customer_git_rollout.py` |
+| B24 | 前端正式动作 | 服务端账号选择、失效账号禁发、立即/定时（本地时区→ISO、前端 2 分钟预校验）调用 `createPublishRecord`；小红书禁发提示；记录面板状态/操作/轮询停止；桌面 connected 后导入并可重试；解绑联动删除；首页读 summary | `选择服务端账号后可立即发布或按时区换算的定时发布`、`小红书账号只能保存草稿与前往官方发布，不提交自动发布`、`PublishRecordsPanel.test.tsx` 6 项、`扫码确认后把导出的登录状态加密同步到服务端，失败可重试`、`解绑本机账号时同时删除服务端副本` |
+
+PR-B 追加：浏览器兜底上传器（抖音/视频号）、`list_posts` 结果与数据回收、按账号批量 sync claim、`platform_status/stats` 回写、整账号同步接口。真实平台链路仍需真实凭据人工授权，证据层级上限 AUTOMATED_VERIFIED。
 

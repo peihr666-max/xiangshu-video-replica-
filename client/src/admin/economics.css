@@ -19,11 +19,11 @@
 }
 .economics-kpis article span {
   color: #a49e95;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .economics-kpis article strong {
   color: #e0c17c;
-  font-size: 24px;
+  font-size: var(--font-title);
 }
 .economics-kpis article.is-warning {
   border-color: #9a6d36;
@@ -38,7 +38,7 @@
   display: grid;
   gap: 6px;
   color: #a49e95;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .economics-filter select {
   min-width: 150px;
@@ -89,12 +89,12 @@
 .admin-shell--control .profit-main-grid > section .admin-data-table th,
 .admin-shell--control .profit-main-grid > section .admin-data-table td {
   padding: 14px 8px;
-  font-size: 13px;
+  font-size: var(--font-label);
   overflow-wrap: anywhere;
 }
 .admin-shell--control .profit-main-grid .table-link-button {
   padding: 5px;
-  font-size: 12px;
+  font-size: var(--font-caption);
   white-space: nowrap;
 }
 .admin-shell--control .profit-basis input[type="radio"] {
@@ -141,7 +141,7 @@
 }
 .economics-kpis article small {
   color: #817b73;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .profit-basis .is-disabled {
   color: #77716a;
@@ -180,7 +180,7 @@
   flex-wrap: wrap;
   gap: 14px;
   color: #aaa39a;
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .profit-chart-legend span::before,
 .cost-chart-legend span::before,
@@ -233,7 +233,7 @@
   gap: 7px;
   text-align: center;
   color: #8f8981;
-  font-size: 10px;
+  font-size: var(--font-caption);
 }
 .cost-bars__stack {
   display: flex;
@@ -291,19 +291,19 @@
   gap: 5px;
 }
 .dashboard-kpis .admin-summary-card span {
-  font-size: 13px;
+  font-size: var(--font-label);
   letter-spacing: 0;
   text-transform: none;
 }
 .dashboard-kpis .admin-summary-card strong {
   display: block;
   color: #dfb85f;
-  font-size: 22px;
+  font-size: var(--font-lead);
   line-height: 1.05;
   white-space: nowrap;
 }
 .dashboard-kpis .admin-summary-card small {
-  font-size: 11px;
+  font-size: var(--font-caption);
 }
 .dashboard-main-grid {
   display: grid;
@@ -367,14 +367,14 @@
   bottom: calc(100% + 5px);
   transform: translateX(-50%);
   color: #d5b462;
-  font-size: 12px;
+  font-size: var(--font-caption);
   font-weight: 500;
   white-space: nowrap;
 }
 .dashboard-combo .dashboard-trend__col span {
   display: grid;
   color: #8f8981;
-  font-size: 13px;
+  font-size: var(--font-label);
 }
 .dashboard-combo .dashboard-trend__col small {
   color: #75a47c;
@@ -386,7 +386,7 @@
   flex-direction: column;
   justify-content: space-between;
   color: #77716a;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .dashboard-axis--left {
   left: 0;
@@ -397,7 +397,7 @@
 .slot-count {
   display: block;
   color: #e0c17c;
-  font-size: 28px;
+  font-size: var(--font-title);
   margin: 22px 0 14px;
 }
 .dashboard-page .dashboard-quick-actions {

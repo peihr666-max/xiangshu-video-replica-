@@ -1,6 +1,95 @@
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+// @vitest-environment node
+
+import { createHash } from "node:crypto";
+import { copyFileSync, readFileSync } from "node:fs";
+import { describe, expect, it, vi } from "vitest";
+import viteConfig from "../vite.config";
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+  copyFileSync: vi.fn(),
+  cpSync: vi.fn(),
+  mkdirSync: vi.fn(),
+}));
+
+it("生产品牌资源通过校验，缺失、篡改图形或混入审核图仍被拒绝", async () => {
+  const { assertProductionPublicAssets } = await import(
+    new URL("../../scripts/verify_customer_bundle.mjs", import.meta.url).href
+  );
+  const manifest = [
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+    "studio/brand.png",
+    "studio/logo-mark.svg",
+    "platforms/douyin.ico",
+    "platforms/wechat_channels.ico",
+    "platforms/xiaohongshu.ico",
+  ].map((rel) => {
+    const content = readFileSync(new URL(`../public/${rel}`, import.meta.url));
+    return {
+      rel,
+      bytes: content.length,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    };
+  });
+  expect(() => assertProductionPublicAssets(manifest)).not.toThrow();
+  expect(() =>
+    assertProductionPublicAssets(
+      manifest.filter((item) => item.rel !== "studio/logo-mark.svg"),
+    ),
+  ).toThrow(/missing or changed/);
+  expect(() =>
+    assertProductionPublicAssets(
+      manifest.map((item) =>
+        item.rel === "studio/logo-mark.svg"
+          ? { ...item, sha256: "wrong" }
+          : item,
+      ),
+    ),
+  ).toThrow(/missing or changed/);
+  expect(() =>
+    assertProductionPublicAssets([
+      ...manifest,
+      { rel: "studio/review-only.png", bytes: 1, sha256: "test" },
+    ]),
+  ).toThrow(/Review-only assets/);
+});
+
+it("客户正式构建复制侧栏图形与浏览器图标", () => {
+  const plugin = viteConfig.plugins
+    ?.flat()
+    .find(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        "name" in item &&
+        item.name === "customer-public-assets",
+    );
+  if (
+    !plugin ||
+    typeof plugin !== "object" ||
+    !("writeBundle" in plugin) ||
+    typeof plugin.writeBundle !== "function"
+  ) {
+    throw new Error("customer-public-assets must expose writeBundle");
+  }
+  Reflect.apply(plugin.writeBundle, {}, [{}, {}]);
+  const destinations = vi
+    .mocked(copyFileSync)
+    .mock.calls.map(([, target]) => String(target).replaceAll("\\", "/"));
+  for (const asset of [
+    "studio/logo-mark.svg",
+    "favicon.svg",
+    "favicon.png",
+    "favicon.ico",
+  ]) {
+    expect(destinations.some((path) => path.endsWith(`/dist/${asset}`))).toBe(
+      true,
+    );
+  }
+});
 
 /**
  * CW-019 客户/管理独立构建制品 · 源码级入口合同测试

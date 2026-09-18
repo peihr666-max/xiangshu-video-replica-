@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import type { PromptGenerationContext } from "./api";
+import { PromptEditor } from "./studio/PromptEditor";
 
 import "./prompt-markdown.css";
 
 type PromptMarkdownProps = {
+  scope?: string;
   meta?: string | null;
+  promptContext?: PromptGenerationContext;
+  onChange?: (text: string) => void;
   onSave?: (text: string) => Promise<void>;
   readOnly?: boolean;
   text: string;
@@ -21,7 +26,10 @@ const COPY_FEEDBACK_MS = 2000;
 // 提示词 Markdown 视图 = 展示层结构化渲染（时间码/镜头行高亮分块），
 // 复制与编辑始终作用于原始 H3 全文，提交文本不因渲染格式而改变。
 export function PromptMarkdown({
+  scope,
   meta,
+  promptContext,
+  onChange,
   onSave,
   readOnly = false,
   text,
@@ -73,7 +81,7 @@ export function PromptMarkdown({
       setError("提示词不能为空。");
       return;
     }
-    if (next.length > 7000) {
+    if (Array.from(next).length > 7000) {
       setError("提示词不能超过 7000 字。");
       return;
     }
@@ -126,14 +134,20 @@ export function PromptMarkdown({
       ) : null}
       {isEditing ? (
         <div className="prompt-md__editor">
-          <textarea
-            aria-label="提示词源码"
-            maxLength={7000}
-            onChange={(event) => setDraft(event.target.value)}
-            spellCheck={false}
+          <PromptEditor
+            label="提示词源码"
             value={draft}
+            readOnly={isSaving || readOnly}
+            scope={scope ?? promptContext?.project_id ?? "legacy"}
+            context={
+              promptContext ?? { route: "text_image", duration_seconds: 15 }
+            }
+            optimizationDisabled={!promptContext}
+            onChange={(text) => {
+              setDraft(text);
+              onChange?.(text);
+            }}
           />
-          <p className="status-note">{draft.length}/7000 字</p>
           <div className="prompt-md__editor-actions">
             <button
               disabled={isSaving}
@@ -148,7 +162,7 @@ export function PromptMarkdown({
               onClick={cancelEditing}
               type="button"
             >
-              取消
+              {onChange ? "完成编辑" : "取消"}
             </button>
           </div>
           <p className="status-note">另存到我的提示词，原始拆解内容保留。</p>

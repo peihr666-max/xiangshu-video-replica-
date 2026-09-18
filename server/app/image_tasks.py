@@ -34,6 +34,8 @@ from app.first_frames import (
     FirstFrameQualityResult,
     GeneratedImage,
     ImageProvider,
+    ImageProviderFailed,
+    RetryableImageProviderFailed,
     StoredFirstFrameCandidates,
     complete_first_frame_generation,
     load_first_frame_generation_work,
@@ -285,6 +287,7 @@ def enqueue_first_frame_task(
     character_reference_selection_id: str | None,
     idempotency_key: str,
     aspect_ratio: str | None = None,
+    replace_scene: bool = False,
 ) -> sqlite3.Row:
     # Authorization must precede the idempotent replay lookup. Otherwise an
     # unrelated user who guesses a project/key pair can observe another
@@ -309,6 +312,8 @@ def enqueue_first_frame_task(
         "character_version_id": character_version_id,
         "character_reference_selection_id": character_reference_selection_id,
     }
+    if replace_scene:
+        request_parameters["replace_scene"] = True
     if aspect_ratio is not None:
         request_parameters["aspect_ratio"] = aspect_ratio
     replay = conn.execute(
@@ -318,6 +323,10 @@ def enqueue_first_frame_task(
     if replay is not None:
         stored_payload = json.loads(str(replay["request_json"]))
         stored_parameters = {key: stored_payload.get(key) for key in request_parameters}
+        if bool(stored_payload.get("replace_scene", False)) != replace_scene:
+            raise _task_error(
+                409, "FIRST_FRAME_TASK_IDEMPOTENCY_CONFLICT", "场景设置已变化，请重新提交。"
+            )
         if stored_payload.get("aspect_ratio") != aspect_ratio:
             raise _task_error(
                 409, "FIRST_FRAME_TASK_IDEMPOTENCY_CONFLICT", "图片画幅已变化，请重新提交。"
@@ -342,6 +351,7 @@ def enqueue_first_frame_task(
         character_version_id=character_version_id,
         character_reference_selection_id=character_reference_selection_id,
         aspect_ratio=aspect_ratio,
+        replace_scene=replace_scene,
     )
     request_payload = {
         **request_parameters,
@@ -783,6 +793,7 @@ def prepare_first_frame_task(
             prompt=cast(str | None, payload.get("prompt")),
             quantity=int(payload["quantity"]),
             aspect_ratio=cast(str | None, payload.get("aspect_ratio")),
+            replace_scene=payload.get("replace_scene") is True,
             character_version_id=cast(str | None, payload.get("character_version_id")),
             character_reference_selection_id=cast(
                 str | None, payload.get("character_reference_selection_id")
@@ -808,6 +819,8 @@ def prepare_first_frame_task(
         "project_appearance_fingerprint": plan.project_appearance.fingerprint,
         "source_analysis_version_id": plan.project_appearance.source_analysis_version_id,
     }
+    if payload.get("replace_scene") is True:
+        current_payload["replace_scene"] = True
     if payload.get("aspect_ratio") is not None:
         current_payload["aspect_ratio"] = payload["aspect_ratio"]
     if canonical_request_hash(current_payload) != str(row["request_hash"]):
@@ -826,9 +839,8 @@ def prepare_first_frame_task(
         raise _task_error(
             409, "FIRST_FRAME_RECEIPT_CHANGED", "原图像任务的服务或输入已变化，请联系管理员核对。"
         )
-    inspector = quality_inspector
-    if inspector is None and plan.project_appearance.appearance_source != "SCENE_LOOK":
-        inspector = quality_inspector_factory() if quality_inspector_factory else None
+    # Human review must not require an AI-inspector credential or network call.
+    inspector = None
     conn.commit()
     return FirstFrameTaskPrepared(
         lease=lease,
@@ -1280,10 +1292,30 @@ def fail_image_task(
         # paid provider call is not: the upstream may have accepted or even
         # completed the request before the transport/quality/storage failure.
         known_failure = cause.status_code < 500
+        if str(detail.get("code")) == "FIRST_FRAME_PROVIDER_RESPONSE_INVALID":
+            # The provider answered successfully but the payload is unusable
+            # (e.g. a count mismatch). Retrying the same task deterministically
+            # yields the same answer, so this is a known failure — the user
+            # regenerates a new task instead of hitting the reconcile desk.
+            known_failure = True
+            retryable = True
     elif isinstance(cause, (StorageBackendUnavailable, OSError, ValueError)):
         code = "IMAGE_TASK_STORAGE_UNAVAILABLE"
         message = "素材库暂不可用，请稍后重试。"
         known_failure = not submission_started
+    elif isinstance(cause, RetryableImageProviderFailed):
+        # Transport timeouts/429/5xx stay "unknown": the provider receipt may
+        # still complete, and a receipt resume keeps polling the same task.
+        pass
+    elif isinstance(cause, ImageProviderFailed):
+        # The provider returned a definitive but unusable answer (count
+        # mismatch, unreadable status, rejected download). Same-task retries
+        # reproduce it; classify as a known failure instead of parking the
+        # task in SUBMISSION_UNCERTAIN (the 2026-09-17 incident class).
+        code = "IMAGE_TASK_PROVIDER_FAILED"
+        message = "图像服务返回了不可用的结果，请重新生成。"
+        retryable = True
+        known_failure = True
     current = conn.execute(
         f"SELECT result_json FROM {table} WHERE id = %s AND status = 'RUNNING' AND "
         "locked_by = %s AND attempt = %s",
@@ -1459,3 +1491,151 @@ def _time_text(value: datetime) -> str:
 
 def _task_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def log_image_task_failure(
+    table: Literal["first_frame_tasks", "character_sheet_tasks"],
+    lease: ImageTaskLease,
+    cause: Exception,
+) -> None:
+    """Task-scoped error log for the worker's per-task except path.
+
+    The generic per-iteration handler cannot attribute a failure to a task,
+    which made the 2026-09-17 first-frame incident triage read code instead
+    of logs. Exception messages here are vendor-neutral; no secrets, prompts
+    or user content are logged.
+    """
+    logger.error(
+        "image task failed: table=%s task=%s attempt=%s cause=%s",
+        table,
+        lease.id,
+        lease.attempt,
+        type(cause).__name__,
+        exc_info=cause,
+    )
+
+
+@dataclass(frozen=True)
+class FirstFrameReconcilePlan:
+    task_id: str
+    receipt: dict[str, object] | None
+
+
+def prepare_first_frame_reconcile(
+    conn: BusinessConnection, *, task_id: str
+) -> FirstFrameReconcilePlan:
+    """Admin reconcile phase 1 (read-only): validate state, parse receipt."""
+
+    row = conn.execute(
+        "SELECT status, result_json FROM first_frame_tasks WHERE id = %s", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise _task_error(404, "IMAGE_TASK_NOT_FOUND", "生成任务不存在。")
+    if str(row["status"]) != "SUBMISSION_UNCERTAIN":
+        raise _task_error(
+            409, "IMAGE_TASK_NOT_UNCERTAIN", "Only SUBMISSION_UNCERTAIN tasks can be reconciled."
+        )
+    return FirstFrameReconcilePlan(
+        task_id=task_id, receipt=_parse_first_frame_submission(row["result_json"])
+    )
+
+
+def first_frame_reconcile_decision(
+    plan: FirstFrameReconcilePlan, provider: ApilioImageProvider
+) -> tuple[Literal["RESUME", "FAIL", "RETRY"], str | None]:
+    """Ask the provider what really happened to the submitted task.
+
+    Network I/O: callers must run this OUTSIDE any database transaction.
+    RESUME requeues the task so the worker resumes polling the same provider
+    task from its receipt (never a second paid submission). FAIL is a
+    definitive terminal answer. RETRY means we cannot judge yet and the task
+    stays in SUBMISSION_UNCERTAIN.
+    """
+    receipt = plan.receipt
+    if receipt is None:
+        # Submission never produced a receipt: nothing is owed to the user
+        # and nothing can be polled — fail closed.
+        return "FAIL", "IMAGE_TASK_RECONCILE_NO_RECEIPT"
+    if receipt.get("account_fingerprint") != provider.account_fingerprint:
+        # The provider account changed after submission; the receipt is no
+        # longer pollable from this configuration.
+        return "FAIL", "IMAGE_TASK_PROVIDER_CHANGED"
+    try:
+        outcome = provider.poll_edit(
+            str(receipt["task_id"]), output_count=int(str(receipt.get("output_count")))
+        )
+    except HTTPException as exc:
+        detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+        if exc.status_code < 500:
+            return "FAIL", str(detail.get("code") or "FIRST_FRAME_PROVIDER_REJECTED")
+        return "RETRY", "IMAGE_TASK_RECONCILE_PROVIDER_INCONCLUSIVE"
+    except RetryableImageProviderFailed:
+        return "RETRY", "IMAGE_TASK_RECONCILE_PROVIDER_UNAVAILABLE"
+    except (OSError, TimeoutError):
+        return "RETRY", "IMAGE_TASK_RECONCILE_PROVIDER_UNAVAILABLE"
+    except ImageProviderFailed:
+        # The provider answered but the status cannot be interpreted; leave
+        # the task for a later attempt or deeper investigation.
+        return "RETRY", "IMAGE_TASK_RECONCILE_PROVIDER_INCONCLUSIVE"
+    if outcome is None or isinstance(outcome, list):
+        return "RESUME", None
+    return "RETRY", "IMAGE_TASK_RECONCILE_PROVIDER_INCONCLUSIVE"
+
+
+def apply_first_frame_reconcile(
+    conn: BusinessConnection,
+    *,
+    task_id: str,
+    decision: Literal["RESUME", "FAIL"],
+    detail_code: str | None,
+    actor: CurrentUser,
+) -> Literal["RESUMED", "FAILED"]:
+    """Admin reconcile phase 2: fenced state transition plus audit trail."""
+
+    now = _now_text()
+    if decision == "RESUME":
+        updated = conn.execute(
+            """
+            UPDATE first_frame_tasks
+            SET status = 'PENDING', error_code = 'IMAGE_TASK_RECONCILE_RESUMED',
+                error_message_redacted = '管理员已核对供应商任务，将继续生成处理。',
+                retryable = 1, locked_by = NULL, locked_until = NULL,
+                completed_at = NULL, updated_at = %s
+            WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'
+            """,
+            (now, task_id),
+        )
+        result: Literal["RESUMED", "FAILED"] = "RESUMED"
+    else:
+        updated = conn.execute(
+            """
+            UPDATE first_frame_tasks
+            SET status = 'FAILED', error_code = %s,
+                error_message_redacted = '管理员已核对：供应商任务未产出结果，请重新生成。',
+                retryable = 1, locked_by = NULL, locked_until = NULL,
+                completed_at = %s, updated_at = %s
+            WHERE id = %s AND status = 'SUBMISSION_UNCERTAIN'
+            """,
+            (detail_code or "IMAGE_TASK_RECONCILE_FAILED", now, now, task_id),
+        )
+        result = "FAILED"
+    if updated.rowcount != 1:
+        conn.rollback()
+        raise _task_error(409, "IMAGE_TASK_STATE_CHANGED", "任务状态已变化，请刷新后重试。")
+    if decision == "FAIL":
+        # Mirror fail_image_task: settle the reserved pre-charge with no
+        # delivered units so the user's wallet is released.
+        from app.usage_billing import finish_source
+
+        finish_source(conn, task_id, units=0, succeeded=False)
+    write_audit(
+        conn,
+        actor=actor,
+        action="first_frame_task.reconcile",
+        entity_type="first_frame_task",
+        entity_id=task_id,
+        metadata={"decision": decision, "detail_code": detail_code},
+        commit=False,
+    )
+    conn.commit()
+    return result

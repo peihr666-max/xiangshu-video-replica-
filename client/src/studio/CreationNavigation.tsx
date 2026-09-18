@@ -7,9 +7,11 @@ export function CreationNavigation() {
   const page =
     state.page === "reference"
       ? "video"
-      : state.page === "oral-audio"
-        ? "oral"
-        : state.page;
+      : state.page === "replacement"
+        ? "replica"
+        : state.page === "oral-audio"
+          ? "oral"
+          : state.page;
   return (
     <div className="studio-creation-nav">
       <Tabs<StudioPage>
@@ -17,8 +19,7 @@ export function CreationNavigation() {
         onChange={navigate}
         items={[
           { id: "replica", label: "视频复刻" },
-          { id: "replacement", label: "人物置换" },
-          { id: "video", label: "视频生成" },
+          { id: "video", label: "AI 视频" },
           { id: "oral", label: "数字人口播" },
         ]}
       />

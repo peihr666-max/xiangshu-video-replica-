@@ -364,6 +364,7 @@ export function WorkspaceShell({
             ) : null}
             {page === "projects" && activeDetailProject ? (
               <ProjectDetailFlow
+                currentUserId={currentUser.id}
                 onBack={closeDetail}
                 onBatchCreated={openCreatedBatch}
                 onBusyChange={(busy) =>

@@ -822,7 +822,7 @@ describe("App", () => {
         method: "POST",
         body: JSON.stringify({
           asset_id: "asset-ready",
-          reuse_existing: false,
+          reuse_existing: true,
         }),
       }),
     );
@@ -1439,7 +1439,7 @@ describe("App", () => {
         method: "POST",
         body: JSON.stringify({
           asset_id: "asset-1",
-          reuse_existing: false,
+          reuse_existing: true,
         }),
       }),
     );

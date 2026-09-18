@@ -3,7 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { components } from "./generated/api";
 
-const REQUEST_TIMEOUT_MS = 5_000;
+// MATERIAL-PERF-C（P0-6）：启动扇出约 20–40 个请求，5 秒硬超时会让任何一片
+// 慢请求把对应数据降级为空（首开缺内容）。默认放宽到 10 秒，配合 loadStudioData
+// 的失败切片单次重试。
+export const REQUEST_TIMEOUT_MS = 10_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
 const CLOUD_OP_TIMEOUT_MS = 60_000;
@@ -187,16 +190,34 @@ export type GenerationVersionState = Omit<
   "version"
 > & { version: GenerationVersion | null };
 export type ScriptVersionInput = components["schemas"]["ScriptRequest"];
-export type PromptCompileInput =
-  components["schemas"]["PromptCompileRequest"] & {
-    ratio?: GenerationRatio;
-  };
+export type PromptCompileInput = Omit<
+  components["schemas"]["PromptCompileRequest"],
+  "timeline_policy" | "opening_action"
+> & {
+  ratio?: GenerationRatio;
+  timeline_policy?: "preserve" | "scale_confirmed";
+  opening_action?: string;
+};
 export type PromptRevisionInput =
   components["schemas"]["PromptRevisionRequest"];
-export type GenerationBatchInput =
-  components["schemas"]["GenerationBatchRequest"] & {
-    ratio?: GenerationRatio;
-  };
+export type PromptContext = {
+  final_prompt_version_id?: string | null;
+  source?: "analysis" | "manual" | "ai" | "imported";
+  analysis_version_id?: string | null;
+  shot_card_version_id?: string | null;
+  script_version_id?: string | null;
+  optimization_task_id?: string | null;
+  context_hash?: string | null;
+};
+export type GenerationBatchInput = Omit<
+  components["schemas"]["GenerationBatchRequest"],
+  "prompt_version_id"
+> & {
+  prompt_version_id?: string;
+  prompt_text?: string;
+  prompt_context?: PromptContext;
+  ratio?: GenerationRatio;
+};
 export type GenerationRuntimeLimits =
   components["schemas"]["GenerationRuntimeLimits"];
 export type GenerationRatio =
@@ -219,6 +240,7 @@ export type GenerationPriceQuote = {
   credit_price_version?: number;
 };
 export type SavedPromptInput = {
+  generation_context?: PromptGenerationContext;
   name: string;
   prompt_text: string;
   base_prompt_version_id?: string;
@@ -627,6 +649,7 @@ export type FirstFrameCandidate = {
 };
 
 export type FirstFrameCandidates = {
+  replace_scene?: boolean;
   aspect_ratio?: GenerateFirstFramesInput["aspect_ratio"];
   review_mode?: "HUMAN_CONFIRMATION" | "AUTOMATIC_QUALITY";
   source_frame_asset_id?: string;
@@ -1072,7 +1095,7 @@ export async function createOralAvatarClone(input: {
   identityId: string;
   title: string;
   sourceAssetId: string;
-  sourceKind: "VIDEO" | "IMAGE";
+  sourceKind: "VIDEO";
   consentId: string;
   idempotencyKey: string;
 }): Promise<OralCloneCreated> {
@@ -1256,6 +1279,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 
 export function setInternalAccessToken(token: string | null): void {
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   const normalized = token?.trim() ?? "";
   internalAccessToken = normalized || null;
 }
@@ -1265,6 +1289,7 @@ export function setInternalAccessToken(token: string | null): void {
  * shared project/analysis/generation API adapter can authenticate requests. */
 export function setCustomerSessionToken(token: string | null): void {
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   const normalized = token?.trim() ?? "";
   customerSessionToken = normalized || null;
   customerSessionOwner = null;
@@ -1280,6 +1305,7 @@ export function attachCustomerSessionToken(token: string): () => void {
   }
   const owner = Symbol("customer-workspace-session");
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   customerSessionToken = normalized;
   customerSessionOwner = owner;
   return () => {
@@ -1808,7 +1834,7 @@ export async function getIndependentCapabilities(): Promise<IndependentCapabilit
 }
 
 export type IndependentVideoTaskInput = {
-  mode: "t2v" | "i2v" | "r2v";
+  mode: "t2v" | "i2v" | "l2v" | "r2v";
   prompt_text: string;
   first_frame_asset_id?: string | null;
   last_frame_asset_id?: string | null;
@@ -1837,6 +1863,10 @@ export async function createIndependentVideoTask(
 }
 
 export type SavedPromptItem = {
+  generation_context?: PromptGenerationContext & {
+    mode?: H3Mode;
+    generation_assets?: { label: string; purpose: string }[];
+  };
   id: string;
   project_id: string;
   name: string;
@@ -2416,6 +2446,7 @@ export async function renameProject(
 export async function createVideoUploadIntent(
   projectId: string,
   file: File,
+  purpose: "replica" | "script" = "replica",
 ): Promise<UploadIntent> {
   const sha256 = await sha256ForUpload(file);
   return requestApiJson<UploadIntent>(
@@ -2425,6 +2456,7 @@ export async function createVideoUploadIntent(
       method: "POST",
       body: JSON.stringify({
         project_id: projectId,
+        purpose,
         filename: file.name,
         // Derive from the extension so a generic/empty file.type (e.g.
         // application/octet-stream from some file managers) is normalized.
@@ -2566,9 +2598,11 @@ export async function putMaterial(
   onProgress: (progressPercent: number) => void,
   signal?: AbortSignal,
 ): Promise<MaterialItem> {
+  signal?.throwIfAborted();
   if (intent.upload_required === false) {
-    // 复用分支只是一次轻量解析，不带 signal：中断发生在传输阶段才有意义。
+    // Resolve the completed asset without repeating transfer or reference counting.
     const resolved = await resolveMaterials([intent.material_id]);
+    signal?.throwIfAborted();
     const item = resolved.items[0];
     if (!item) {
       throw new Error("复用素材后未能读取素材详情");
@@ -2906,6 +2940,8 @@ export async function completeVideoUpload(
 export async function startVideoAnalysis(
   projectId: string,
   assetId: string,
+  generationContext?: PromptGenerationContext,
+  forceReanalysis = false,
 ): Promise<AnalysisTask> {
   const errorPrefix = "启动视频拆解失败";
   try {
@@ -2916,7 +2952,17 @@ export async function startVideoAnalysis(
         method: "POST",
         // Clicking “重新拆解” must publish a fresh immutable analysis version;
         // existing versions are loaded separately when the workspace opens.
-        body: JSON.stringify({ asset_id: assetId, reuse_existing: false }),
+        body: JSON.stringify({
+          asset_id: assetId,
+          reuse_existing: !forceReanalysis,
+          generation_context: generationContext
+            ? {
+                route: "replica",
+                project_id: projectId,
+                source_asset_id: assetId,
+              }
+            : undefined,
+        }),
       },
     );
   } catch (error) {
@@ -3036,10 +3082,16 @@ export type ScriptRewriteTask = {
     service_scope: string;
     target_audience: string;
     expression_style: string;
+    audience_needs?: string;
+    factual_background?: string;
+    sample_script?: string;
+    forbidden_claims?: string;
+
     profile_version: number;
   } | null;
   source_asset_id: string | null;
   source_text: string;
+  instructions?: string;
   status:
     | "PENDING"
     | "RUNNING"
@@ -3065,6 +3117,7 @@ export async function rewriteProjectScript(
   identityId?: string,
   sourceAssetId?: string,
   idempotencyKey: string = newControlWriteIdempotencyKey(),
+  instructions = "",
 ): Promise<ScriptRewriteTask> {
   return requestApiJson<ScriptRewriteTask>(
     `/api/projects/${encodeURIComponent(projectId)}/script-rewrite`,
@@ -3074,6 +3127,7 @@ export async function rewriteProjectScript(
       body: JSON.stringify({
         text,
         ...(identityId ? { identity_id: identityId } : {}),
+        ...(instructions.trim() ? { instructions: instructions.trim() } : {}),
         ...(sourceAssetId ? { source_asset_id: sourceAssetId } : {}),
         idempotency_key: idempotencyKey,
       }),
@@ -3196,6 +3250,10 @@ export interface SimpleLibraryEntry {
   service_scope: string;
   target_audience: string;
   expression_style: string;
+  audience_needs?: string;
+  factual_background?: string;
+  sample_script?: string;
+  forbidden_claims?: string;
   owner_user_id: string | null;
   status: string;
   contact_sheet_asset_id: string | null;
@@ -3327,6 +3385,10 @@ export async function updateSimpleCharacterProfile(
     service_scope: string;
     target_audience: string;
     expression_style: string;
+    audience_needs?: string;
+    factual_background?: string;
+    sample_script?: string;
+    forbidden_claims?: string;
   },
 ): Promise<SimpleLibraryEntry> {
   return requestApiJson<SimpleLibraryEntry>(
@@ -3973,7 +4035,7 @@ async function pollFirstFrameTask(
   taskId: string,
   onTaskUpdate: FirstFrameTaskObserver,
 ): Promise<FirstFrameTask> {
-  // 两轮生成加质检的最坏耗时约 30 分钟；超时后任务仍在云端继续，
+  // 供应商生成和归档的等待上限为 30 分钟；超时后任务仍在云端继续，
   // 重新进入项目会通过 active-or-latest 接上。
   const deadline = Date.now() + 30 * 60_000;
   while (Date.now() < deadline) {
@@ -4008,16 +4070,42 @@ export async function confirmFirstFrame(
   );
 }
 
+// MATERIAL-PERF-C（P1-2）：签名 URL 有效期 15 分钟，模块级缓存 12 分钟内
+// 直接复用（跨页/跨弹层不再重复授权请求）；会话代际变化时整体失效。
+const DOWNLOAD_URL_CACHE_TTL_MS = 12 * 60 * 1000;
+const downloadUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+function clearDownloadUrlCache(): void {
+  downloadUrlCache.clear();
+}
+
+/** 会话凭据代际变化时整体失效签名缓存（换号/登出绝不复用旧授权）。 */
+function bumpDownloadUrlCacheEpoch(): void {
+  clearDownloadUrlCache();
+}
+
 export async function getAssetDownloadUrl(
   assetId: string,
+  options: { fresh?: boolean } = {},
 ): Promise<DownloadUrl> {
+  // 素材持久缓存通道要求每次预览都重新授权（吊销/清理必须即时生效，
+  // 由既有测试钉住）；其余展示型调用方默认享受 12 分钟签名复用。
+  const cached = options.fresh ? undefined : downloadUrlCache.get(assetId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return { url: cached.url };
+  }
   const result = await requestApiJson<DownloadUrl>(
     `/api/assets/${encodeURIComponent(assetId)}/download-url`,
     "读取源画面失败",
     { method: "POST" },
     CLOUD_OP_TIMEOUT_MS,
   );
-  return { ...result, url: resolveManagedMediaUrl(result.url) };
+  const url = resolveManagedMediaUrl(result.url);
+  downloadUrlCache.set(assetId, {
+    url,
+    expiresAt: Date.now() + DOWNLOAD_URL_CACHE_TTL_MS,
+  });
+  return { url };
 }
 
 export async function getCachedCharacterAssetUrl(
@@ -4439,39 +4527,31 @@ function materialBlobPreview(blob: Blob): MaterialCachedPreview {
   };
 }
 
-export async function getMaterialCachedPreview(
-  userId: string,
+async function materialReadGeneration(
+  context: MaterialCacheContext,
   assetId: string,
-  options: { populate?: boolean; signal?: AbortSignal } = {},
-): Promise<MaterialCachedPreview> {
-  const context = materialCacheContext(userId, options.signal, assetId);
-  requireMaterialContext(context);
-  // Capture invalidation before remote authorization waits. Another tab may
-  // clear this user while those requests are in flight; it must win over them.
-  // Only the non-sensitive generation marker is read before authorization.
-  let generationAtStart: string | null = null;
-  if (materialCacheAvailable()) {
-    try {
-      generationAtStart = await materialCacheLocked(context, (cache) =>
-        materialGeneration(cache, context.scope, assetId),
-      );
-    } catch {
-      requireMaterialContext(context);
-    }
+): Promise<string | null> {
+  if (!materialCacheAvailable()) return null;
+  try {
+    return await materialCacheLocked(context, (cache) =>
+      materialGeneration(cache, context.scope, assetId),
+    );
+  } catch {
+    requireMaterialContext(context);
   }
-  // Fresh authorization is required even when every media byte is already local.
-  const { url } = await materialWait(
-    getAssetDownloadUrl(assetId),
-    options.signal,
-  );
-  requireMaterialContext(context);
-  const metadata = await requestApiJson<MaterialAssetMetadata>(
-    `/api/assets/${encodeURIComponent(assetId)}`,
-    "读取素材信息失败",
-    { signal: options.signal },
-  );
-  requireMaterialContext(context);
-  if (!url) throw new Error("素材预览地址不可用");
+  return null;
+}
+
+/** 授权后的缓存判定（单资产与批量共用）：命中本机缓存则出 Blob，
+ * 未命中且允许填充时后台写缓存；否则退回在线签名 URL。 */
+async function materialPreviewAfterAuthorization(
+  context: MaterialCacheContext,
+  assetId: string,
+  url: string,
+  metadata: MaterialAssetMetadata,
+  generationAtStart: string | null,
+  populate: boolean,
+): Promise<MaterialCachedPreview> {
   const online = { url, cached: false, release: () => undefined };
   if (generationAtStart === null || !materialMetadataValid(metadata))
     return online;
@@ -4492,7 +4572,7 @@ export async function getMaterialCachedPreview(
     });
     requireMaterialContext(context);
     if (initial.blob) return materialBlobPreview(initial.blob);
-    if (!options.populate) return online;
+    if (!populate) return online;
     const fillKey = `${key}:${initial.generation}:${context.epoch}:${context.invalidation}:${context.assetInvalidation}`;
     let fill = materialFills.get(fillKey);
     if (!fill) {
@@ -4521,7 +4601,7 @@ export async function getMaterialCachedPreview(
     }
     fill.users += 1;
     try {
-      const blob = await materialWait(fill.promise, options.signal);
+      const blob = await materialWait(fill.promise, context.signal);
       requireMaterialContext(context);
       return blob ? materialBlobPreview(blob) : online;
     } finally {
@@ -4540,6 +4620,117 @@ export async function getMaterialCachedPreview(
       throw error;
     return online;
   }
+}
+
+export async function getMaterialCachedPreview(
+  userId: string,
+  assetId: string,
+  options: { populate?: boolean; signal?: AbortSignal } = {},
+): Promise<MaterialCachedPreview> {
+  const context = materialCacheContext(userId, options.signal, assetId);
+  requireMaterialContext(context);
+  // Capture invalidation before remote authorization waits. Another tab may
+  // clear this user while those requests are in flight; it must win over them.
+  // Only the non-sensitive generation marker is read before authorization.
+  const generationAtStart = await materialReadGeneration(context, assetId);
+  // Fresh authorization is required even when every media byte is already local.
+  const { url } = await materialWait(
+    getAssetDownloadUrl(assetId, { fresh: true }),
+    options.signal,
+  );
+  requireMaterialContext(context);
+  const metadata = await requestApiJson<MaterialAssetMetadata>(
+    `/api/assets/${encodeURIComponent(assetId)}`,
+    "读取素材信息失败",
+    { signal: options.signal },
+  );
+  requireMaterialContext(context);
+  if (!url) throw new Error("素材预览地址不可用");
+  return materialPreviewAfterAuthorization(
+    context,
+    assetId,
+    url,
+    metadata,
+    generationAtStart,
+    options.populate ?? false,
+  );
+}
+
+/** 批量预览解析结果：previews 键为请求 id；thumbnails 仅为带缩略图键的视频
+ * 资产（MATERIAL-THUMBS-B，7 天有效签名 URL），其余 id 不出现在 thumbnails。 */
+export type MaterialBatchPreviews = {
+  previews: Record<string, MaterialCachedPreview>;
+  thumbnails: Record<string, string>;
+};
+
+/** 批量预览解析（MATERIAL-PERF-A P0-2 + MATERIAL-THUMBS-B P0-3）：一次批量授权
+ * + 逐条本机缓存判定，替代素材库网格的逐瓦片 N+1 授权请求。授权失败或被
+ * 拒绝的 id 不出现在 previews/thumbnails 中，由调用方按失败处理。 */
+export async function getMaterialBatchPreviews(
+  userId: string,
+  entries: { id: string; populate: boolean }[],
+  options: { signal?: AbortSignal } = {},
+): Promise<MaterialBatchPreviews> {
+  const unique = [...new Set(entries.map((entry) => entry.id).filter(Boolean))];
+  if (!unique.length) return { previews: {}, thumbnails: {} };
+  const contexts = new Map<string, MaterialCacheContext>();
+  const generations = new Map<string, string | null>();
+  const populateById = new Map<string, boolean>(
+    entries.map((entry) => [entry.id, entry.populate]),
+  );
+  for (const assetId of unique) {
+    const context = materialCacheContext(userId, options.signal, assetId);
+    requireMaterialContext(context);
+    contexts.set(assetId, context);
+    generations.set(assetId, await materialReadGeneration(context, assetId));
+  }
+  const authorized = await materialWait(
+    requestApiJson<components["schemas"]["DownloadUrlsResponse"]>(
+      "/api/assets/download-urls",
+      "批量读取素材预览授权失败",
+      {
+        method: "POST",
+        body: JSON.stringify({ asset_ids: unique }),
+        signal: options.signal,
+      },
+    ),
+    options.signal,
+  );
+  requireMaterialContext(materialCacheContext(userId, options.signal));
+  const results: Record<string, MaterialCachedPreview> = {};
+  const thumbnails: Record<string, string> = {};
+  for (const item of authorized.items) {
+    const context = contexts.get(item.asset_id);
+    if (!context || !item.url) continue;
+    if (item.thumbnail_url) thumbnails[item.asset_id] = item.thumbnail_url;
+    const metadata: MaterialAssetMetadata = {
+      id: item.asset_id,
+      project_id: null,
+      kind: "material_image",
+      sha256: item.sha256 ?? "",
+      size_bytes: item.size_bytes ?? 0,
+      content_type: item.content_type,
+    };
+    results[item.asset_id] = await materialPreviewAfterAuthorization(
+      context,
+      item.asset_id,
+      item.url,
+      metadata,
+      generations.get(item.asset_id) ?? null,
+      populateById.get(item.asset_id) ?? false,
+    );
+  }
+  return { previews: results, thumbnails };
+}
+
+/** 兼容包装（MATERIAL-PERF-A 语义）：只要预览映射、不带缩略图。 */
+export async function getMaterialCachedPreviews(
+  userId: string,
+  entries: { id: string; populate: boolean }[],
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, MaterialCachedPreview>> {
+  const { previews } = await getMaterialBatchPreviews(userId, entries, options);
+  return previews;
 }
 
 export async function getMaterialCacheUsage(
@@ -4655,6 +4846,7 @@ export function readFirstFrameCandidates(
     return null;
   }
   return {
+    replace_scene: payload.replace_scene === true,
     review_mode:
       payload.review_mode === "HUMAN_CONFIRMATION"
         ? "HUMAN_CONFIRMATION"
@@ -4730,6 +4922,17 @@ export function readFirstFrameSelectionPayload(
       payload.first_frame_candidates_version_id,
     first_frame_asset_id: payload.first_frame_asset_id,
   };
+}
+
+export function readAnalysisH3Prompt(
+  version: { payload: Record<string, unknown> } | null | undefined,
+): string {
+  const result = version?.payload.generation_prompt as
+    | { status?: string; prompt_text?: string }
+    | undefined;
+  return result?.status === "READY" && typeof result.prompt_text === "string"
+    ? result.prompt_text
+    : "";
 }
 
 export function readAnalysisPayload(
@@ -5528,7 +5731,22 @@ function materialContentTypeForFile(file: File): string {
   const name = file.name.toLowerCase();
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "image/jpeg";
   if (name.endsWith(".png")) return "image/png";
-  if (name.endsWith(".mp3")) return "audio/mpeg";
+  const audioTypes: Record<string, string> = {
+    mp3: "audio/mpeg",
+    m4a: "audio/mp4",
+    wav: "audio/wav",
+    wma: "audio/x-ms-wma",
+    wmv: "video/x-ms-wmv",
+    aac: "audio/aac",
+    flac: "audio/flac",
+    ogg: "audio/ogg",
+    opus: "audio/ogg",
+    aiff: "audio/aiff",
+    aif: "audio/aiff",
+    amr: "audio/amr",
+  };
+  const audioType = audioTypes[name.split(".").pop() ?? ""];
+  if (audioType) return audioType;
   if (name.endsWith(".mov")) return "video/quicktime";
   if (name.endsWith(".mp4")) return "video/mp4";
   return file.type || "application/octet-stream";
@@ -6799,6 +7017,77 @@ export function resolveViralLink(
   );
 }
 
+// ---------------------------------------------------------------------------
+// AI 优化提示词：提示词框右上角的小图标。任意文本 → MiniMax H3 官方结构。
+// 同步付费调用（按次计费）；Idempotency-Key 由调用方每次点击生成。
+// ---------------------------------------------------------------------------
+
+export type H3Mode = "T2VA" | "I2VA" | "FL2VA" | "L2VA" | "Ref2VA";
+export type PromptGenerationContext = {
+  route: "text_image" | "reference" | "replica";
+  duration_seconds: number;
+  ratio?: GenerationRatio;
+  project_id?: string | null;
+  analysis_version_id?: string | null;
+  shot_card_version_id?: string | null;
+  script_version_id?: string | null;
+  source_asset_id?: string | null;
+  first_frame_asset_id?: string | null;
+  last_frame_asset_id?: string | null;
+  references?: { asset_id: string; purpose: string }[];
+  instructions?: string;
+};
+export type PromptOptimizeInput = PromptGenerationContext & {
+  idempotency_key: string;
+  editor_revision: number;
+  prompt_text: string;
+};
+export type PromptOptimizeResult = {
+  task_id: string;
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "NEEDS_INPUT"
+    | "FAILED"
+    | "SUBMISSION_UNCERTAIN";
+  mode: H3Mode;
+  editor_revision: number;
+  context_hash: string;
+  formatter_version: string;
+  error_message?: string | null;
+  result?: {
+    prompt_text: string | null;
+    warnings: { code: string; message: string }[];
+    validation_status: string;
+  } | null;
+};
+export function createPromptOptimization(
+  input: PromptOptimizeInput,
+): Promise<PromptOptimizeResult> {
+  return requestApiJson<PromptOptimizeResult>(
+    "/api/prompt-optimizations",
+    "启动提示词优化失败",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+}
+export function getPromptOptimization(
+  id: string,
+): Promise<PromptOptimizeResult> {
+  return requestApiJson<PromptOptimizeResult>(
+    `/api/prompt-optimizations/${encodeURIComponent(id)}`,
+    "查询提示词优化失败",
+  );
+}
+/** Keep authentication material private; callers only get a session equality check. */
+export function capturePromptSession(): () => boolean {
+  const token = workspaceAccessToken();
+  return () => workspaceAccessToken() === token;
+}
+
 export function getViralImportTask(taskId: string): Promise<ViralImportTask> {
   return requestApiJson<ViralImportTask>(
     `/api/viral/import-tasks/${encodeURIComponent(taskId)}`,
@@ -6857,8 +7146,9 @@ export function fetchViralVideoStatistics(
 }
 
 // ---------------------------------------------------------------------------
-// C5 发布模块第一阶段：平台发布账号（/api/studio/publish/accounts）
-// 发布记录（/records）属第二阶段，本轮不提供调用。
+// C5 发布模块第一阶段（legacy）：手工粘贴 Cookie 的平台发布账号
+// （/api/studio/publish/accounts）。第二阶段的正式投递以扫码账号
+// （/publish/browser/accounts）与发布记录（/publish/records，见下文）为准。
 // ---------------------------------------------------------------------------
 
 export type PublishAccountItem = {
@@ -7035,5 +7325,126 @@ export async function customerRevokeApiKey(
   await customerJson<undefined>(
     `/api/customer/api-keys/${encodeURIComponent(id)}`,
     { credential, method: "DELETE" },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PUBLISH-DELIVERY-20260917 第二阶段：发布记录（/api/studio/publish/records）
+// 立即/定时投递、状态机、汇总；账号引用扫码账号（publish_browser_accounts）。
+// ---------------------------------------------------------------------------
+
+export type PublishRecordStatus =
+  | "queued"
+  | "publishing"
+  | "published"
+  | "failed"
+  | "cancelled";
+
+export type PublishRecordItem = {
+  id: string;
+  platform: "douyin" | "wechat_channels" | "xiaohongshu";
+  account_id: string | null;
+  account_username: string | null;
+  video_asset_id: string;
+  cover_asset_id: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  scheduled_at: string | null;
+  status: PublishRecordStatus;
+  delivery_mode: "api" | "browser" | null;
+  platform_item_id: string | null;
+  platform_short_url: string | null;
+  platform_status: string | null;
+  stats: Record<string, unknown> | null;
+  stats_synced_at: string | null;
+  sync_requested: boolean;
+  error_message: string | null;
+  published_at: string | null;
+  attempt_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PublishSummary = {
+  published_total: number;
+  queued_total: number;
+  failed_total: number;
+  play_total: number;
+  like_total: number;
+};
+
+export type PublishRecordCreateInput = {
+  account_id: string;
+  video_material_id: string;
+  cover_material_id?: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  scheduled_at?: string | null;
+  options?: Record<string, unknown>;
+};
+
+const PUBLISH_RECORDS_BASE = "/api/studio/publish/records";
+
+export async function listPublishRecords(
+  filters: {
+    status?: PublishRecordStatus;
+    platform?: string;
+    limit?: number;
+  } = {},
+): Promise<PublishRecordItem[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.platform) params.set("platform", filters.platform);
+  if (filters.limit) params.set("limit", String(filters.limit));
+  const query = params.toString();
+  return requestApiJson<{ records: PublishRecordItem[] }>(
+    query ? `${PUBLISH_RECORDS_BASE}?${query}` : PUBLISH_RECORDS_BASE,
+    "读取发布记录失败",
+  ).then((payload) => payload.records);
+}
+
+export async function createPublishRecord(
+  input: PublishRecordCreateInput,
+): Promise<PublishRecordItem> {
+  return requestApiJson<PublishRecordItem>(
+    PUBLISH_RECORDS_BASE,
+    "提交发布失败",
+    { method: "POST", body: JSON.stringify(input) },
+  );
+}
+
+async function publishRecordAction(
+  recordId: string,
+  action: "cancel" | "retry" | "sync",
+  errorPrefix: string,
+): Promise<PublishRecordItem> {
+  return requestApiJson<{ record: PublishRecordItem }>(
+    `${PUBLISH_RECORDS_BASE}/${encodeURIComponent(recordId)}/${action}`,
+    errorPrefix,
+    { method: "POST" },
+  ).then((payload) => payload.record);
+}
+
+export const cancelPublishRecord = (recordId: string) =>
+  publishRecordAction(recordId, "cancel", "取消发布失败");
+export const retryPublishRecord = (recordId: string) =>
+  publishRecordAction(recordId, "retry", "重试发布失败");
+export const syncPublishRecord = (recordId: string) =>
+  publishRecordAction(recordId, "sync", "发起数据同步失败");
+
+export async function deletePublishRecord(recordId: string): Promise<void> {
+  await requestApiJson<{ deleted: boolean }>(
+    `${PUBLISH_RECORDS_BASE}/${encodeURIComponent(recordId)}`,
+    "删除发布记录失败",
+    { method: "DELETE" },
+  );
+}
+
+export async function getPublishSummary(): Promise<PublishSummary> {
+  return requestApiJson<PublishSummary>(
+    `${PUBLISH_RECORDS_BASE}/summary`,
+    "读取发布统计失败",
   );
 }

@@ -24,10 +24,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from app.admin_auth_routes import AdminReader
 from app.admin_dates import append_admin_date_filters, utc_timestamp_sql
+from app.api_errors import http_error as _http
 from app.db_pg import MissingDatabaseConfigError, pg_transaction
 
 router = APIRouter(prefix="/api/control", tags=["admin-audit"])
@@ -42,10 +43,6 @@ def _format_created_at(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     return str(value) if value is not None else ""
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 _UNION_SQL = """

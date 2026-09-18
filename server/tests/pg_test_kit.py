@@ -93,6 +93,8 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "t16_customer_devices_test",
         "t19_customer_sessions_test",
         "cw027_admin_matrix_test",
+        # FIRSTFRAME-RECONCILE admin endpoint suite (dedicated migrated DB).
+        "admin_ff_reconcile_test",
         "cw007_kit_alpha_test",
         "cw007_kit_beta_test",
         # CW-010 per-category recovery baselines: each owns a dedicated migrated
@@ -120,6 +122,9 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # CW-058 content/asset domain matrix: one dedicated database for the
         # 内容/版本/工作台/素材/人物/爆款 TEST-PG matrix (truncated per test).
         "cw058_content_asset_test",
+        # PROMPT-OPTIMIZE-20260916: the asynchronous「AI 优化提示词」task
+        # (test_prompt_optimizer.py), migrated to head and truncated per test.
+        "prompt_optimize_route_test",
         # CW-059 billing/task/permission domain matrices: one dedicated database
         # each for the 账务/支付/钱包 matrix (test_cw059_billing_pg_matrix.py),
         # the 任务/Worker/生成 matrix (test_cw059_task_worker_pg_matrix.py) and
@@ -164,11 +169,24 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # reclaim-grace matrix (test_dedup_cas_pg.py), migrated to alembic head
         # so content_objects and assets.content_object_id exist.
         "dedup_cas_test",
+        # PUBLISH-DELIVERY-20260917 phase-2 publish records: dedicated database
+        # for the records lifecycle / scheduling / per-account claim / finalize
+        # matrix (test_publish_records.py), migrated to alembic head so
+        # publish_records and the browser-account status columns exist.
+        "publish_records_test",
         # Suites still doing their own admin CREATE/DROP with legacy names
         # lacking the _test suffix (rename + kit-helper adoption is owed by a
         # later CW before they may use create_test_database/drop_test_database):
         #   t11_activation_code_service, t34_chain_e2e,
         #   t13c_customer_activation_concurrency, t22r_customer_recharge
+        # MATERIAL-PERF-A-20260917 批量素材预览授权：dedicated database for the
+        # 批量 download-urls 安全/语义矩阵 (test_material_perf_batch_urls.py),
+        # migrated to alembic head and truncated per test.
+        "matperf_a_batch_urls_test",
+        # MATERIAL-THUMBS-B-20260917 视频素材缩略图：dedicated database for the
+        # 缩略图键/批量缩略图签名矩阵 (test_material_thumbs.py), migrated to
+        # alembic head and truncated per test.
+        "matthumbs_test",
     }
 )
 

@@ -64,6 +64,11 @@ from psycopg.rows import dict_row
 from app.character_image_generation import acquire_character_generation_task
 from app.db_pg import DATABASE_URL_ENV, close_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
+from app.first_frames import (
+    ImageProviderFailed,
+    RetryableImageProviderFailed,
+    first_frame_error,
+)
 from app.generation import (
     acquire_generation_task_lease,
     mark_expired_active_leases_needing_attention,
@@ -79,6 +84,8 @@ from app.image_tasks import (
     acquire_character_sheet_task,
     acquire_first_frame_task,
     fail_image_task,
+    record_image_task_provider,
+    save_first_frame_provider_submission,
 )
 from app.script_from_audio import (
     acquire_script_from_audio_task,
@@ -443,6 +450,33 @@ def test_independent_crash_after_claim_never_blind_resubmits(pg_state: str) -> N
 # ---------------------------------------------------------------------------
 # B/C. 首帧 + 联系表 — the shared image_tasks state machine
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "shot",
+    [
+        {"subject": "主讲人", "person_count": 3},
+        {"subject": "主讲人"},
+    ],
+)
+def test_first_frame_generation_gate_accepts_multi_person_and_legacy_analysis(
+    pg_state: str, shot: dict[str, Any]
+) -> None:
+    from app.first_frames import require_readable_video_analysis
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO versions (id,project_id,kind,version_number,payload_json) "
+        "VALUES ('analysis-1','proj-1','analysis',1,%s)",
+        (json.dumps({"analysis": {"shots": [shot]}}),),
+    )
+
+    with pg_transaction() as raw:
+        require_readable_video_analysis(
+            BusinessConnection.postgres(raw),
+            project_id="proj-1",
+        )
 
 
 def _seed_image_task(
@@ -1114,6 +1148,62 @@ def test_pg_first_frame_quality_transport_records_parent_cost(pg_state: str, mon
     )
 
 
+def test_analysis_publication_is_atomic_and_repeat_completion_is_noop(pg_state, monkeypatch):
+    from app import analysis_routes
+    from app.analysis import FakeGemini, analyze_video
+
+    _seed_base(pg_state)
+    _seed_source_frame_task(pg_state, task_id="atomic-source")
+    _exec(
+        pg_state,
+        "INSERT INTO analysis_tasks(id,project_id,asset_id,created_by_user_id,duration_seconds,"
+        "status,locked_by,attempt) VALUES('atomic-analysis','proj-1','asset-ref','u1',4,"
+        "'RUNNING','atomic-worker',1)",
+    )
+    work = analysis_routes.AnalysisTaskWork(
+        lease=analysis_routes.AnalysisTaskLease(
+            id="atomic-analysis",
+            project_id="proj-1",
+            asset_id="asset-ref",
+            created_by_user_id="u1",
+            duration_seconds=4,
+            worker_id="atomic-worker",
+        ),
+        provider=FakeGemini(),
+        video_uri="fake",
+        asset_uri="fake://sf-uploads/reference.mp4",
+    )
+    result = analyze_video(video_uri="fake", video_duration_seconds=4, provider=FakeGemini())
+    original_audit = analysis_routes.write_audit
+
+    def unavailable_audit(*args, **kwargs):
+        raise RuntimeError("publication interrupted")
+
+    monkeypatch.setattr(analysis_routes, "write_audit", unavailable_audit)
+    with pytest.raises(RuntimeError, match="publication interrupted"):
+        with pg_transaction() as raw:
+            analysis_routes.complete_analysis_task(
+                BusinessConnection.postgres(raw),
+                work=work,
+                result=result,
+            )
+    assert (
+        _one(pg_state, "SELECT COUNT(*) FROM versions WHERE kind IN ('analysis', 'shot_card')") == 0
+    )
+    assert _one(pg_state, "SELECT status FROM analysis_tasks") == "RUNNING"
+    monkeypatch.setattr(analysis_routes, "write_audit", original_audit)
+    for _ in range(2):
+        with pg_transaction() as raw:
+            analysis_routes.complete_analysis_task(
+                BusinessConnection.postgres(raw),
+                work=work,
+                result=result,
+            )
+    assert _one(pg_state, "SELECT status FROM analysis_tasks") == "SUCCEEDED"
+    assert _one(pg_state, "SELECT COUNT(*) FROM versions WHERE kind='analysis'") == 1
+    assert _one(pg_state, "SELECT COUNT(*) FROM versions WHERE kind='shot_card'") == 1
+
+
 def test_pg_analysis_keeps_known_call_cost_when_repair_fails(pg_state: str) -> None:
     from app.analysis import ProviderResponse
     from app.usage_billing import accept_operation
@@ -1286,7 +1376,7 @@ def test_script_rewrite_worker_settles_on_pg(
 
 
 def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_state, monkeypatch):
-    import io
+    from types import SimpleNamespace
 
     from app.usage_billing import accept_operation
 
@@ -1312,9 +1402,10 @@ def test_truncated_rewrite_refunds_customer_but_preserves_confirmed_cost(pg_stat
             units=1,
         )
     monkeypatch.setattr(
-        "app.script_rewrite.urlopen",
-        lambda *args, **kwargs: io.BytesIO(
-            b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}'
+        "curl_cffi.requests.post",
+        lambda *args, **kwargs: SimpleNamespace(
+            status_code=200,
+            content=b'{"choices":[{"message":{"content":"partial"},"finish_reason":"length"}]}',
         ),
     )
     assert _run_worker("truncated-cost") == 1
@@ -2191,13 +2282,6 @@ def test_first_frame_human_review_records_user_without_fake_qc_pass(
     with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
         actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
-        if not manual_review:
-            with pytest.raises(HTTPException) as exc:
-                first_frames.confirm_first_frame(
-                    conn, project_id="proj-1", first_frame_asset_id="manual-frame", actor=actor
-                )
-            assert exc.value.detail["code"] == "FIRST_FRAME_QUALITY_NOT_VERIFIED"
-            return
         row = first_frames.confirm_first_frame(
             conn, project_id="proj-1", first_frame_asset_id="manual-frame", actor=actor
         )
@@ -2278,7 +2362,162 @@ def test_first_frame_async_receipt_is_fenced_and_resumes_original_task(pg_state)
     assert json.loads(row["result_json"])["provider_submission"]["task_id"] == "vendor-1"
 
 
-def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkeypatch):
+def _seed_source_frame_asset(dsn: str, asset_id: str = "source-asset") -> None:
+    _exec(
+        dsn,
+        "INSERT INTO assets (id, project_id, kind, storage_uri, sha256, size_bytes,"
+        " content_type, created_by_user_id)"
+        " VALUES (%s, 'proj-1', 'source_frame', 'fake://cos/source.png', %s, 9,"
+        " 'image/png', 'u1')",
+        (asset_id, _SHA_A),
+    )
+
+
+def _single_shot_work(fingerprint: str, *, main_character_version_id: str = "char-v1"):
+    from types import SimpleNamespace
+
+    character_inputs = SimpleNamespace(
+        main_character_version_id=main_character_version_id,
+        character_reference_selection_id=None,
+        character_version_id=main_character_version_id,
+        reference_asset_ids=["scene"],
+        reference_asset_roles=["scene_image"],
+        character_snapshot={},
+        character_name="张工",
+    )
+    appearance = SimpleNamespace(
+        fingerprint=fingerprint,
+        source_timestamp_seconds=0,
+        appearance_source="SCENE_LOOK",
+        as_payload=lambda: {"fingerprint": fingerprint},
+    )
+    return SimpleNamespace(
+        project_id="proj-1",
+        actor=SimpleNamespace(id="u1"),
+        model="gpt-image-2",
+        effective_prompt="template",
+        source_frame_selection_version_id="sel-1",
+        source_frame_asset_id="source-asset",
+        character_inputs=character_inputs,
+        project_appearance=appearance,
+        aspect_ratio="9:16",
+        replace_scene=False,
+        quantity=1,
+    )
+
+
+def _candidate(asset_id: str) -> dict[str, object]:
+    return {
+        "asset_id": asset_id,
+        "storage_key": f"projects/proj-1/first-frames/{asset_id}.png",
+        "storage_uri": f"fake://cos/projects/proj-1/first-frames/{asset_id}.png",
+        "sha256": _SHA_A,
+        "size_bytes": 9,
+        "content_type": "image/png",
+        "quality": None,
+    }
+
+
+def _latest_first_frame_payload(dsn: str) -> dict[str, Any]:
+    row = _rows(
+        dsn,
+        "SELECT payload_json FROM versions WHERE project_id='proj-1'"
+        " AND kind='first_frame_candidates' ORDER BY version_number DESC LIMIT 1",
+    )[0]
+    return cast(dict[str, Any], json.loads(str(row["payload_json"])))
+
+
+def test_first_frame_single_shot_regen_accumulates_into_latest_candidates(pg_state, monkeypatch):
+    """单张产品流：每次付费任务交付 1 张；同输入绑定的再次生成把新候选
+    追加进最新候选版本（确认与 H3 围栏只看最新版本，历史图必须仍可选）。"""
+    from types import SimpleNamespace
+
+    from app import first_frames as ff
+    from app.first_frames import (
+        StoredFirstFrameCandidates,
+        complete_first_frame_generation,
+    )
+
+    _seed_base(pg_state)
+    _seed_source_frame_asset(pg_state)
+    work = _single_shot_work(_SHA_A)
+    provider = SimpleNamespace(provider_name="apilio")
+    monkeypatch.setattr(ff, "require_current_first_frame_inputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ff, "resolve_project_appearance_spec", lambda *args, **kwargs: work.project_appearance
+    )
+    monkeypatch.setattr(
+        ff, "apply_selected_scene_look", lambda *args, **kwargs: work.project_appearance
+    )
+
+    def complete(asset_id: str, *, override_work=None):
+        with pg_transaction() as raw:
+            return complete_first_frame_generation(
+                BusinessConnection.postgres(raw),
+                work=override_work or work,
+                provider=provider,
+                stored=StoredFirstFrameCandidates(
+                    candidates=[_candidate(asset_id)], created_assets=[]
+                ),
+            )
+
+    complete("ff-a1")
+    payload = _latest_first_frame_payload(pg_state)
+    assert [c["asset_id"] for c in payload["candidates"]] == ["ff-a1"]
+
+    complete("ff-a2")
+    payload = _latest_first_frame_payload(pg_state)
+    assert [c["asset_id"] for c in payload["candidates"]] == ["ff-a1", "ff-a2"]
+
+    # 输入绑定变化（换人物版本）→ 另起新池，不混入旧输入的候选。
+    stale_binding_work = _single_shot_work(_SHA_A, main_character_version_id="char-v2")
+    complete("ff-b1", override_work=stale_binding_work)
+    payload = _latest_first_frame_payload(pg_state)
+    assert [c["asset_id"] for c in payload["candidates"]] == ["ff-b1"]
+
+
+def test_first_frame_candidate_pool_is_capped_to_newest_six(pg_state, monkeypatch):
+    from types import SimpleNamespace
+
+    from app import first_frames as ff
+    from app.first_frames import (
+        MAX_FIRST_FRAME_CANDIDATE_POOL,
+        StoredFirstFrameCandidates,
+        complete_first_frame_generation,
+    )
+
+    _seed_base(pg_state)
+    _seed_source_frame_asset(pg_state)
+    work = _single_shot_work(_SHA_A)
+    provider = SimpleNamespace(provider_name="apilio")
+    monkeypatch.setattr(ff, "require_current_first_frame_inputs", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ff, "resolve_project_appearance_spec", lambda *args, **kwargs: work.project_appearance
+    )
+    monkeypatch.setattr(
+        ff, "apply_selected_scene_look", lambda *args, **kwargs: work.project_appearance
+    )
+
+    for index in range(1, MAX_FIRST_FRAME_CANDIDATE_POOL + 3):
+        with pg_transaction() as raw:
+            complete_first_frame_generation(
+                BusinessConnection.postgres(raw),
+                work=work,
+                provider=provider,
+                stored=StoredFirstFrameCandidates(
+                    candidates=[_candidate(f"ff-c{index}")], created_assets=[]
+                ),
+            )
+    payload = _latest_first_frame_payload(pg_state)
+    candidates = [c["asset_id"] for c in payload["candidates"]]
+    assert len(candidates) == MAX_FIRST_FRAME_CANDIDATE_POOL
+    assert candidates == [f"ff-c{index}" for index in range(3, MAX_FIRST_FRAME_CANDIDATE_POOL + 3)]
+
+
+@pytest.mark.parametrize("replace_scene", [False, True])
+def test_first_frame_ratio_is_frozen_in_request_and_idempotency(
+    pg_state, monkeypatch, replace_scene
+):
     import json
     from types import SimpleNamespace
 
@@ -2293,7 +2532,7 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
     observed = []
 
     def plan(*args, **kwargs):
-        observed.append(kwargs.get("aspect_ratio"))
+        observed.append((kwargs.get("aspect_ratio"), kwargs.get("replace_scene")))
         return SimpleNamespace(
             model="gpt-image-2",
             quantity=1,
@@ -2320,6 +2559,7 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
             character_version_id=None,
             character_reference_selection_id=None,
             idempotency_key="ratio-key-1",
+            replace_scene=replace_scene,
         )
         first = enqueue_first_frame_task(conn, **kwargs, aspect_ratio="9:16")
         assert json.loads(first["request_json"])["aspect_ratio"] == "9:16"
@@ -2331,9 +2571,724 @@ def test_first_frame_ratio_is_frozen_in_request_and_idempotency(pg_state, monkey
             )
         assert conflict.value.status_code == 409
     with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            enqueue_first_frame_task(
+                BusinessConnection.postgres(raw),
+                **{**kwargs, "replace_scene": not replace_scene},
+                aspect_ratio="9:16",
+            )
+        assert conflict.value.status_code == 409
+    with pg_transaction() as raw:
         conn = BusinessConnection.postgres(raw)
         lease = acquire_first_frame_task(conn, worker_id="ratio-worker")
         prepare_first_frame_task(
             conn, lease=lease, provider=ApilioImageProvider(api_key="test-key")
         )
-    assert observed[-1] == "9:16"
+    assert observed[-1] == ("9:16", replace_scene)
+
+
+def test_first_frame_replacement_contract_change_does_not_reuse_old_checkpoint(
+    pg_state, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from app.image_tasks import enqueue_first_frame_task, load_image_task_actor
+
+    _seed_base(pg_state)
+    current_fingerprint = {"value": "old-contract-fingerprint"}
+
+    def plan(*args, **kwargs):
+        return SimpleNamespace(
+            source_frame_selection_version_id="source-selection",
+            source_frame_asset_id="source-asset",
+            character_inputs=SimpleNamespace(reference_asset_ids=["scene"]),
+            project_appearance=SimpleNamespace(
+                fingerprint=current_fingerprint["value"],
+                source_analysis_version_id="analysis",
+            ),
+        )
+
+    monkeypatch.setattr("app.image_tasks.prepare_first_frame_generation", plan)
+    common = dict(
+        project_id="proj-1",
+        model="gpt-image-2",
+        prompt=None,
+        quantity=3,
+        character_version_id=None,
+        character_reference_selection_id=None,
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        actor = load_image_task_actor(conn, "u1")
+        old_task = enqueue_first_frame_task(
+            conn,
+            actor=actor,
+            idempotency_key="old-contract",
+            **common,
+        )
+    _exec(
+        pg_state,
+        "UPDATE first_frame_tasks SET status='FAILED',result_json=%s WHERE id=%s",
+        (_FIRST_FRAME_CHECKPOINT_JSON, str(old_task["id"])),
+    )
+
+    current_fingerprint["value"] = "primary-subject-contract-v3"
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        actor = load_image_task_actor(conn, "u1")
+        new_task = enqueue_first_frame_task(
+            conn,
+            actor=actor,
+            idempotency_key="primary-subject-contract-v3",
+            **common,
+        )
+
+    assert new_task["id"] != old_task["id"]
+    assert new_task["request_hash"] != old_task["request_hash"]
+    assert new_task["result_json"] is None
+
+
+def test_rewrite_instructions_and_extended_profile_contract():
+    from app.script_rewrite import ScriptRewriteRequest, _validated_ip_profile_snapshot
+    from app.simple_character_routes import SimpleCharacterProfileRequest
+
+    request = ScriptRewriteRequest(text="来源原文", instructions="精简至 200 字")
+    assert request.instructions == "精简至 200 字"
+    profile = SimpleCharacterProfileRequest(
+        display_name="张工",
+        role="乡墅设计师",
+        service_scope="乡墅设计",
+        target_audience="回乡建房家庭",
+        expression_style="朴实",
+        audience_needs="预算与布局",
+        factual_background="已确认的项目资料",
+        sample_script="先规划预算。\n再考虑空间。",
+        forbidden_claims="不承诺最低价",
+    )
+    snapshot = _validated_ip_profile_snapshot(
+        {
+            "identity_id": "person-1",
+            "profile_version": 1,
+            **profile.model_dump(),
+        }
+    )
+    assert snapshot["sample_script"] == "先规划预算。\n再考虑空间。"
+
+
+@pytest.mark.parametrize("purpose", ["rewrite", "analysis", "title", "prompt"])
+def test_text_ai_purposes_use_same_deepseek_transport(monkeypatch, purpose):
+    from types import SimpleNamespace
+
+    import app.script_rewrite as rewrite
+
+    requests = []
+
+    def respond(url, **_kwargs):
+        assert _kwargs["timeout"] == 240
+        assert _kwargs["stream"] is False
+        assert _kwargs["allow_redirects"] is False
+        requests.append((url, _kwargs["data"]))
+        return SimpleNamespace(
+            status_code=200,
+            content=json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": "测试输出"}}]}
+            ).encode(),
+        )
+
+    monkeypatch.setattr("curl_cffi.requests.post", respond)
+    result = rewrite.request_deepseek_text(
+        base_url="https://api.deepseek.com",
+        api_key="test-key",
+        model="deepseek-chat",
+        source_text="来源文本",
+        instructions="简洁表达",
+        purpose=purpose,
+    )
+    assert result == "测试输出"
+    assert requests[0][0] == "https://api.deepseek.com/chat/completions"
+    body = json.loads(requests[0][1])
+    assert body["model"] == "deepseek-chat"
+    assert body["max_tokens"] == 8192
+    assert "简洁表达" in body["messages"][-2]["content"]
+    assert "来源文本" in body["messages"][-1]["content"]
+
+
+def test_deepseek_total_deadline_stops_continuous_keep_alive(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Event, Thread
+    from time import monotonic
+
+    import app.script_rewrite as rewrite
+
+    stop = Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            try:
+                while not stop.wait(0.02):
+                    self.wfile.write(b"\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    monkeypatch.setattr(rewrite, "DEEPSEEK_TIMEOUT_SECONDS", 0.2)
+    started = monotonic()
+    try:
+        with pytest.raises(HTTPException) as failure:
+            rewrite.request_deepseek_text(
+                base_url=f"http://127.0.0.1:{server.server_port}",
+                api_key="test-key",
+                model="test-model",
+                source_text="原文",
+            )
+        assert failure.value.status_code == 504
+        assert monotonic() - started < 2
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=2)
+
+
+def test_rewrite_submission_refreshes_valid_lease_and_rejects_expired(pg_state):
+    _seed_base(pg_state)
+    _seed_script_rewrite_task(pg_state, task_id="sr-deadline")
+    lease = _rewrite_lease(pg_state, "deadline-worker")
+    assert lease is not None
+    _exec(
+        pg_state,
+        "UPDATE script_rewrite_tasks SET locked_until=now()+interval '5 seconds' "
+        "WHERE id='sr-deadline'",
+    )
+    with pg_transaction() as raw:
+        mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+    assert _one(
+        pg_state,
+        "SELECT locked_until::timestamptz > now()+interval '250 seconds' "
+        "FROM script_rewrite_tasks WHERE id='sr-deadline'",
+    )
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        with pg_transaction() as raw:
+            mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+    _exec(
+        pg_state,
+        "UPDATE script_rewrite_tasks SET locked_until=now()-interval '1 second', "
+        "provider_started_at=NULL "
+        "WHERE id='sr-deadline'",
+    )
+    with pytest.raises(RuntimeError, match="lease was lost"):
+        with pg_transaction() as raw:
+            mark_script_rewrite_submission_started(BusinessConnection.postgres(raw), lease=lease)
+
+
+def _analysis_with_deepseek(monkeypatch):
+    from unittest.mock import Mock
+
+    from app import analysis_routes
+
+    configs = {
+        "apilio": {"api_key": "vision-test-key"},
+        "deepseek": {"api_key": "text-test-key", "model": "deepseek-chat"},
+    }
+    repository = Mock()
+    repository.load_provider_config.side_effect = lambda provider: configs[provider]
+    monkeypatch.setattr(analysis_routes, "SettingsRepository", lambda conn: repository)
+    monkeypatch.setattr("app.script_rewrite.SettingsRepository", lambda conn: repository)
+    provider = analysis_routes.get_video_analysis_provider(Mock())
+    return provider, configs
+
+
+def test_analysis_factory_does_not_repair_invalid_json_or_switch_visual_provider(monkeypatch):
+    from unittest.mock import Mock
+
+    from app.analysis import AnalysisProviderFailed, analyze_video
+
+    provider, _ = _analysis_with_deepseek(monkeypatch)
+    provider.transport = Mock()
+    provider.transport.post.return_value = (
+        b'{"choices":[{"message":{"content":"broken JSON"}}]}',
+        {},
+    )
+    text_request = Mock(side_effect=AssertionError("Unexpected paid JSON repair"))
+    monkeypatch.setattr("curl_cffi.requests.post", text_request)
+    with pytest.raises(AnalysisProviderFailed, match="未自动调用付费修复"):
+        analyze_video(
+            video_uri="https://example.com/source.mp4", video_duration_seconds=10, provider=provider
+        )
+    text_request.assert_not_called()
+    assert provider.transport.post.call_count == 1
+    assert (
+        provider.transport.post.call_args.kwargs["headers"]["Authorization"]
+        == "Bearer vision-test-key"
+    )
+    assert "gemini" in json.loads(provider.transport.post.call_args.kwargs["body"])["model"]
+
+
+def test_analysis_factory_does_not_require_unused_text_ai_configuration(monkeypatch):
+    from unittest.mock import Mock
+
+    from app import analysis_routes
+    from app.analysis import ApilioGemini
+
+    _, configs = _analysis_with_deepseek(monkeypatch)
+    configs["deepseek"] = {}
+    provider = analysis_routes.get_video_analysis_provider(Mock())
+    assert isinstance(provider, ApilioGemini)
+    assert provider.api_key == "vision-test-key"
+    assert not hasattr(provider, "repair_json")
+
+
+def test_rewrite_instructions_persist_and_conflicting_retry_is_rejected(pg_state, monkeypatch):
+    import app.script_rewrite as rewrite
+    from app.auth import CurrentUser
+
+    _seed_base(pg_state)
+    _configure_deepseek(monkeypatch)
+    actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        row = rewrite.enqueue_script_rewrite_task(
+            conn,
+            actor=actor,
+            project_id="proj-1",
+            source_text="原文内容",
+            instructions="  约200字，不添加报价  ",
+            idempotency_key="custom-rewrite-test",
+        )
+        request = rewrite.validated_script_rewrite_request(row)
+        assert request.source_text == "原文内容"
+        assert request.instructions == "约200字，不添加报价"
+        assert request.ip_profile_snapshot is None
+    with pytest.raises(HTTPException) as conflict:
+        with pg_transaction() as raw:
+            rewrite.enqueue_script_rewrite_task(
+                BusinessConnection.postgres(raw),
+                actor=actor,
+                project_id="proj-1",
+                source_text="原文内容",
+                instructions="另一种要求",
+                idempotency_key="custom-rewrite-test",
+            )
+    assert conflict.value.status_code == 409
+    observed = []
+
+    def generate(**kwargs):
+        observed.append(kwargs)
+        return "完成的二创正文"
+
+    monkeypatch.setattr(rewrite, "_request_deepseek", generate)
+    assert _run_worker("ip-custom-worker") == 1
+    assert observed[0]["instructions"] == "约200字，不添加报价"
+    assert observed[0]["source_text"] == "原文内容"
+
+
+def test_ip_extended_profile_roundtrip_and_legacy_update_preserves_fields(pg_state):
+    from app.auth import CurrentUser
+    from app.script_rewrite import _load_owned_ip_profile_snapshot
+    from app.simple_character import update_simple_character_profile
+
+    _seed_base(pg_state)
+    _exec(
+        pg_state,
+        "INSERT INTO character_personas (id, identity_id, name) "
+        "VALUES ('cp-owned', 'identity-owned', '张工')",
+    )
+    actor = CurrentUser(id="u1", username="u1", display_name="User One", role="employee")
+    kwargs = dict(
+        actor=actor,
+        identity_id="identity-owned",
+        display_name="张工",
+        role="设计师",
+        service_scope="乡墅",
+        target_audience="建房家庭",
+        expression_style="朴实",
+    )
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        entry = update_simple_character_profile(
+            conn,
+            **kwargs,
+            audience_needs="预算规划",
+            factual_background="经确认的项目资料",
+            sample_script="先规划。\n再动工。",
+            forbidden_claims="不保证最低价",
+        )
+        assert entry.sample_script == "先规划。\n再动工。"
+        entry = update_simple_character_profile(conn, **kwargs)
+        assert entry.forbidden_claims == "不保证最低价"
+        snapshot = _load_owned_ip_profile_snapshot(conn, actor=actor, identity_id="identity-owned")
+        assert snapshot["audience_needs"] == "预算规划"
+        assert snapshot["sample_script"] == "先规划。\n再动工。"
+    with pytest.raises(HTTPException) as denied:
+        with pg_transaction() as raw:
+            update_simple_character_profile(
+                BusinessConnection.postgres(raw),
+                **{
+                    **kwargs,
+                    "actor": CurrentUser(
+                        id="u2", username="u2", display_name="Other", role="employee"
+                    ),
+                },
+                factual_background="不能修改",
+            )
+    assert denied.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# G. FIRSTFRAME-RECONCILE — 确定性失败归类 / 任务级日志 / 管理端核对
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_provider_failure_lands_failed_not_uncertain(pg_state: str) -> None:
+    """供应商给出确定性答复（数量不符/JSON 不可读）后重跑同一任务结果必然
+    相同：这属于已知失败，用户重新生成即可，不应占用"待核对"终态卡死用户
+    （2026-09-17 事故类别的兜底归类）。"""
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-det")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        fail_image_task(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            cause=ImageProviderFailed("Apilio returned an unexpected number of image outputs"),
+            submission_started=True,
+        )
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable FROM first_frame_tasks WHERE id = 'ff-det'",
+    )[0]
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "IMAGE_TASK_PROVIDER_FAILED"
+    assert int(row["retryable"]) == 1
+
+
+def test_response_invalid_http_failure_lands_failed_not_uncertain(pg_state: str) -> None:
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-inv")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        fail_image_task(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            cause=first_frame_error(
+                502,
+                "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
+                "The image provider did not return the requested candidates.",
+            ),
+            submission_started=True,
+        )
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable FROM first_frame_tasks WHERE id = 'ff-inv'",
+    )[0]
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "FIRST_FRAME_PROVIDER_RESPONSE_INVALID"
+    assert int(row["retryable"]) == 1
+
+
+def test_retryable_transport_failure_stays_uncertain(pg_state: str) -> None:
+    """传输层超时/429/5xx 仍是"结果未知"：回执可续轮询，不能盲目判死。"""
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-trx")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        fail_image_task(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            cause=RetryableImageProviderFailed("Apilio image request failed"),
+            submission_started=True,
+        )
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code FROM first_frame_tasks WHERE id = 'ff-trx'",
+    )[0]
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+    assert row["error_code"] == "IMAGE_TASK_SUBMISSION_UNCERTAIN"
+
+
+def test_worker_round_logs_task_scoped_failure(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """worker 任务级失败必须留下带任务标识的错误日志（2026-09-17 事故归因
+    当时全靠裸读代码）。"""
+    import logging as _logging
+
+    from cryptography.fernet import Fernet
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-log")
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
+    storage = FakeStorageAdapter(provider="fake", bucket="sf-uploads")
+    monkeypatch.setattr(
+        "app.generation_worker.get_media_storage",
+        lambda _conn: storage,
+    )
+    with caplog.at_level(_logging.ERROR, logger="app.image_tasks"):
+        processed = run_pg_worker_round(worker_id="log-worker", max_tasks=1)
+    row = _rows(pg_state, "SELECT status FROM first_frame_tasks WHERE id = 'ff-log'")[0]
+    assert processed == 1
+    assert row["status"] == "FAILED"
+    assert any(
+        "ff-log" in record.getMessage() and "first_frame_tasks" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def _seed_uncertain_task_with_receipt(dsn: str, task_id: str = "ff-rec") -> None:
+    _seed_base(dsn)
+    _seed_image_task(dsn, table="first_frame_tasks", task_id=task_id)
+    # Production receipts are SHA256-bound; align request_hash with the
+    # receipt fingerprint check (the _seed_image_task placeholder is not hex).
+    _exec(
+        dsn,
+        "UPDATE first_frame_tasks SET request_hash=%s WHERE id=%s",
+        (_SHA_A, task_id),
+    )
+    receipt = {
+        "schema_version": 1,
+        "task_id": "vendor-rec-1",
+        "account_fingerprint": _SHA_A,
+        "model": "gpt-image-2",
+        "output_count": 1,
+    }
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        lease = acquire_first_frame_task(conn, worker_id="worker-a")
+        record_image_task_provider(
+            conn, table="first_frame_tasks", lease=lease, provider="apilio", model="gpt-image-2"
+        )
+        save_first_frame_provider_submission(
+            conn, lease=lease, submission=receipt, cost_record_id="cost-rec-1"
+        )
+    _exec(
+        dsn,
+        "UPDATE first_frame_tasks SET status='SUBMISSION_UNCERTAIN', locked_by=NULL,"
+        " locked_until=NULL WHERE id=%s",
+        (task_id,),
+    )
+
+
+class _StubReconcileProvider:
+    provider_name = "apilio"
+    account_fingerprint = _SHA_A
+
+    def __init__(self, outcome: str) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[str, int]] = []
+
+    def poll_edit(self, task_id: str, *, output_count: int) -> list[object] | None:
+        self.calls.append((task_id, output_count))
+        if self.outcome == "success":
+            return [object() for _ in range(output_count)]
+        if self.outcome == "running":
+            return None
+        if self.outcome == "failure":
+            raise first_frame_error(
+                422, "FIRST_FRAME_PROVIDER_REJECTED", "图像服务生成失败，请调整素材后重试。"
+            )
+        if self.outcome == "unreadable":
+            raise ImageProviderFailed("Apilio returned an unknown task status")
+        raise RetryableImageProviderFailed("Apilio image request failed")
+
+
+def test_first_frame_reconcile_resumes_when_provider_task_alive(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import (
+        apply_first_frame_reconcile,
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("success")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "RESUME"
+    assert detail_code is None
+    assert provider.calls == [("vendor-rec-1", 1)]
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        result = apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-rec",
+            decision=decision,
+            detail_code=detail_code,
+            actor=actor,
+        )
+    assert result == "RESUMED"
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable, completed_at FROM first_frame_tasks"
+        " WHERE id = 'ff-rec'",
+    )[0]
+    assert row["status"] == "PENDING"
+    assert row["error_code"] == "IMAGE_TASK_RECONCILE_RESUMED"
+    assert int(row["retryable"]) == 1
+    assert row["completed_at"] is None
+    audit = _rows(
+        pg_state,
+        "SELECT action FROM audit_logs WHERE entity_id = 'ff-rec'"
+        " AND action = 'first_frame_task.reconcile'",
+    )
+    assert len(audit) == 1
+
+
+def test_first_frame_reconcile_fails_when_provider_task_failed(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import (
+        apply_first_frame_reconcile,
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("failure")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "FAIL"
+    assert detail_code == "FIRST_FRAME_PROVIDER_REJECTED"
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        result = apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-rec",
+            decision=decision,
+            detail_code=detail_code,
+            actor=actor,
+        )
+    assert result == "FAILED"
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable FROM first_frame_tasks WHERE id = 'ff-rec'",
+    )[0]
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "FIRST_FRAME_PROVIDER_REJECTED"
+
+
+def test_first_frame_reconcile_running_provider_task_resumes(pg_state: str) -> None:
+    from app.image_tasks import (
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("running")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "RESUME"
+    assert detail_code is None
+
+
+def test_first_frame_reconcile_without_receipt_fails_closed(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import (
+        apply_first_frame_reconcile,
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_base(pg_state)
+    _seed_image_task(
+        pg_state, table="first_frame_tasks", task_id="ff-norc", status="SUBMISSION_UNCERTAIN"
+    )
+    provider = _StubReconcileProvider("success")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-norc")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "FAIL"
+    assert detail_code == "IMAGE_TASK_RECONCILE_NO_RECEIPT"
+    assert provider.calls == []
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        result = apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-norc",
+            decision=decision,
+            detail_code=detail_code,
+            actor=actor,
+        )
+    assert result == "FAILED"
+    row = _rows(pg_state, "SELECT status FROM first_frame_tasks WHERE id = 'ff-norc'")[0]
+    assert row["status"] == "FAILED"
+
+
+def test_first_frame_reconcile_unreadable_provider_stays_put(pg_state: str) -> None:
+    from app.image_tasks import (
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("unreadable")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "RETRY"
+    assert detail_code == "IMAGE_TASK_RECONCILE_PROVIDER_INCONCLUSIVE"
+    row = _rows(pg_state, "SELECT status FROM first_frame_tasks WHERE id = 'ff-rec'")[0]
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+
+
+def test_first_frame_reconcile_apply_fences_concurrent_change(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import apply_first_frame_reconcile
+
+    _seed_base(pg_state)
+    _seed_image_task(
+        pg_state, table="first_frame_tasks", task_id="ff-fence", status="SUBMISSION_UNCERTAIN"
+    )
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-fence",
+            decision="FAIL",
+            detail_code="IMAGE_TASK_RECONCILE_NO_RECEIPT",
+            actor=actor,
+        )
+    with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            apply_first_frame_reconcile(
+                BusinessConnection.postgres(raw),
+                task_id="ff-fence",
+                decision="FAIL",
+                detail_code="IMAGE_TASK_RECONCILE_NO_RECEIPT",
+                actor=actor,
+            )
+    assert conflict.value.status_code == 409
+
+
+def test_first_frame_reconcile_rejects_non_uncertain_task(pg_state: str) -> None:
+    from app.image_tasks import prepare_first_frame_reconcile
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-ok", status="PENDING")
+    with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-ok")
+    assert conflict.value.status_code == 409

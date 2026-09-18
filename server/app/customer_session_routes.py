@@ -66,10 +66,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from app.activation_code_service import ActivationKeyError
+from app.api_errors import http_error as _http
+from app.auth_headers import bearer_token as _bearer_token
 from app.customer_auth import SessionFencingError, verify_session_context
 from app.customer_device_service import (
     AuthenticatedDevice,
@@ -106,7 +108,7 @@ from app.customer_session_service import (
     switch_session,
 )
 from app.db_pg import get_pg_pool, pg_transaction
-from app.ops_metrics import get_or_create_request_id, set_current_result_code
+from app.ops_metrics import get_or_create_request_id
 from app.security_rate_limit import (
     DIMENSION_CUSTOMER_PREAUTH_IP,
     DIMENSION_LOGIN_ACCOUNT,
@@ -121,8 +123,6 @@ from app.security_rate_limit import (
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZATION_HEADER = "Authorization"
-BEARER_SCHEME = "bearer"
 REQUEST_ID_HEADER = "X-Request-Id"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 REPLAY_HEADER = "X-Idempotent-Replay"
@@ -137,13 +137,6 @@ LOGOUT_OPERATION = "session_logout"
 OUTCOME_FIELD = "_outcome"
 
 router = APIRouter(prefix="/api/customer/sessions", tags=["customer-sessions"])
-
-
-def _http(status: int, code: str, message: str, **extra: object) -> HTTPException:
-    set_current_result_code(code)
-    detail: dict[str, object] = {"code": code, "message": message}
-    detail.update(extra)
-    return HTTPException(status_code=status, detail=detail)
 
 
 class LoginRequest(BaseModel):
@@ -184,17 +177,6 @@ RENEWAL_RESPONSES: dict[int | str, dict[str, Any]] = {
         "(the outcome-sealed envelope replays with the original token).",
     },
 }
-
-
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get(AUTHORIZATION_HEADER, "").strip()
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != BEARER_SCHEME:
-        return None
-    token = parts[1].strip()
-    return token or None
 
 
 def _request_id(request: Request) -> str:

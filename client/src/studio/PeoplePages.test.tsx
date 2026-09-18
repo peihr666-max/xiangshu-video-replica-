@@ -6,15 +6,18 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { StrictMode, startTransition, useLayoutEffect, useState } from "react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createReviewData } from "./fixtures";
 import { PeoplePage, PersonPage } from "./PeoplePages";
+import type { StudioData } from "./types";
 
 const api = vi.hoisted(() => ({
   customerVisibleErrorMessage: vi.fn(
     (_cause: unknown, fallback: string) => fallback,
   ),
   completeMaterialUpload: vi.fn(),
+  putMaterial: vi.fn(),
   confirmOralVoice: vi.fn(),
   createMaterialUploadIntent: vi.fn(),
   createOralAvatarClone: vi.fn(),
@@ -34,6 +37,7 @@ const live = vi.hoisted(() => ({
   loadMorePeople: vi.fn(),
   loadPersonAssets: vi.fn(),
   readAudioDuration: vi.fn(async () => 30),
+  loadStudioVoice: vi.fn(),
   uploadOralAudioMaterial: vi.fn(),
   validateOralAudioFile: vi.fn(),
 }));
@@ -59,11 +63,47 @@ let review = true;
 let currentRole: "customer" | "employee" | "auditor" = "customer";
 let draft: Record<string, string | undefined> = {};
 let pagination: Record<string, unknown> | undefined;
+let studioDataOverride: StudioData | undefined;
+let voiceSourceUses: string[] | undefined = ["voice_clone"];
+
+function VoiceStateHarness({ initialData }: { initialData: StudioData }) {
+  const [data, setData] = useState(initialData);
+  studioDataOverride = data;
+  updateData.mockImplementation(setData);
+  return <PersonPage />;
+}
+
+function voicePollingData() {
+  const data = createReviewData();
+  data.people = [
+    {
+      ...data.people[0],
+      id: "p1",
+      voices: [
+        {
+          id: "voice-running",
+          name: "克隆中音色",
+          status: "RUNNING",
+          confirmed: false,
+        },
+        {
+          id: "other-voice",
+          name: "其它声音",
+          status: "READY",
+          confirmed: true,
+          url: "/other.mp3",
+        },
+      ],
+    },
+    { ...data.people[1], id: "p2" },
+  ];
+  return data;
+}
 
 vi.mock("./context", () => ({
   useStudio: () => ({
     state: { page: currentPage, selectedPersonId, returnTo, draft },
-    data: {
+    data: studioDataOverride ?? {
       loading: false,
       errors: [],
       people: [
@@ -84,7 +124,7 @@ vi.mock("./context", () => ({
               name: "测试分身",
               imageId: "avatar-image",
               ready: true,
-              origin: "照片制作",
+              origin: "视频制作",
               duration: "00:30",
             },
             {
@@ -202,6 +242,7 @@ vi.mock("./context", () => ({
           name: "张工录音样本",
           kind: "audio",
           url: "/voice-source.mp3",
+          allowedUses: voiceSourceUses,
           group: "声音素材",
           personId: "p1",
           source: "用户上传",
@@ -245,12 +286,14 @@ describe("PeoplePages", () => {
     review = true;
     currentRole = "customer";
     draft = {};
+    voiceSourceUses = ["voice_clone"];
     pagination = undefined;
+    studioDataOverride = undefined;
     navigate.mockClear();
     patchDraft.mockClear();
     notify.mockClear();
     refresh.mockClear();
-    updateData.mockClear();
+    updateData.mockReset();
     openPicker.mockClear();
     openLive.mockClear();
     vi.clearAllMocks();
@@ -269,6 +312,12 @@ describe("PeoplePages", () => {
       saved: true,
       allowedUses: ["voice_clone"],
     });
+    api.putMaterial.mockImplementation(
+      async (intent, file, onProgress, signal) => {
+        await api.uploadMaterial(intent, file, onProgress, signal);
+        return api.completeMaterialUpload(intent.asset_id);
+      },
+    );
   });
 
   it("人物场景照片尚未读取时显示未知而不是零张", () => {
@@ -447,7 +496,7 @@ describe("PeoplePages", () => {
   it("renders the IP tab without exposing authorization settings", () => {
     render(<PersonPage />);
     expect(
-      screen.getByRole("heading", { name: "人物定位" }),
+      screen.getByRole("heading", { name: "身份与业务" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("授权与状态")).not.toBeInTheDocument();
   });
@@ -459,46 +508,23 @@ describe("PeoplePages", () => {
     expect(screen.getByText("基础五视图 · 1 张合成图")).toBeInTheDocument();
   });
 
-  it("把场景照片和所属人物一起带入口播分身制作", () => {
+  it("形象照片保留人物置换但不提供口播分身入口", () => {
     currentPage = "person-photos";
-    selectedPersonId = "p2";
-    draft = {
-      ipId: "p1",
-      imageId: "scene",
-      avatarId: "avatar-1",
-      voiceId: "voice-ok",
-    };
     render(<PersonPage />);
-
-    screen.getByRole("button", { name: "制作口播分身" }).click();
-
-    expect(patchDraft).toHaveBeenCalledWith({
-      ipId: "p2",
-      imageId: "other-scene",
-    });
-    expect(navigate).toHaveBeenCalledWith("person-avatars", {
-      selectedPersonId: "p2",
-      selectedAssetId: "other-scene",
-    });
+    expect(screen.queryByRole("button", { name: "制作口播分身" })).toBeNull();
+    expect(screen.getByRole("button", { name: "用于人物置换" })).toBeEnabled();
   });
 
-  it.each([
-    ["missing-scene", "失效"],
-    ["other-scene", "跨人物"],
-  ])("%s 的照片显示明确重选入口", (imageId) => {
+  it("视频分身创建不读取草稿中的照片", () => {
     currentPage = "person-avatars";
-    draft = { ipId: "p1", imageId };
+    draft = { ipId: "p1", imageId: "scene" };
     render(<PersonPage />);
-
+    fireEvent.click(screen.getByRole("button", { name: "上传视频创建分身" }));
+    expect(screen.queryByText("已选：场景形象")).toBeNull();
+    expect(screen.queryByRole("button", { name: "用形象照片制作" })).toBeNull();
     expect(
-      screen.getByText("所选照片已失效或不属于当前人物，请重新选择。"),
-    ).toBeInTheDocument();
-    screen.getByRole("button", { name: "重新选择形象照片" }).click();
-    expect(patchDraft).toHaveBeenCalledWith({
-      ipId: "p1",
-      imageId: undefined,
-    });
-    expect(openPicker).toHaveBeenCalledWith("avatar-photo");
+      screen.getByRole("button", { name: "开始制作视频分身" }),
+    ).toBeDisabled();
   });
 
   it("does not present an unconfirmed voice as selectable", () => {
@@ -515,14 +541,16 @@ describe("PeoplePages", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "用于数字人口播" }),
+      screen.queryByRole("button", { name: "使用此分身" }),
     ).not.toBeInTheDocument();
   });
 
   it("试听 does not select a confirmed voice, while 使用此声音 does", () => {
     currentPage = "person-voices";
     render(<PersonPage />);
-    screen.getAllByRole("button", { name: "试听" })[0].click();
+    expect(
+      screen.getByRole("button", { name: "已确认音色试听尚未就绪" }),
+    ).toBeDisabled();
     expect(patchDraft).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "使用此声音" }).click();
@@ -569,288 +597,29 @@ describe("PeoplePages", () => {
       service_scope: "乡墅方案",
       target_audience: "准备建房的家庭",
       expression_style: "专业",
+      audience_needs: "",
+      factual_background: "",
+      sample_script: "",
+      forbidden_claims: "",
     });
   });
 
-  it("用当前人物的场景图提交照片数字人制作", async () => {
-    currentPage = "person-avatars";
-    review = false;
-    draft = { ipId: "p1", imageId: "scene" };
-    api.createOralAvatarClone.mockResolvedValue({
-      id: "avatar-new",
-      status: "RUNNING",
-    });
-    api.createOralConsent.mockResolvedValue({ id: "consent-avatar" });
-
-    render(<PersonPage />);
-    screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
-    expect(api.createOralConsent).toHaveBeenCalledWith({
-      identityId: "p1",
-      sourceAssetId: "scene",
-      purpose: "AVATAR",
-    });
-    await vi.waitFor(() =>
-      expect(api.createOralAvatarClone).toHaveBeenCalledWith({
-        identityId: "p1",
-        title: "测试人物照片分身",
-        sourceAssetId: "scene",
-        sourceKind: "IMAGE",
-        consentId: "consent-avatar",
-        idempotencyKey: expect.any(String),
-      }),
-    );
-    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
-  });
-
-  it.each(["consent", "clone"])(
-    "%s 明确返回素材不存在时冻结旧照片并要求重选",
-    async (failureAt) => {
-      currentPage = "person-avatars";
+  it.each([undefined, ["oral_audio"]])(
+    "不把未验证为声音样本的历史音频带入克隆表单：%s",
+    (allowedUses) => {
+      currentPage = "person-voices";
       review = false;
-      draft = { ipId: "p1", imageId: "scene" };
-      api.createOralConsent.mockImplementation(() =>
-        failureAt === "consent"
-          ? Promise.reject({ status: 404, code: "MATERIAL_NOT_FOUND" })
-          : Promise.resolve({ id: "consent-avatar" }),
-      );
-      api.createOralAvatarClone.mockImplementation(() =>
-        failureAt === "clone"
-          ? Promise.reject({ code: "ASSET_NOT_FOUND" })
-          : Promise.resolve({ id: "avatar-new", status: "RUNNING" }),
-      );
-
+      voiceSourceUses = allowedUses;
+      draft = { ipId: "p1", audioId: "voice-source" };
       render(<PersonPage />);
-      const consent = screen.getByRole("checkbox", {
-        name: "确认分身克隆授权",
-      });
-      consent.click();
-      screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
+      fireEvent.click(screen.getByRole("button", { name: "创建克隆声音" }));
+      expect(screen.getByText("请先选择声音样本。")).toBeInTheDocument();
       expect(
-        await screen.findByText("所选照片已失效或不属于当前人物，请重新选择。"),
-      ).toBeInTheDocument();
-      expect(consent).not.toBeChecked();
-      expect(consent).toBeDisabled();
-      expect(
-        screen.getByRole("button", { name: "开始制作照片分身" }),
+        screen.getByRole("button", { name: "开始克隆声音" }),
       ).toBeDisabled();
-      expect(
-        screen.getByRole("button", { name: "重新选择形象照片" }),
-      ).toBeInTheDocument();
+      expect(api.createOralConsent).not.toHaveBeenCalled();
     },
   );
-
-  it("普通网络错误不会把有效照片误判为失效", async () => {
-    currentPage = "person-avatars";
-    review = false;
-    draft = { ipId: "p1", imageId: "scene" };
-    api.createOralConsent.mockRejectedValue(new Error("network"));
-
-    render(<PersonPage />);
-    const consent = screen.getByRole("checkbox", {
-      name: "确认分身克隆授权",
-    });
-    consent.click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
-    await screen.findByRole("alert");
-    expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
-    expect(consent).toBeChecked();
-    expect(
-      screen.queryByRole("button", { name: "重新选择形象照片" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it.each([{ status: 404 }, { status: 404, code: "ROUTE_NOT_FOUND" }])(
-    "未知 404 不会把有效照片误判为失效",
-    async (failure) => {
-      currentPage = "person-avatars";
-      review = false;
-      draft = { ipId: "p1", imageId: "scene" };
-      api.createOralConsent.mockRejectedValue(failure);
-
-      render(<PersonPage />);
-      const consent = screen.getByRole("checkbox", {
-        name: "确认分身克隆授权",
-      });
-      consent.click();
-      screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
-      await screen.findByRole("alert");
-      expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
-      expect(consent).toBeChecked();
-      expect(
-        screen.queryByRole("button", { name: "重新选择形象照片" }),
-      ).not.toBeInTheDocument();
-    },
-  );
-
-  it("A-B-A 后忽略旧 A 迟到的素材失效响应", async () => {
-    currentPage = "person-avatars";
-    review = false;
-    draft = { ipId: "p1", imageId: "scene" };
-    let rejectOldRequest: ((reason: unknown) => void) | undefined;
-    api.createOralConsent.mockImplementation(
-      () =>
-        new Promise((_resolve, reject) => {
-          rejectOldRequest = reject;
-        }),
-    );
-
-    const view = render(<PersonPage />);
-    screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
-    selectedPersonId = "p2";
-    draft = { ipId: "p2", imageId: "other-scene" };
-    view.rerender(<PersonPage />);
-    selectedPersonId = "p1";
-    draft = { ipId: "p1", imageId: "scene" };
-    view.rerender(<PersonPage />);
-    await act(async () => {
-      rejectOldRequest?.({ status: 404, code: "ASSET_NOT_FOUND" });
-    });
-
-    expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "重新选择形象照片" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("A-B-A 后旧 A 的授权成功不得继续发起分身制作", async () => {
-    currentPage = "person-avatars";
-    review = false;
-    draft = { ipId: "p1", imageId: "scene" };
-    let resolveOldConsent: ((value: { id: string }) => void) | undefined;
-    api.createOralConsent.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveOldConsent = resolve;
-        }),
-    );
-
-    const view = render(<PersonPage />);
-    screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
-    selectedPersonId = "p2";
-    draft = { ipId: "p2", imageId: "other-scene" };
-    view.rerender(<PersonPage />);
-    selectedPersonId = "p1";
-    draft = { ipId: "p1", imageId: "scene" };
-    view.rerender(<PersonPage />);
-    await act(async () => {
-      resolveOldConsent?.({ id: "old-consent" });
-    });
-
-    expect(api.createOralAvatarClone).not.toHaveBeenCalled();
-    expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
-  });
-
-  it("B 提交后的父 layout effect 完成旧 A 授权时不得继续克隆", async () => {
-    currentPage = "person-avatars";
-    review = false;
-    draft = { ipId: "p1", imageId: "scene" };
-    let resolveOldConsent: ((value: { id: string }) => void) | undefined;
-    api.createOralConsent.mockImplementation(
-      () =>
-        new Promise((resolve) => {
-          resolveOldConsent = resolve;
-        }),
-    );
-    let switchToB: (() => void) | undefined;
-    let submitTextDuringBLayout: string | null | undefined;
-    let resolveBLayout: (() => void) | undefined;
-    const bLayoutCommitted = new Promise<void>((resolve) => {
-      resolveBLayout = resolve;
-    });
-    function LayoutHarness() {
-      const [phase, setPhase] = useState<"A" | "B">("A");
-      switchToB = () => setPhase("B");
-      useLayoutEffect(() => {
-        if (phase === "B") {
-          submitTextDuringBLayout = document.querySelector(
-            ".studio-button--primary",
-          )?.textContent;
-          resolveOldConsent?.({ id: "old-consent" });
-          resolveBLayout?.();
-        }
-      }, [phase]);
-      return <PersonPage />;
-    }
-
-    render(
-      <StrictMode>
-        <LayoutHarness />
-      </StrictMode>,
-    );
-    screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-    expect(api.createOralConsent).toHaveBeenCalledTimes(1);
-
-    selectedPersonId = "p2";
-    draft = { ipId: "p2", imageId: "other-scene" };
-    startTransition(() => switchToB?.());
-    await bLayoutCommitted;
-    await Promise.resolve();
-
-    expect(api.createOralAvatarClone).not.toHaveBeenCalled();
-    expect(submitTextDuringBLayout).toBe("开始制作照片分身");
-    expect(screen.getByText("已选：其他人物场景照")).toBeInTheDocument();
-  });
-
-  it("旧操作结束不会解除新 A 操作的忙碌状态", async () => {
-    currentPage = "person-avatars";
-    review = false;
-    draft = { ipId: "p1", imageId: "scene" };
-    let resolveOldConsent: ((value: { id: string }) => void) | undefined;
-    let resolveNewClone:
-      | ((value: { id: string; status: string }) => void)
-      | undefined;
-    api.createOralConsent
-      .mockImplementationOnce(
-        () =>
-          new Promise((resolve) => {
-            resolveOldConsent = resolve;
-          }),
-      )
-      .mockResolvedValueOnce({ id: "new-consent" });
-    api.createOralAvatarClone.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveNewClone = resolve;
-        }),
-    );
-
-    const view = render(<PersonPage />);
-    screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-
-    selectedPersonId = "p2";
-    draft = { ipId: "p2", imageId: "other-scene" };
-    view.rerender(<PersonPage />);
-    selectedPersonId = "p1";
-    draft = { ipId: "p1", imageId: "scene" };
-    view.rerender(<PersonPage />);
-    screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
-    screen.getByRole("button", { name: "开始制作照片分身" }).click();
-    await vi.waitFor(() =>
-      expect(api.createOralAvatarClone).toHaveBeenCalledTimes(1),
-    );
-
-    await act(async () => {
-      resolveOldConsent?.({ id: "old-consent" });
-    });
-
-    expect(screen.getByRole("button", { name: "处理中…" })).toBeDisabled();
-    expect(api.createOralAvatarClone).toHaveBeenCalledTimes(1);
-
-    await act(async () => {
-      resolveNewClone?.({ id: "avatar-new", status: "RUNNING" });
-    });
-  });
 
   it("用已选音频提交声音克隆", async () => {
     currentPage = "person-voices";
@@ -863,6 +632,14 @@ describe("PeoplePages", () => {
     api.createOralConsent.mockResolvedValue({ id: "consent-voice" });
 
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
     screen.getByRole("checkbox", { name: "确认声音克隆授权" }).click();
     screen.getByRole("button", { name: "开始克隆声音" }).click();
 
@@ -892,9 +669,18 @@ describe("PeoplePages", () => {
       .mockResolvedValueOnce({ id: "consent-2" });
     api.createOralVoiceClone
       .mockRejectedValueOnce(new Error("network"))
+      .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValue({ id: "voice-new", status: "RUNNING" });
 
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
     screen.getByRole("checkbox", { name: "确认声音克隆授权" }).click();
     const submit = screen.getByRole("button", { name: "开始克隆声音" });
     submit.click();
@@ -933,19 +719,6 @@ describe("PeoplePages", () => {
     });
   });
 
-  it("从场景卡制作口播分身时保留选中图片", () => {
-    currentPage = "person-photos";
-    render(<PersonPage />);
-
-    screen.getByRole("button", { name: "制作口播分身" }).click();
-
-    expect(patchDraft).toHaveBeenCalledWith({ ipId: "p1", imageId: "scene" });
-    expect(navigate).toHaveBeenCalledWith("person-avatars", {
-      selectedPersonId: "p1",
-      selectedAssetId: "scene",
-    });
-  });
-
   it("上传本地视频后提交视频分身", async () => {
     currentPage = "person-avatars";
     review = false;
@@ -966,6 +739,14 @@ describe("PeoplePages", () => {
       status: "RUNNING",
     });
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("选择人物视频"), {
       target: {
@@ -976,7 +757,12 @@ describe("PeoplePages", () => {
     screen.getByRole("checkbox", { name: "确认分身克隆授权" }).click();
     screen.getByRole("button", { name: "开始制作视频分身" }).click();
 
-    expect(api.completeMaterialUpload).toHaveBeenCalledWith("video-asset");
+    expect(api.putMaterial).toHaveBeenCalledWith(
+      expect.objectContaining({ asset_id: "video-asset" }),
+      expect.any(File),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
     await vi.waitFor(() =>
       expect(api.createOralAvatarClone).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1006,6 +792,14 @@ describe("PeoplePages", () => {
       status: "RUNNING",
     });
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
@@ -1033,6 +827,32 @@ describe("PeoplePages", () => {
     );
   });
 
+  it("浏览器无法解码 WMA 时交给服务端检查音轨和时长", async () => {
+    currentPage = "person-voices";
+    review = false;
+    oralLive.validateOralAudioFile.mockReturnValue(undefined);
+    oralLive.readAudioDuration.mockRejectedValue(
+      new Error("unsupported codec"),
+    );
+    render(<PersonPage />);
+    fireEvent.click(screen.getByRole("button", { name: "创建克隆声音" }));
+    const input = screen.getByLabelText("选择声音样本");
+    expect(input).toHaveAttribute("accept", expect.stringContaining(".wmv"));
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["sample"], "voice.wma", { type: "audio/x-ms-wma" })],
+      },
+    });
+    await screen.findByText("已上传：voice.wma");
+    expect(oralLive.uploadOralAudioMaterial).toHaveBeenCalledWith(
+      expect.any(File),
+      "voice_clone",
+      undefined,
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+  });
+
   it("取消声音样本上传后中止请求并忽略迟到完成", async () => {
     currentPage = "person-voices";
     review = false;
@@ -1052,6 +872,14 @@ describe("PeoplePages", () => {
         }),
     );
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
@@ -1100,6 +928,14 @@ describe("PeoplePages", () => {
         }),
     );
     const view = render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
         files: [new File(["ID3audio"], "old.mp3", { type: "audio/mpeg" })],
@@ -1146,6 +982,14 @@ describe("PeoplePages", () => {
         }),
     );
     const view = render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
         files: [new File(["ID3audio"], "leave.mp3", { type: "audio/mpeg" })],
@@ -1180,11 +1024,21 @@ describe("PeoplePages", () => {
     review = false;
     draft = { ipId: "p1", audioId: "voice-source" };
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     expect(screen.getByRole("button", { name: "开始克隆声音" })).toBeDisabled();
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
-        files: [new File(["bad"], "voice.wav", { type: "audio/wav" })],
+        files: [
+          new File(["bad"], "voice.exe", { type: "application/octet-stream" }),
+        ],
       },
     });
     expect(screen.getByRole("alert")).toHaveTextContent("仅支持 MP3");
@@ -1208,6 +1062,14 @@ describe("PeoplePages", () => {
     );
     api.completeMaterialUpload.mockRejectedValue(new Error("storage down"));
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("选择人物视频"), {
       target: {
@@ -1232,7 +1094,8 @@ describe("PeoplePages", () => {
     currentPage = "person-avatars";
     render(<PersonPage />);
 
-    screen.getByRole("button", { name: "上传人物视频制作" }).click();
+    fireEvent.click(screen.getByRole("button", { name: "上传视频创建分身" }));
+    fireEvent.click(screen.getByRole("button", { name: /上传你的真人视频/ }));
 
     expect(api.createMaterialUploadIntent).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith("审核模式保留示例素材，不执行真实上传");
@@ -1286,10 +1149,18 @@ describe("PeoplePages", () => {
   it("声音样本明确限制为 5–180 秒 MP3 且不超过 20 MB", () => {
     currentPage = "person-voices";
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     expect(screen.getByText(/5–180 秒（3 分钟）清晰干声/)).toBeInTheDocument();
     expect(
-      screen.getByText(/MP3，时长 5–180 秒（3 分钟），上限 20 MB/),
+      screen.getByText(/时长 5–180 秒（3 分钟），上限 20 MB/),
     ).toBeInTheDocument();
   });
 
@@ -1297,6 +1168,14 @@ describe("PeoplePages", () => {
     currentPage = "person-voices";
     review = false;
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
     const file = new File(["ID3audio"], "oversized.mp3", {
       type: "audio/mpeg",
     });
@@ -1312,6 +1191,14 @@ describe("PeoplePages", () => {
   it("声音样本选择使用独立用途选择器", () => {
     currentPage = "person-voices";
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "从素材选择声音样本" }));
     expect(openPicker).toHaveBeenCalledWith("voice-audio");
@@ -1322,6 +1209,14 @@ describe("PeoplePages", () => {
     review = false;
     oralLive.readAudioDuration.mockResolvedValue(181);
     render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
 
     fireEvent.change(screen.getByLabelText("选择声音样本"), {
       target: {
@@ -1338,6 +1233,14 @@ describe("PeoplePages", () => {
     review = false;
     draft = { ipId: "p1", audioId: "voice-source" };
     const view = render(<PersonPage />);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name:
+          currentPage === "person-avatars"
+            ? "上传视频创建分身"
+            : "创建克隆声音",
+      }),
+    );
     const consent = screen.getByRole("checkbox", { name: "确认声音克隆授权" });
     consent.click();
     expect(consent).toBeChecked();
@@ -1377,6 +1280,83 @@ describe("PeoplePages", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("声音状态自动刷新失败");
     view.unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("声音结果只更新当前声音，原位显示试听并停止轮询", async () => {
+    vi.useFakeTimers();
+    currentPage = "person-voices";
+    review = false;
+    const next = {
+      id: "voice-running",
+      name: "克隆中音色",
+      status: "READY",
+      confirmed: false,
+      url: "/ready.mp3",
+    };
+    api.refreshOralVoice.mockResolvedValue(next);
+    oralLive.loadStudioVoice.mockResolvedValue(next);
+    const initialData = voicePollingData();
+    const view = render(<VoiceStateHarness initialData={initialData} />);
+    const card = screen.getByText("克隆中音色").closest("article");
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(refresh).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("克隆中音色试听")).toHaveAttribute(
+      "src",
+      "/ready.mp3",
+    );
+    expect(screen.getByText("克隆中音色").closest("article")).toBe(card);
+    expect(studioDataOverride?.people[0].voices[1]).toBe(
+      initialData.people[0].voices[1],
+    );
+    expect(studioDataOverride?.people[1]).toBe(initialData.people[1]);
+    expect(studioDataOverride?.assets).toBe(initialData.assets);
+    await act(async () => vi.advanceTimersByTimeAsync(12_000));
+    expect(api.refreshOralVoice).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("声音手动刷新迟到结果不能覆盖自动轮询的新结果", async () => {
+    vi.useFakeTimers();
+    currentPage = "person-voices";
+    review = false;
+    let finishOld!: (value: unknown) => void;
+    const next = {
+      id: "voice-running",
+      name: "克隆中音色",
+      status: "READY",
+      confirmed: false,
+      url: "/ready.mp3",
+    };
+    api.refreshOralVoice
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishOld = resolve;
+          }),
+      )
+      .mockResolvedValue(next);
+    oralLive.loadStudioVoice.mockImplementation(
+      async (record: unknown) => record,
+    );
+    const view = render(<VoiceStateHarness initialData={voicePollingData()} />);
+    fireEvent.click(screen.getByRole("button", { name: "刷新克隆状态" }));
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(screen.getByLabelText("克隆中音色试听")).toHaveAttribute(
+      "src",
+      "/ready.mp3",
+    );
+    await act(async () => {
+      finishOld({ ...next, status: "RUNNING", url: undefined });
+    });
+    expect(screen.getByLabelText("克隆中音色试听")).toHaveAttribute(
+      "src",
+      "/ready.mp3",
+    );
+    expect(
+      screen.queryByRole("button", { name: "刷新克隆状态" }),
+    ).not.toBeInTheDocument();
+    expect(refresh).not.toHaveBeenCalled();
+    view.unmount();
   });
 
   it("审核模式不发起自动刷新", async () => {
@@ -1421,7 +1401,7 @@ describe("PeoplePages", () => {
     view.unmount();
     currentPage = "person-photos";
     render(<PersonPage />);
-    expect(screen.getByRole("button", { name: "制作口播分身" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "制作口播分身" })).toBeNull();
     expect(screen.getByRole("button", { name: "用于人物置换" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "加载更多场景" }));
     expect(live.loadPersonAssets).toHaveBeenCalledWith("p1", 1);
@@ -1443,19 +1423,15 @@ describe("PeoplePages", () => {
     currentPage = "person-avatars";
     draft = { ipId: "p1", imageId: "scene" };
     view.rerender(<PersonPage />);
-    expect(screen.getByLabelText("确认分身克隆授权")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "使用此分身" })).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "用于数字人口播" }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: /开始制作照片分身/ }),
+      screen.getByRole("button", { name: "上传视频创建分身" }),
     ).toBeDisabled();
 
     currentPage = "person-voices";
     draft = { ipId: "p1", audioId: "voice-source" };
     view.rerender(<PersonPage />);
-    expect(screen.getByLabelText("确认声音克隆授权")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "开始克隆声音" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "创建克隆声音" })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "确认使用此声音" }),
     ).toBeDisabled();
@@ -1472,5 +1448,70 @@ describe("PeoplePages", () => {
     render(<PersonPage />);
     expect(screen.getByText("未选择人物")).toBeInTheDocument();
     expect(screen.queryByText("测试人物")).not.toBeInTheDocument();
+  });
+  it.each(["cancel", "person", "unmount"])(
+    "视频上传 %s 后中止并忽略迟到完成",
+    async (action) => {
+      currentPage = "person-avatars";
+      review = false;
+      api.createMaterialUploadIntent.mockResolvedValue({
+        asset_id: "video-late",
+      });
+      let finish!: (item: { asset_id: string }) => void;
+      api.putMaterial.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      const view = render(<PersonPage />);
+      fireEvent.click(screen.getByRole("button", { name: "上传视频创建分身" }));
+      fireEvent.change(screen.getByLabelText("选择人物视频"), {
+        target: {
+          files: [new File(["video"], "late.mp4", { type: "video/mp4" })],
+        },
+      });
+      await waitFor(() => expect(api.putMaterial).toHaveBeenCalledTimes(1));
+      const signal = api.putMaterial.mock.calls[0][3] as AbortSignal;
+      if (action === "cancel")
+        fireEvent.click(screen.getByRole("button", { name: "取消上传" }));
+      else if (action === "person") {
+        selectedPersonId = "p2";
+        view.rerender(<PersonPage />);
+      } else view.unmount();
+      expect(signal.aborted).toBe(true);
+      await act(async () => finish({ asset_id: "late-video" }));
+      expect(screen.queryByText("已上传：late.mp4")).toBeNull();
+      expect(api.createOralAvatarClone).not.toHaveBeenCalled();
+    },
+  );
+
+  it("离开人物后迟到的视频授权不继续提交克隆", async () => {
+    currentPage = "person-avatars";
+    review = false;
+    api.createMaterialUploadIntent.mockResolvedValue({ asset_id: "video" });
+    api.putMaterial.mockResolvedValue({ asset_id: "video" });
+    let finishConsent!: (value: { id: string }) => void;
+    api.createOralConsent.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishConsent = resolve;
+        }),
+    );
+    const view = render(<PersonPage />);
+    fireEvent.click(screen.getByRole("button", { name: "上传视频创建分身" }));
+    fireEvent.change(screen.getByLabelText("选择人物视频"), {
+      target: {
+        files: [new File(["video"], "own.mp4", { type: "video/mp4" })],
+      },
+    });
+    await screen.findByText("已上传：own.mp4");
+    fireEvent.click(screen.getByLabelText("确认分身克隆授权"));
+    fireEvent.click(screen.getByRole("button", { name: "开始制作视频分身" }));
+    await waitFor(() => expect(api.createOralConsent).toHaveBeenCalled());
+    selectedPersonId = "p2";
+    view.rerender(<PersonPage />);
+    await act(async () => finishConsent({ id: "late-consent" }));
+    expect(api.createOralAvatarClone).not.toHaveBeenCalled();
   });
 });

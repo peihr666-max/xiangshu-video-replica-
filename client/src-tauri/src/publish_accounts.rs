@@ -1,4 +1,9 @@
-//! Local platform profiles. WebView2 owns Cookie persistence; IPC never exports cookies.
+//! Local platform profiles. WebView2 owns Cookie persistence for manual publishing.
+//! PUBLISH-DELIVERY-20260917: at the moment a login is confirmed (and on explicit
+//! re-verification) the profile's cookies + localStorage are exported ONCE to the
+//! main window as a Playwright-shaped storage_state, which the studio uploads to the
+//! server (Fernet at rest) so the publish worker can deliver on the account's behalf.
+//! Nothing is written to disk here and no other window can request the export.
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -45,7 +50,7 @@ pub struct LocalAccount {
     verified_at: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Identity {
     platform_user_id: String,
     username: String,
@@ -79,6 +84,15 @@ pub struct LoginStatus {
     phase: &'static str,
     image: Option<String>,
     account: Option<LocalAccount>,
+    /// Present only on `connected`: the one-shot export for the server-side worker.
+    /// `None` on `connected` means the export failed and the UI should offer a retry.
+    storage_state: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+pub struct ExportedLogin {
+    identity: Identity,
+    storage_state: serde_json::Value,
 }
 
 impl LoginStatus {
@@ -87,6 +101,7 @@ impl LoginStatus {
             phase,
             image: None,
             account: None,
+            storage_state: None,
         }
     }
 
@@ -115,6 +130,7 @@ impl LoginStatus {
                 phase,
                 image,
                 account: None,
+                storage_state: None,
             }
         } else {
             Self::phase(phase)
@@ -221,12 +237,25 @@ fn read_accounts(root: &Path) -> Result<Vec<LocalAccount>, String> {
     Ok(accounts)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum OfficialWindowMode {
+    Login,
+    Publish,
+    Clear,
+}
+
+impl OfficialWindowMode {
+    fn visible(self) -> bool {
+        self == Self::Publish
+    }
+}
+
 fn official_window(
     app: &AppHandle,
     dir: &Path,
     id: &str,
     platform: &Platform,
-    clearing: bool,
+    mode: OfficialWindowMode,
 ) -> Result<WebviewWindow, String> {
     if !cfg!(windows) {
         return Err("本地扫码账号管理需要 Windows 桌面客户端".into());
@@ -238,7 +267,7 @@ fn official_window(
     }
     let profile = dir.join(id).join("browser");
     fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
-    let url = if clearing {
+    let url = if mode == OfficialWindowMode::Clear {
         "about:blank"
     } else {
         platform.login_url()
@@ -248,7 +277,9 @@ fn official_window(
         label,
         WebviewUrl::External(url.parse().map_err(|_| "平台地址错误")?),
     )
-    .visible(!clearing)
+    .visible(mode.visible())
+    .focused(mode.visible())
+    .skip_taskbar(!mode.visible())
     .title("官方平台 · 扫码登录 / 发布")
     .inner_size(1080.0, 780.0)
     .data_directory(profile)
@@ -299,6 +330,208 @@ fn clear_profile(window: &WebviewWindow) -> Result<(), String> {
         let _ = window;
         Err("本机账号清理需要 Windows 桌面客户端".into())
     }
+}
+
+const MAX_LOCAL_STORAGE_JSON: usize = 1_000_000;
+const MAX_COOKIE_COUNT: usize = 500;
+
+/// Playwright `storage_state` cookie record built from one WebView2 cookie.
+fn cookie_record(
+    name: String,
+    value: String,
+    domain: String,
+    path: String,
+    expires: f64,
+    http_only: bool,
+    secure: bool,
+    same_site: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": path,
+        "expires": if expires.is_finite() && expires > 0.0 { expires } else { -1.0 },
+        "httpOnly": http_only,
+        "secure": secure,
+        "sameSite": same_site,
+    })
+}
+
+fn platform_cookie_domain(domain: &str, platform: &Platform) -> bool {
+    let host = domain.trim_start_matches('.').to_ascii_lowercase();
+    let roots: &[&str] = match platform {
+        Platform::Douyin => &["douyin.com"],
+        Platform::WechatChannels => &["weixin.qq.com", "qq.com"],
+        Platform::Xiaohongshu => &["xiaohongshu.com"],
+    };
+    roots
+        .iter()
+        .any(|root| host == *root || host.ends_with(&format!(".{root}")))
+}
+
+#[cfg(windows)]
+fn collect_cookie_records(
+    list: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2CookieList,
+    platform: &Platform,
+) -> Result<Vec<serde_json::Value>, String> {
+    use webview2_com::{
+        take_pwstr,
+        Microsoft::Web::WebView2::Win32::{
+            COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX, COREWEBVIEW2_COOKIE_SAME_SITE_KIND_STRICT,
+        },
+    };
+    use windows_core::PWSTR;
+    let mut count = 0u32;
+    // SAFETY: plain COM getters on a live cookie list handed to the completion callback.
+    unsafe { list.Count(&mut count) }.map_err(|e| e.to_string())?;
+    let mut records = Vec::new();
+    for index in 0..count.min(MAX_COOKIE_COUNT as u32) {
+        let cookie = unsafe { list.GetValueAtIndex(index) }.map_err(|e| e.to_string())?;
+        let mut name = PWSTR::null();
+        let mut value = PWSTR::null();
+        let mut domain = PWSTR::null();
+        let mut path = PWSTR::null();
+        let mut expires = 0f64;
+        let mut http_only = windows_core::BOOL(0);
+        let mut secure = windows_core::BOOL(0);
+        let mut same_site = COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX;
+        unsafe {
+            cookie.Name(&mut name).map_err(|e| e.to_string())?;
+            cookie.Value(&mut value).map_err(|e| e.to_string())?;
+            cookie.Domain(&mut domain).map_err(|e| e.to_string())?;
+            cookie.Path(&mut path).map_err(|e| e.to_string())?;
+            cookie.Expires(&mut expires).map_err(|e| e.to_string())?;
+            cookie
+                .IsHttpOnly(&mut http_only)
+                .map_err(|e| e.to_string())?;
+            cookie.IsSecure(&mut secure).map_err(|e| e.to_string())?;
+            cookie.SameSite(&mut same_site).map_err(|e| e.to_string())?;
+        }
+        // take_pwstr frees the CoTaskMem buffers even for cookies we drop.
+        let (name, value, domain, path) = (
+            take_pwstr(name),
+            take_pwstr(value),
+            take_pwstr(domain),
+            take_pwstr(path),
+        );
+        if !platform_cookie_domain(&domain, platform) {
+            continue;
+        }
+        let same_site_label = if same_site == COREWEBVIEW2_COOKIE_SAME_SITE_KIND_STRICT {
+            "Strict"
+        } else if same_site == COREWEBVIEW2_COOKIE_SAME_SITE_KIND_LAX {
+            "Lax"
+        } else {
+            "None"
+        };
+        records.push(cookie_record(
+            name,
+            value,
+            domain,
+            path,
+            expires,
+            http_only.as_bool(),
+            secure.as_bool(),
+            same_site_label,
+        ));
+    }
+    Ok(records)
+}
+
+fn read_cookies(
+    window: &WebviewWindow,
+    platform: &Platform,
+) -> Result<Vec<serde_json::Value>, String> {
+    #[cfg(windows)]
+    {
+        use webview2_com::{
+            GetCookiesCompletedHandler,
+            Microsoft::Web::WebView2::Win32::{ICoreWebView2CookieList, ICoreWebView2_2},
+        };
+        use windows_core::{Interface, HSTRING};
+        let (send, receive) = std::sync::mpsc::channel::<Result<Vec<serde_json::Value>, String>>();
+        let origin = HSTRING::from(platform.origin());
+        let platform = platform.clone();
+        window
+            .with_webview(move |webview| {
+                let completed = send.clone();
+                let handler = GetCookiesCompletedHandler::create(Box::new(
+                    move |result: windows_core::Result<()>,
+                          list: Option<ICoreWebView2CookieList>| {
+                        let outcome = result
+                            .map_err(|error| error.to_string())
+                            .and_then(|_| list.ok_or_else(|| "cookie list missing".to_string()))
+                            .and_then(|list| collect_cookie_records(&list, &platform));
+                        let _ = completed.send(outcome);
+                        Ok(())
+                    },
+                ));
+                let result: windows_core::Result<()> = (|| unsafe {
+                    webview
+                        .controller()
+                        .CoreWebView2()?
+                        .cast::<ICoreWebView2_2>()?
+                        .CookieManager()?
+                        .GetCookies(&origin, &handler)
+                })();
+                if let Err(error) = result {
+                    let _ = send.send(Err(error.to_string()));
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        receive
+            .recv_timeout(Duration::from_secs(30))
+            .map_err(|_| "读取本机登录 Cookie 超时，请重试".to_string())?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, platform);
+        Err("本机登录态导出需要 Windows 桌面客户端".into())
+    }
+}
+
+fn read_local_storage(window: &WebviewWindow) -> Result<Vec<serde_json::Value>, String> {
+    let (send, receive) = std::sync::mpsc::channel();
+    window
+        .eval_with_callback(
+            "JSON.stringify(Object.entries(localStorage).map(([name, value]) => ({name, value})))",
+            move |value| {
+                let _ = send.send(value);
+            },
+        )
+        .map_err(|e| e.to_string())?;
+    let raw = receive
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|_| "读取本机登录状态超时，请重试")?;
+    if raw.len() > MAX_LOCAL_STORAGE_JSON {
+        return Err("平台登录状态过大，请重新扫码".into());
+    }
+    // eval returns the JSON of a JSON string; unwrap both layers.
+    let inner: String = serde_json::from_str(&raw).map_err(|_| "平台登录状态解析失败")?;
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_str(&inner).map_err(|_| "平台登录状态解析失败")?;
+    Ok(entries
+        .into_iter()
+        .filter(|entry| entry.get("name").and_then(|v| v.as_str()).is_some())
+        .filter(|entry| entry.get("value").and_then(|v| v.as_str()).is_some())
+        .collect())
+}
+
+/// Export the official window's login state in Playwright `storage_state` shape.
+fn export_storage_state(
+    window: &WebviewWindow,
+    platform: &Platform,
+) -> Result<serde_json::Value, String> {
+    let cookies = read_cookies(window, platform)?;
+    if cookies.is_empty() {
+        return Err("本机登录态没有平台 Cookie，请重新扫码".into());
+    }
+    let local_storage = read_local_storage(window)?;
+    Ok(serde_json::json!({
+        "cookies": cookies,
+        "origins": [{"origin": platform.origin(), "localStorage": local_storage}],
+    }))
 }
 
 pub fn close_all_windows(app: &AppHandle) {
@@ -355,7 +588,7 @@ pub async fn start_local_publish_login(
         .as_ref()
         .map(|a| a.id.clone())
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    official_window(&app, &dir, &id, &platform, false)?;
+    official_window(&app, &dir, &id, &platform, OfficialWindowMode::Login)?;
     logins.insert(
         id.clone(),
         Login {
@@ -379,7 +612,7 @@ pub async fn check_local_publish_login(
 ) -> Result<LoginStatus, String> {
     main_only(&window)?;
     let dir = root(&app, &owner)?;
-    let platform = {
+    let (platform, elapsed) = {
         let logins = state.logins.lock().map_err(|_| "扫码会话忙，请重试")?;
         let login = logins
             .get(&login_id)
@@ -388,23 +621,21 @@ pub async fn check_local_publish_login(
         if login.started.elapsed() > Duration::from_secs(300) {
             return Ok(LoginStatus::phase("expired"));
         }
-        login.platform.clone()
+        (login.platform.clone(), login.started.elapsed())
     };
     let Some(official) = app.get_webview_window(&format!("publish-{login_id}")) else {
         return Ok(LoginStatus::phase("closed"));
     };
-    if official
-        .url()
-        .map_err(|e| e.to_string())?
-        .origin()
-        .ascii_serialization()
-        != platform.origin()
-    {
+    let url = official.url().map_err(|e| e.to_string())?;
+    if url.as_str() == "about:blank" && elapsed < Duration::from_secs(45) {
+        return Ok(LoginStatus::phase("loading"));
+    }
+    if url.origin().ascii_serialization() != platform.origin() {
         return Ok(LoginStatus::phase("action_required"));
     }
     let (send, receive) = std::sync::mpsc::channel();
     let script = format!(
-        "location.origin === {} ? ({{identity: window.__xiangshuPublishIdentity || null, login: window.__xiangshuPublishLogin || null}}) : null",
+        "location.origin === {} ? ({{identity: window.__xiangshuPublishIdentity || null, login: window.__xiangshuReadPublishLogin ? window.__xiangshuReadPublishLogin() : window.__xiangshuPublishLogin || null}}) : null",
         serde_json::to_string(platform.origin()).map_err(|e| e.to_string())?
     );
     official
@@ -412,11 +643,17 @@ pub async fn check_local_publish_login(
             let _ = send.send(value);
         })
         .map_err(|e| e.to_string())?;
-    let value =
+    let response =
         tauri::async_runtime::spawn_blocking(move || receive.recv_timeout(Duration::from_secs(5)))
             .await
-            .map_err(|e| e.to_string())?
-            .map_err(|_| "官方页面未响应，请稍后重试")?;
+            .map_err(|e| e.to_string())?;
+    // Navigation can briefly delay script execution; do not exhaust the UI's
+    // retry budget before the platform's initial login page has loaded.
+    let value = match response {
+        Ok(value) => value,
+        Err(_) if elapsed < Duration::from_secs(45) => return Ok(LoginStatus::phase("loading")),
+        Err(_) => return Err("官方页面未响应，请重新获取二维码或打开官方窗口检查".into()),
+    };
     if value.len() > 620_000 {
         return Err("平台登录信息过大，请重新扫码".into());
     }
@@ -477,13 +714,106 @@ pub async fn check_local_publish_login(
     let bytes = serde_json::to_vec(&account).map_err(|e| e.to_string())?;
     super::customer_credentials::write_file_atomically(&account_path(&dir, &login_id)?, &bytes)
         .map_err(|e| e.to_string())?;
+    // One-shot export for the server-side worker; a failure here keeps the local
+    // account (manual publishing still works) and surfaces as `storage_state: null`.
+    let storage_state = export_storage_state(&official, &account.platform).ok();
     official.close().map_err(|e| e.to_string())?;
     logins.remove(&login_id);
     Ok(LoginStatus {
         phase: "connected",
         image: None,
         account: Some(account),
+        storage_state,
     })
+}
+
+#[tauri::command]
+pub async fn export_local_publish_account_state(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, PublishAccounts>,
+    owner: String,
+    account_id: String,
+) -> Result<ExportedLogin, String> {
+    main_only(&window)?;
+    let dir = root(&app, &owner)?;
+    {
+        let logins = state.logins.lock().map_err(|_| "扫码会话忙，请重试")?;
+        if logins.contains_key(&account_id) {
+            return Err("请先完成或取消该账号的扫码会话".into());
+        }
+    }
+    let account = {
+        let _lock = state.disk.lock().map_err(|_| "账号存储忙，请重试")?;
+        read_accounts(&dir)?
+            .into_iter()
+            .find(|a| a.id == account_id)
+            .ok_or("账号不存在，请重新扫码")?
+    };
+    let official = official_window(
+        &app,
+        &dir,
+        &account.id,
+        &account.platform,
+        OfficialWindowMode::Login,
+    )?;
+    let outcome = wait_for_identity(&official, &account.platform)
+        .await
+        .and_then(|identity| {
+            if identity.platform_user_id != account.platform_user_id {
+                return Err("当前登录的平台账号与原账号不同，请解绑后重新添加".to_string());
+            }
+            let storage_state = export_storage_state(&official, &account.platform)?;
+            Ok(ExportedLogin {
+                identity,
+                storage_state,
+            })
+        });
+    let _ = official.close();
+    outcome
+}
+
+/// Poll the hidden official window until the identity endpoint has been observed.
+async fn wait_for_identity(
+    official: &WebviewWindow,
+    platform: &Platform,
+) -> Result<Identity, String> {
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let script = format!(
+        "location.origin === {} ? (window.__xiangshuPublishIdentity || null) : null",
+        serde_json::to_string(platform.origin()).map_err(|e| e.to_string())?
+    );
+    while Instant::now() < deadline {
+        let url = official.url().map_err(|e| e.to_string())?;
+        if url.origin().ascii_serialization() == platform.origin() {
+            let (send, receive) = std::sync::mpsc::channel();
+            official
+                .eval_with_callback(script.clone(), move |value| {
+                    let _ = send.send(value);
+                })
+                .map_err(|e| e.to_string())?;
+            let response = tauri::async_runtime::spawn_blocking(move || {
+                receive.recv_timeout(Duration::from_secs(5))
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            if let Ok(value) = response {
+                if value.len() <= 20_000 {
+                    if let Ok(Some(identity)) = serde_json::from_str::<Option<Identity>>(&value) {
+                        if !identity.platform_user_id.trim().is_empty()
+                            && !identity.username.trim().is_empty()
+                        {
+                            return Ok(identity);
+                        }
+                    }
+                }
+            }
+        }
+        tauri::async_runtime::spawn_blocking(|| std::thread::sleep(Duration::from_secs(1)))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Err("本机登录态已失效，请重新扫码".into())
 }
 
 #[tauri::command]
@@ -505,6 +835,9 @@ pub async fn focus_local_publish_login(
         .get_webview_window(&format!("publish-{login_id}"))
         .ok_or("官方窗口已关闭，请重新扫码")?;
     official.unminimize().map_err(|e| e.to_string())?;
+    official
+        .set_skip_taskbar(false)
+        .map_err(|e| e.to_string())?;
     official.show().map_err(|e| e.to_string())?;
     official.set_focus().map_err(|e| e.to_string())
 }
@@ -530,7 +863,13 @@ pub async fn cancel_local_publish_login(
                         .map_err(|e| e.to_string())?;
                     official
                 }
-                None => official_window(&app, &dir, &login.id, &login.platform, true)?,
+                None => official_window(
+                    &app,
+                    &dir,
+                    &login.id,
+                    &login.platform,
+                    OfficialWindowMode::Clear,
+                )?,
             };
             if let Err(error) = clear_profile(&official) {
                 let _ = official.close();
@@ -567,7 +906,13 @@ pub async fn open_local_publish_account(
         .into_iter()
         .find(|a| a.id == account_id)
         .ok_or("账号不存在，请重新扫码")?;
-    official_window(&app, &dir, &account.id, &account.platform, false)?;
+    official_window(
+        &app,
+        &dir,
+        &account.id,
+        &account.platform,
+        OfficialWindowMode::Publish,
+    )?;
     Ok(())
 }
 
@@ -591,7 +936,13 @@ pub async fn remove_local_publish_account(
         .find(|a| a.id == account_id)
         .ok_or("账号不存在")?;
     // Clear only this exact WebView2 profile; no cookies are read into Rust or JS.
-    let official = official_window(&app, &dir, &account.id, &account.platform, true)?;
+    let official = official_window(
+        &app,
+        &dir,
+        &account.id,
+        &account.platform,
+        OfficialWindowMode::Clear,
+    )?;
     if let Err(error) = clear_profile(&official) {
         let _ = official.close();
         return Err(error);
@@ -604,6 +955,12 @@ pub async fn remove_local_publish_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn login_and_cleanup_do_not_open_a_visible_official_window() {
+        assert!(!OfficialWindowMode::Login.visible());
+        assert!(!OfficialWindowMode::Clear.visible());
+        assert!(OfficialWindowMode::Publish.visible());
+    }
     #[test]
     fn qr_snapshot_rejects_stale_remote_and_non_raster_images() {
         for image in [
@@ -657,6 +1014,50 @@ mod tests {
             account_path(base, &id).unwrap(),
             base.join(format!("{id}.json"))
         );
+    }
+    #[test]
+    fn cookie_export_filters_platform_domains_and_normalizes_playwright_fields() {
+        assert!(platform_cookie_domain(".douyin.com", &Platform::Douyin));
+        assert!(platform_cookie_domain(
+            "creator.douyin.com",
+            &Platform::Douyin
+        ));
+        assert!(!platform_cookie_domain("notdouyin.com", &Platform::Douyin));
+        assert!(!platform_cookie_domain(".example.com", &Platform::Douyin));
+        assert!(platform_cookie_domain(
+            ".weixin.qq.com",
+            &Platform::WechatChannels
+        ));
+        assert!(platform_cookie_domain(".qq.com", &Platform::WechatChannels));
+        assert!(!platform_cookie_domain(
+            ".douyin.com",
+            &Platform::WechatChannels
+        ));
+        let session = cookie_record(
+            "sid".into(),
+            "v".into(),
+            ".douyin.com".into(),
+            "/".into(),
+            -1.0,
+            true,
+            true,
+            "Lax",
+        );
+        assert_eq!(session["expires"], -1.0);
+        assert_eq!(session["httpOnly"], true);
+        assert_eq!(session["sameSite"], "Lax");
+        let persistent = cookie_record(
+            "a".into(),
+            "b".into(),
+            "creator.douyin.com".into(),
+            "/x".into(),
+            1_800_000_000.5,
+            false,
+            false,
+            "None",
+        );
+        assert_eq!(persistent["expires"], 1_800_000_000.5);
+        assert_eq!(persistent["path"], "/x");
     }
     #[test]
     fn index_never_contains_credentials_and_is_isolated_per_owner() {

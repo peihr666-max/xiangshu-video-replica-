@@ -1,18 +1,17 @@
-"""Standalone publish worker (phase 1): drains account login-state probes.
+"""Standalone publish worker: account login-state probes and video deliveries.
 
-Verifying a platform account means calling the platform: douyin needs a
-Node.js signing subprocess, and either platform needs an HTTPS round trip.
-That outbound I/O runs in its own process instead of the generation worker's
-serial loop — a slow or hung platform call must never stall H3 polling or
-oral tasks. Phase 2 makes this boundary load-bearing rather than merely
-useful: delivering one video blocks for minutes (upload, platform transcode
-wait, create), so folding the publish worker back into the generation loop
-then would be a regression, not a simplification.
+Calling a platform means outbound I/O — douyin additionally needs a Node.js
+signing subprocess — and delivering one video blocks for minutes (download
+from storage, upload, platform transcode wait, create). That work runs in its
+own process instead of the generation worker's serial loop so a slow or hung
+platform call never stalls H3 polling or oral tasks.
 
-The claim/finalize CAS pattern is shared with ``app.publish``; the platform
-I/O happens inside the adapters with no database transaction open. The heavy
-vendor/adapter imports are function-local so this module can also be imported
-for tests without Node/curl_cffi present.
+Each round claims at most one account probe (phase 1, ``app.publish``) and at
+most one publish record (phase 2, ``app.publish_records``). Claim and finalize
+each get their own short transaction; the platform I/O happens inside the
+adapters with no database transaction open. The heavy vendor/adapter imports
+are function-local so this module can also be imported for tests without
+Node/curl_cffi present.
 """
 
 from __future__ import annotations
@@ -25,6 +24,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from threading import Event
 from types import FrameType
+from typing import Any, Literal
 
 from app.db_pg import (
     DatabaseMode,
@@ -39,6 +39,8 @@ from app.publish import (
     claim_account_verify_work,
     finalize_account_verify,
 )
+from app.publish_records import PublishWork, claim_publish_work, finalize_publish_work
+from app.publishers.base import PublishResult
 from app.settings import fernet_from_environment
 from app.worker_identity import new_worker_instance_id
 
@@ -57,19 +59,90 @@ def _dispatch_probe(
     return channels_adapter.probe_channels(cookie)
 
 
+def _perform_publish(
+    open_txn: Callable[[], AbstractContextManager[BusinessConnection]],
+    *,
+    work: PublishWork,
+    key: Any,
+) -> tuple[PublishResult, Literal["api", "browser"] | None]:
+    """Decrypt, materialize media and deliver; never raises, never logs secrets."""
+    import json
+
+    from app import publish_delivery
+    from app.media_routes import storage_for_asset
+
+    row = work.row
+    platform = str(row["platform"])
+    try:
+        storage_state = json.loads(key.decrypt(str(row["storage_state_enc"]).encode("ascii")))
+        if not isinstance(storage_state, dict):
+            raise ValueError("storage state is not an object")
+    except Exception as exc:  # noqa: BLE001 - credential boundary
+        logger.warning("publish credential decode failed: %s", type(exc).__name__)
+        return (
+            PublishResult(
+                platform=platform,
+                status="failed",
+                message="登录态材料无法读取，请重新扫码连接账号",
+                account_invalid=True,
+            ),
+            None,
+        )
+    try:
+        with open_txn() as conn:
+            storage = storage_for_asset(conn, str(row["video_uri"]))
+    except Exception as exc:  # noqa: BLE001 - storage configuration boundary
+        logger.warning("publish storage resolution failed: %s", type(exc).__name__)
+        return (
+            PublishResult(
+                platform=platform, status="failed", message="存储服务暂不可用，稍后自动重试"
+            ),
+            None,
+        )
+    tags_value = row.get("tags")
+    tags = [str(tag) for tag in tags_value] if isinstance(tags_value, list) else []
+    options_value = row.get("options")
+    options = dict(options_value) if isinstance(options_value, dict) else {}
+    try:
+        with publish_delivery.materialized_media(
+            storage,
+            video_uri=str(row["video_uri"]),
+            video_content_type=row.get("video_content_type"),
+            cover_uri=row.get("cover_uri"),
+            cover_content_type=row.get("cover_content_type"),
+        ) as (video_path, cover_path):
+            outcome = publish_delivery.deliver(
+                platform,
+                storage_state,
+                video_path=video_path,
+                cover_path=cover_path,
+                title=str(row["title"] or ""),
+                description=str(row["description"] or ""),
+                tags=tags,
+                options=options,
+            )
+    except Exception as exc:  # noqa: BLE001 - delivery boundary
+        logger.warning("publish delivery preparation failed: %s", type(exc).__name__)
+        return (
+            PublishResult(platform=platform, status="failed", message="发布准备失败，稍后自动重试"),
+            None,
+        )
+    return outcome.result, outcome.mode
+
+
 def run_publish_round(
     open_txn: Callable[[], AbstractContextManager[BusinessConnection]],
     *,
     worker_id: str,
     fernet: object = None,
 ) -> int:
-    """Claim and process at most one account login-state probe.
+    """Claim and process at most one account probe and one publish record.
 
     Claim and finalize each get their own short transaction via ``open_txn``
-    (one ``pg_transaction`` block each) — the probe's outbound platform I/O
-    must never run inside an open transaction, or the claimed lease would not
-    commit and concurrent workers could take the same account instead of
-    serializing on ``FOR UPDATE SKIP LOCKED``.
+    (one ``pg_transaction`` block each) — outbound platform I/O must never
+    run inside an open transaction, or the claimed lease would not commit and
+    concurrent workers could take the same row instead of serializing on
+    ``FOR UPDATE SKIP LOCKED``.
     """
     from cryptography.fernet import Fernet
 
@@ -98,6 +171,18 @@ def run_publish_round(
                 finalize_account_verify(conn, lease=lease, ok=ok, message=message)
         except PublishLeaseLostError:
             logger.warning("account verify finalize lost lease: %s", lease.record_id)
+
+    with open_txn() as conn:
+        work = claim_publish_work(conn, worker_id=worker_id)
+    if work is not None:
+        processed += 1
+        result, mode = _perform_publish(open_txn, work=work, key=key)
+        try:
+            with open_txn() as conn:
+                outcome = finalize_publish_work(conn, work=work, result=result, delivery_mode=mode)
+            logger.info("publish record %s -> %s", work.record_id, outcome)
+        except PublishLeaseLostError:
+            logger.warning("publish finalize lost lease: %s", work.record_id)
     return processed
 
 

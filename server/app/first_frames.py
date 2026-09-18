@@ -28,6 +28,7 @@ from app.character_reference_matching import (
 )
 from app.characters import character_is_available, get_project_main_character, read_character
 from app.db_portable import BusinessConnection
+from app.net_safety import FAKE_IP_NETWORK
 from app.permissions import (
     require_asset_access,
     require_not_auditor,
@@ -49,7 +50,8 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
 )
-from app.viral_media import ViralMediaError, _pinned_connection
+from app.viral_media import ViralMediaError
+from app.viral_media import pinned_connection as _pinned_connection
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ FIRST_FRAME_SELECTION_KIND = "first_frame_selection"
 FIRST_FRAME_SCHEMA_VERSION = "b5.first-frame.v1"
 PROJECT_CHARACTER_APPEARANCE_KIND = "project_character_appearance"
 PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION = "wp1.project-character-appearance.v2"
+FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION = 3
 FIRST_FRAME_RECONSTRUCTION_MODE = "full_person_replace.v1"
 FIRST_FRAME_MODELS = ("gpt-image-2", "nano-banana-pro-2k")
 FIRST_FRAME_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
@@ -65,7 +68,6 @@ MAX_FIRST_FRAME_CANDIDATES = 3
 APILIO_DEFAULT_BASE_URL = "https://api.apilio.ai"
 APILIO_IMAGE_EDIT_PATH = "/v1/images/edits"
 APILIO_OUTPUT_HOSTS = frozenset({"files.closeai.fans"})
-APILIO_PROXY_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_QUALITY_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_QUALITY_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
@@ -73,6 +75,9 @@ SOURCE_FRAME_QUALITY_TIMEOUT_SECONDS = 8.0
 # 质检是标注不是闸门：先出图后质检，最多自动补做一轮；未通过的候选照样
 # 发布给用户，由人工确认环节决定是否使用。
 MAX_FIRST_FRAME_QUALITY_ATTEMPTS = 2
+# 单张产品流：每次付费任务交付 1 张，再次生成把新候选追加进最新候选版本；
+# 池子封顶防止无限重生成的 payload 无界增长（超出的旧图仍在历史版本里）。
+MAX_FIRST_FRAME_CANDIDATE_POOL = 6
 MAX_SCENE_CONTACT_SHEET_QUALITY_ATTEMPTS = 2
 MIN_FIRST_FRAME_IDENTITY_SCORE = 0.78
 MIN_FIRST_FRAME_RECONSTRUCTION_SCORE = 0.75
@@ -88,11 +93,10 @@ APILIO_OUTPUT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36"
 )
 FIRST_FRAME_NO_TEXT_CONSTRAINT = (
-    "硬性输出约束（优先级最高）：最终首帧不得出现任何文字。"
-    "必须移除源图中的标题、字幕、话题词、标签、招牌、门联、水印与 Logo，"
-    "不得复制、重绘、替换或新增任何可读字符、字母、数字与符号；"
-    "原文字区域应使用符合周围场景的自然纹理补全，不得保留文字轮廓。"
-    "封面文字由后期添加；若其他指令与本约束冲突，一律以本约束为准。"
+    "硬性输出约束（优先级最高）：去除原图中的叠加字幕、叠加标题和后期文字标签，"
+    "不得新增这些覆盖文字。只清除后期叠加层，并用周围场景的自然纹理补全；"
+    "最终采用的人物衣物、随身物品和最终场景本身的文字与 Logo 保持原样，"
+    "不得抹除或改写。"
 )
 
 FirstFrameModel = Literal["gpt-image-2", "nano-banana-pro-2k"]
@@ -261,6 +265,7 @@ class FirstFrameGenerationWork:
     project_appearance: ProjectAppearanceSpec
     effective_prompt: str
     aspect_ratio: str | None = None
+    replace_scene: bool = False
 
 
 @dataclass(frozen=True)
@@ -279,6 +284,7 @@ class FirstFrameGenerationPlan:
     project_appearance: ProjectAppearanceSpec
     effective_prompt: str
     aspect_ratio: str | None = None
+    replace_scene: bool = False
 
 
 @dataclass(frozen=True)
@@ -1244,7 +1250,7 @@ def require_safe_provider_download_url(value: str) -> tuple[str, tuple[str, ...]
     trusted_output_host = hostname.lower() in APILIO_OUTPUT_HOSTS
     for address in addresses:
         ip = ipaddress.ip_address(address[4][0])
-        proxy_fake_ip = trusted_output_host and ip in APILIO_PROXY_FAKE_IP_NETWORK
+        proxy_fake_ip = trusted_output_host and ip in FAKE_IP_NETWORK
         if not ip.is_global and not proxy_fake_ip:
             raise ImageProviderFailed("Apilio output URL must resolve to a public address")
     return hostname, tuple(dict.fromkeys(str(address[4][0]) for address in addresses))
@@ -1383,6 +1389,7 @@ def derive_project_appearance_spec(
     selection_reason = "；".join(reason_parts) + "；由后台自动匹配项目人物造型。"
     fingerprint_source = {
         "schema_version": PROJECT_CHARACTER_APPEARANCE_SCHEMA_VERSION,
+        "replacement_contract_version": FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION,
         "source_analysis_version_id": source_analysis_version_id,
         "source_timestamp_seconds": source_timestamp_seconds,
         "category": category,
@@ -1448,7 +1455,7 @@ def _apply_scene_look_snapshot(
         "subject": appearance.subject,
         "appearance_source": "SCENE_LOOK",
         "review_mode": "HUMAN_CONFIRMATION",
-        "replacement_contract_version": 2,
+        "replacement_contract_version": FIRST_FRAME_REPLACEMENT_CONTRACT_VERSION,
         "scene_look_name": name,
         "scene_look_description": scene_description,
         "scene_look_version_id": character_version_id,
@@ -1518,17 +1525,12 @@ def _appearance_number(value: object) -> float | None:
     return float(value)
 
 
-def require_single_person_video_analysis(
+def require_readable_video_analysis(
     conn: BusinessConnection,
     *,
     project_id: str,
 ) -> None:
-    """Require a current single-person analysis before any paid image call.
-
-    Legacy analysis rows without a trustworthy per-segment count must be
-    re-analysed under the current strict provider contract. A later source-frame
-    inspection remains defense in depth; it must not be the first paid-work gate.
-    """
+    """Refuse damaged analysis while keeping readable legacy rows usable."""
 
     analysis_version = latest_version(conn, project_id, "analysis")
     if analysis_version is None:
@@ -1547,27 +1549,14 @@ def require_single_person_video_analysis(
         raise first_frame_error(
             409,
             "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
-            "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
+            "当前拆解结果结构不完整，请先重新拆解视频。",
         )
     for shot in shots:
         if not isinstance(shot, dict):
             raise first_frame_error(
                 409,
                 "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
-                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
-            )
-        person_count = shot.get("person_count")
-        if not isinstance(person_count, int) or isinstance(person_count, bool):
-            raise first_frame_error(
-                409,
-                "VIDEO_ANALYSIS_UPGRADE_REQUIRED",
-                "当前拆解结果缺少单人校验数据，请先重新拆解视频。",
-            )
-        if person_count > 1:
-            raise first_frame_error(
-                422,
-                "MULTI_PERSON_VIDEO_UNSUPPORTED",
-                "当前版本仅支持单人视频；拆解结果检测到多人同框，请更换单人参考视频。",
+                "当前拆解结果结构不完整，请先重新拆解视频。",
             )
 
 
@@ -1716,6 +1705,7 @@ def prepare_first_frame_generation(
     character_version_id: str | None = None,
     character_reference_selection_id: str | None = None,
     aspect_ratio: str | None = None,
+    replace_scene: bool = False,
 ) -> FirstFrameGenerationPlan:
     require_not_auditor(
         conn,
@@ -1724,7 +1714,7 @@ def prepare_first_frame_generation(
         entity_type="project",
         entity_id=project_id,
     )
-    require_single_person_video_analysis(conn, project_id=project_id)
+    require_readable_video_analysis(conn, project_id=project_id)
     require_project_access(conn, actor=actor, project_id=project_id, action="first_frame.generate")
     if model not in FIRST_FRAME_MODELS:
         raise first_frame_error(
@@ -1788,6 +1778,7 @@ def prepare_first_frame_generation(
         character_name=character_inputs.character_name,
         reference_roles=character_inputs.reference_asset_roles,
         project_appearance=project_appearance,
+        replace_scene=replace_scene,
     )
 
     return FirstFrameGenerationPlan(
@@ -1803,6 +1794,7 @@ def prepare_first_frame_generation(
         project_appearance=project_appearance,
         effective_prompt=effective_prompt,
         aspect_ratio=aspect_ratio,
+        replace_scene=replace_scene,
     )
 
 
@@ -1833,6 +1825,7 @@ def load_first_frame_generation_work(
         project_appearance=plan.project_appearance,
         effective_prompt=effective_prompt,
         aspect_ratio=plan.aspect_ratio,
+        replace_scene=plan.replace_scene,
     )
 
 
@@ -1852,154 +1845,59 @@ def perform_first_frame_generation(
     provider_submission: dict[str, object] | None = None,
     save_provider_submission: Callable[[dict[str, object]], None] | None = None,
 ) -> list[GeneratedImage]:
-    """Generate candidates outside the DB fence and label them with quality verdicts.
+    """Deliver one paid batch directly for human review, without AI inspection.
 
-    Every generated candidate is returned — including ones that failed
-    inspection — so paid provider output always reaches archiving and
-    publication. Quality verdicts travel with each candidate as annotations;
-    the human confirmation step owns the final gate.
+    Durable candidates/receipts are reused after interruption. A new provider
+    request is only made for a new task; quality never triggers regeneration.
     """
-
-    manual_review = work.project_appearance.appearance_source == "SCENE_LOOK"
-    inspector = (
-        None
-        if manual_review
-        else bounded_first_frame_quality_inspector(
-            quality_inspector or FakeFirstFrameQualityInspector()
-        )
-    )
-    # Durable candidates prove the unchanged source already passed inspection.
-    if not manual_review and not resumed_candidates:
-        assert inspector is not None
-        try:
-            if heartbeat is not None:
-                heartbeat()
-            source_inspection = inspector.inspect_source(work.source_image)
-        except FirstFrameQualityInspectorFailed as exc:
-            raise first_frame_error(
-                503,
-                "FIRST_FRAME_QUALITY_INSPECTOR_UNAVAILABLE",
-                "首帧自动质检暂时不可用，请稍后重试。",
-            ) from exc
-        if source_inspection.person_count != 1:
-            raise first_frame_error(
-                422,
-                "SINGLE_PERSON_SOURCE_REQUIRED",
-                "当前版本仅支持单人视频；所选源画面必须且只能包含一名真实人物。",
-            )
-
     candidates = list(resumed_candidates or [])
-    retry_issue_codes: list[str] = []
-    for quality_attempt in range(1, MAX_FIRST_FRAME_QUALITY_ATTEMPTS + 1):
-        attempt_candidates = [
-            candidate for candidate in candidates if candidate.quality_attempt == quality_attempt
-        ]
-        passed_count = sum(
-            1
-            for candidate in candidates
-            if candidate.quality is not None and candidate.quality.passed
+    if candidates:
+        return candidates
+
+    def before_paid_call() -> None:
+        if heartbeat is not None:
+            heartbeat()
+        if before_provider_call is not None:
+            before_provider_call()
+
+    if isinstance(provider, ApilioImageProvider) and save_provider_submission:
+        generated = generate_scene_async(
+            work,
+            provider=provider,
+            submission=provider_submission,
+            save_submission=save_provider_submission,
+            before_paid_call=before_paid_call,
+            heartbeat=heartbeat,
         )
-        remaining = work.quantity - (len(candidates) if manual_review else passed_count)
-        if remaining <= 0:
-            return candidates
-        if not attempt_candidates:
-            prompt = quality_retry_prompt(
-                work.effective_prompt,
-                retry_issue_codes,
-                quality_attempt,
-            )
-
-            def before_paid_call() -> None:
-                if heartbeat is not None:
-                    heartbeat()
-                if before_provider_call is not None:
-                    before_provider_call()
-
-            if (
-                manual_review
-                and isinstance(provider, ApilioImageProvider)
-                and save_provider_submission
-            ):
-                generated = generate_scene_async(
-                    work,
-                    provider=provider,
-                    submission=provider_submission,
-                    save_submission=save_provider_submission,
-                    before_paid_call=before_paid_call,
-                    heartbeat=heartbeat,
-                )
-            else:
-                generated = edit_once_with_retry(
-                    provider,
-                    model=work.model,
-                    prompt=prompt,
-                    source_image=work.source_image,
-                    character_reference_images=work.reference_images,
-                    quantity=remaining,
-                    max_attempts=1 if manual_review else 2,
-                    aspect_ratio=getattr(work, "aspect_ratio", None),
-                    before_provider_call=before_paid_call,
-                    after_provider_call=after_provider_call,
-                )
-            if on_generated_images is not None:
-                on_generated_images(len(generated))
-            if len(generated) != remaining or any(
-                not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
-                for item in generated
-            ):
-                raise first_frame_error(
-                    502,
-                    "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
-                    "The image provider did not return the requested candidates.",
-                )
-            attempt_candidates = [
-                replace(candidate, quality_attempt=quality_attempt) for candidate in generated
-            ]
-            if archive_generated is not None:
-                attempt_candidates = archive_generated(attempt_candidates, quality_attempt)
-            candidates.extend(attempt_candidates)
-            if checkpoint_candidates is not None:
-                checkpoint_candidates(candidates)
-
-        if manual_review:
-            return candidates
-        assert inspector is not None
-        retry_issue_codes = []
-        for candidate in attempt_candidates:
-            if candidate.quality is not None:
-                if not candidate.quality.passed:
-                    retry_issue_codes.extend(candidate.quality.issue_codes)
-                continue
-            try:
-                renew_quality = quality_heartbeat or heartbeat
-                if renew_quality is not None:
-                    renew_quality()
-                inspection = inspector.inspect_candidate(
-                    source_image=work.source_image,
-                    character_reference_images=work.reference_images,
-                    candidate=candidate,
-                    expected_outfit=work.project_appearance.outfit_description,
-                )
-            except FirstFrameQualityInspectorFailed:
-                # Paid output is already checkpointed. Deliver it as unverified;
-                # never retry generation merely because the inspector is down.
-                return candidates
-            quality = evaluate_first_frame_candidate_quality(
-                inspection,
-                attempt=quality_attempt,
-            )
-            inspected = replace(candidate, quality=quality)
-            candidate_position = next(
-                index for index, value in enumerate(candidates) if value is candidate
-            )
-            candidates[candidate_position] = inspected
-            if checkpoint_candidates is not None:
-                checkpoint_candidates(candidates)
-            if not quality.passed:
-                retry_issue_codes.extend(quality.issue_codes)
-
-    # 轮次用完仍未凑满通过数量：返回全部候选而不是丢弃。图已付费，质检
-    # 结论作为标注随候选发布，是否采用由人工确认决定。
+    else:
+        generated = edit_once_with_retry(
+            provider,
+            model=work.model,
+            prompt=work.effective_prompt,
+            source_image=work.source_image,
+            character_reference_images=work.reference_images,
+            quantity=work.quantity,
+            max_attempts=1,
+            aspect_ratio=getattr(work, "aspect_ratio", None),
+            before_provider_call=before_paid_call,
+            after_provider_call=after_provider_call,
+        )
+    if on_generated_images is not None:
+        on_generated_images(len(generated))
+    if len(generated) != work.quantity or any(
+        not item.content or item.content_type not in FIRST_FRAME_IMAGE_CONTENT_TYPES
+        for item in generated
+    ):
+        raise first_frame_error(
+            502,
+            "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
+            "The image provider did not return the requested candidates.",
+        )
+    candidates = [replace(candidate, quality_attempt=1, quality=None) for candidate in generated]
+    if archive_generated is not None:
+        candidates = archive_generated(candidates, 1)
+    if checkpoint_candidates is not None:
+        checkpoint_candidates(candidates)
     return candidates
 
 
@@ -2123,6 +2021,38 @@ def persist_project_character_appearance(
     )
 
 
+def _first_frame_pool_binding(payload: object) -> tuple[object, ...] | None:
+    """Input identity of a candidates payload; ``None`` for legacy shapes.
+
+    Candidates may only be carried forward across generations made from the
+    same bound inputs: confirm and the H3 fence read only the latest
+    candidates version, so a merged pool must never mix different input
+    bindings.
+    """
+    if not isinstance(payload, dict):
+        return None
+    parts: list[object] = []
+    for key in (
+        "source_frame_selection_version_id",
+        "main_character_version_id",
+        "character_reference_asset_ids",
+        "character_reference_asset_roles",
+        "model",
+        "aspect_ratio",
+        "replace_scene",
+        "prompt",
+    ):
+        value: object = payload.get(key)
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        parts.append(value)
+    appearance = payload.get("project_appearance")
+    parts.append(appearance.get("fingerprint") if isinstance(appearance, dict) else None)
+    if parts[0] is None or parts[1] is None:
+        return None
+    return tuple(parts)
+
+
 def complete_first_frame_generation(
     conn: BusinessConnection,
     *,
@@ -2190,14 +2120,14 @@ def complete_first_frame_generation(
             "provider": provider.provider_name,
             "model": work.model,
             "aspect_ratio": work.aspect_ratio,
+            "replace_scene": work.replace_scene,
             "prompt": work.effective_prompt,
-            "review_mode": (
-                "HUMAN_CONFIRMATION"
-                if work.project_appearance.appearance_source == "SCENE_LOOK"
-                else "AUTOMATIC_QUALITY"
-            ),
+            "review_mode": "HUMAN_CONFIRMATION",
             "reconstruction_mode": FIRST_FRAME_RECONSTRUCTION_MODE,
-            "character_contract": first_frame_character_contract(work.character_inputs),
+            "character_contract": {
+                **first_frame_character_contract(work.character_inputs),
+                "preserve_scene": not work.replace_scene,
+            },
             "project_appearance": work.project_appearance.as_payload(),
             "project_character_appearance_version_id": str(appearance_version["id"]),
             "candidates": stored.candidates,
@@ -2207,6 +2137,31 @@ def complete_first_frame_generation(
                 work.character_inputs.character_reference_selection_id
             )
             version_payload["character_version_id"] = work.character_inputs.character_version_id
+        # 单张重生成：同输入绑定的上一池候选仍必须可确认（确认与 H3 围栏
+        # 只读最新候选版本），随新版本一并携带；绑定变化则从空池开始。
+        previous_candidates_version = latest_version(
+            conn, work.project_id, FIRST_FRAME_CANDIDATES_KIND
+        )
+        if previous_candidates_version is not None:
+            try:
+                previous_payload = json.loads(str(previous_candidates_version["payload_json"]))
+            except json.JSONDecodeError:
+                previous_payload = None
+            if (
+                isinstance(previous_payload, dict)
+                and _first_frame_pool_binding(previous_payload)
+                == _first_frame_pool_binding(version_payload)
+                and isinstance(previous_payload.get("candidates"), list)
+            ):
+                carried = [
+                    candidate
+                    for candidate in previous_payload["candidates"]
+                    if isinstance(candidate, dict)
+                ]
+                version_payload["candidates"] = [
+                    *carried,
+                    *stored.candidates,
+                ][-MAX_FIRST_FRAME_CANDIDATE_POOL:]
         row = insert_version(
             conn,
             project_id=work.project_id,
@@ -2238,53 +2193,6 @@ def complete_first_frame_generation(
             conn.rollback()
         raise
     return row
-
-
-def generate_first_frame_candidates(
-    conn: BusinessConnection,
-    *,
-    project_id: str,
-    actor: CurrentUser,
-    storage: StorageAdapter,
-    provider: ImageProvider,
-    model: FirstFrameModel,
-    prompt: str | None,
-    quantity: int,
-    character_version_id: str | None = None,
-    character_reference_selection_id: str | None = None,
-) -> sqlite3.Row:
-    """Compatibility wrapper for the internal SQLite lane and unit tests."""
-
-    plan = prepare_first_frame_generation(
-        conn,
-        project_id=project_id,
-        actor=actor,
-        model=model,
-        prompt=prompt,
-        quantity=quantity,
-        character_version_id=character_version_id,
-        character_reference_selection_id=character_reference_selection_id,
-    )
-    work = load_first_frame_generation_work(plan, storage=storage)
-    generated = perform_first_frame_generation(work, provider=provider)
-    stored = store_first_frame_generation(work, storage=storage, generated=generated)
-    try:
-        return complete_first_frame_generation(
-            conn,
-            work=work,
-            provider=provider,
-            stored=stored,
-        )
-    except HTTPException:
-        delete_created_first_frames(storage, stored.created_assets, actor_id=actor.id)
-        raise
-    except sqlite3.Error as exc:
-        delete_created_first_frames(storage, stored.created_assets, actor_id=actor.id)
-        raise first_frame_error(
-            500,
-            "FIRST_FRAME_PERSIST_FAILED",
-            "First-frame candidates could not be saved. Generate them again.",
-        ) from exc
 
 
 def confirm_first_frame(
@@ -2322,17 +2230,6 @@ def confirm_first_frame(
         raise first_frame_error(
             422, "FIRST_FRAME_CANDIDATE_NOT_FOUND", "Select a candidate from the latest set."
         )
-    quality = candidate.get("quality")
-    quality_passed = isinstance(quality, dict) and quality.get("passed") is True
-    manual_review = payload.get("review_mode") == "HUMAN_CONFIRMATION"
-    if not quality_passed and not allow_unverified and not manual_review:
-        # 质检未通过或未质检的候选仍可确认，但必须显式携带覆盖标记——
-        # 人工决策要留下与自动质检同级的证据。
-        raise first_frame_error(
-            409,
-            "FIRST_FRAME_QUALITY_NOT_VERIFIED",
-            "该首帧没有通过当前版本自动质检；如需采用，请在确认时显式覆盖。",
-        )
     asset = require_asset_access(
         conn,
         actor=actor,
@@ -2349,11 +2246,8 @@ def confirm_first_frame(
         "first_frame_candidates_version_id": str(candidate_version["id"]),
         "first_frame_asset_id": first_frame_asset_id,
     }
-    if manual_review:
-        selection_payload["review_mode"] = "HUMAN_CONFIRMATION"
-        selection_payload["reviewed_by_user_id"] = actor.id
-    elif not quality_passed:
-        selection_payload["quality_override"] = True
+    selection_payload["review_mode"] = "HUMAN_CONFIRMATION"
+    selection_payload["reviewed_by_user_id"] = actor.id
     row = insert_version(
         conn,
         project_id=project_id,
@@ -2405,6 +2299,9 @@ def effective_reference_asset_ids(
     input: the contact sheet supplies multi-angle identity while the
     identity's original uploaded photo is the authoritative face. Legacy
     characters without a contact sheet keep their selected per-view images.
+    Scene looks instead use the published FRONT_FULL crop shown in the UI;
+    sending the contact sheet would give the provider a different multi-panel
+    image than the user selected.
     Returns ``(asset_ids, roles)`` with roles mirroring asset_ids.
     """
     row = conn.execute(
@@ -2434,10 +2331,19 @@ def effective_reference_asset_ids(
         persona = None
     constraints = persona.get("appearance_constraints_json") if isinstance(persona, dict) else None
     if isinstance(constraints, dict) and constraints.get("appearance_type") == "scene":
-        if isinstance(contact_sheet_asset_id, str) and contact_sheet_asset_id:
-            return [contact_sheet_asset_id], ["scene_image"]
-        # Legacy published scene versions may contain separate approved views.
-        return legacy_selected, ["scene_image"] * len(legacy_selected)
+        snapshot_assets = snapshot.get("assets_by_view") if isinstance(snapshot, dict) else None
+        front_full = (
+            snapshot_assets.get("FRONT_FULL") if isinstance(snapshot_assets, dict) else None
+        )
+        front_full_asset_id = (
+            front_full.get("approved_asset_id") if isinstance(front_full, dict) else None
+        )
+        if isinstance(front_full_asset_id, str) and front_full_asset_id:
+            return [front_full_asset_id], ["scene_image"]
+        # A scene look is already a complete authored appearance. One selected
+        # scene image is sufficient; additional views only add conflicting cues.
+        selected_scene = legacy_selected[:1]
+        return selected_scene, ["scene_image"] * len(selected_scene)
     source_asset_id = row["source_asset_id"]
     if (
         isinstance(contact_sheet_asset_id, str)
@@ -2901,6 +2807,7 @@ def normalize_prompt(
     character_name: str,
     reference_roles: list[str] | None = None,
     project_appearance: ProjectAppearanceSpec | None = None,
+    replace_scene: bool = False,
 ) -> str:
     clean = (prompt or "").strip()
     clean = clean.replace(FIRST_FRAME_NO_TEXT_CONSTRAINT, "").strip()
@@ -2909,20 +2816,47 @@ def normalize_prompt(
         source_analysis_version_id=None,
         source_timestamp_seconds=None,
     )
+    primary_subject_contract = (
+        f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
+        "如果画面中有多人，只重构这一名主要人物；"
+        "其他人物的身份、服装、数量、位置、动作和遮挡关系均保持不变，"
+        "不得把目标人物外观扩散到旁人。"
+    )
+    if replace_scene:
+        if appearance.appearance_source != "SCENE_LOOK":
+            raise first_frame_error(
+                422, "FIRST_FRAME_SCENE_LOOK_REQUIRED", "请先选择含目标背景的场景形象，再替换场景。"
+            )
+        return (
+            f"将源画面的主要人物完整替换为所选场景形象“{character_name}”。\n"
+            "第 1 张源画面提供人物姿态、动作、机位、画幅和主体占比；保留这些空间关系。\n"
+            "第 2 张场景参考图是人物身份、服装造型与目标环境的唯一外观依据。"
+            f"{primary_subject_contract}\n"
+            "使用场景参考图的背景替换原背景，结合源画面的透视重建自然完整场景；"
+            "光照、人物阴影与目标环境一致，不保留与目标场景冲突的原建筑或道具。\n"
+            "目标场景参考图中实际存在的招牌文字与 Logo 保持原样；"
+            "不得恢复第 1 张源背景中的招牌、门联或其他场景文字。\n"
+            "完整重构人物的头脸、头发、身体、服装与肢体连接，不能只换脸。"
+            "不得增加其他人物，不复制参考板分格线、边框或多面板布局；"
+            "禁止模糊补边、缩图留白和拼贴。输出一张完整画面。\n"
+            f"{FIRST_FRAME_NO_TEXT_CONSTRAINT}"
+        )
     if appearance.appearance_source == "SCENE_LOOK":
         server_template = (
-            f"将第 1 张原视频源画面中的唯一人物，替换为用户选中的场景形象“{character_name}”。\n"
+            f"将第 1 张原视频源画面中的主要人物，替换为用户选中的场景形象“{character_name}”。\n"
             "第 2 张及后续输入图是同一个已完成造型的场景人物，是唯一外观依据："
             "完整沿用其面容、发型、肤色、体型、服装、鞋履和配饰。"
             "不要重新设计服饰，不要保留原视频人物的外貌或衣服。\n"
+            f"{primary_subject_contract}\n"
             "原视频源画面只提供人物姿态、动作、位置、朝向、遮挡关系、构图、机位、背景、道具和光照；"
             "这些内容保持不变。将目标形象自然适配原姿态和透视。\n"
             "以第 1 张源画面作为完整编辑画布，输出必须保持其画幅比例、取景范围和人物占画面比例。"
-            "只修改人物本身；人物以外的建筑、地面、植物、道具及原有字幕、文字和标识保持原样。"
+            "只修改人物本身；人物以外的建筑、地面、植物、道具及场景内原生文字和标识保持原样。"
             "禁止模糊补边，禁止增加上下或左右留白，禁止把原画面缩进新背景，禁止裁切或扩图。"
-            "如果原图有黑边、字幕覆盖在人物身上，也按原位置原样保留。\n"
+            "如果字幕覆盖在人物身上，清除字幕后自然补全人物与背景。\n"
             "场景参考图的背景、姿势、分格线、边框和多面板布局不属于替换内容，不能复制到结果。"
-            "只输出一张自然完整画面，不增加或删除其他主体。"
+            "只输出一张自然完整画面，不增加或删除其他主体。\n"
+            f"{FIRST_FRAME_NO_TEXT_CONSTRAINT}"
         )
         # Scene appearance is already authored; free text must not redesign it.
         return server_template
@@ -2931,9 +2865,7 @@ def normalize_prompt(
             f"项目人物造型（后台自动匹配）：场景为“{appearance.scene}”，"
             f"人物身份为“{appearance.subject}”；服装要求：{appearance.outfit_description}\n"
             "项目人物造型优先于参考图服装；人物身份特征必须稳定，但不得机械复制参考图的服装。\n"
-            f"目标替换对象仅为源画面中承担“{appearance.subject}”角色的主要人物。"
-            "如果画面中有多人，只重构这一名主要人物；其他人物的身份、服装、数量、位置与动作均保持不变，"
-            "不得把目标人物外观扩散到旁人。"
+            f"{primary_subject_contract}"
         )
         contact_sheet_role = (
             "第 2 张输入图是该角色的五视图参考板，仅用于确定人物身份、长相、发型与身材比例；"
@@ -2952,7 +2884,7 @@ def normalize_prompt(
             f"{clothing_rule}遮挡边缘、镜面或反射中的人物也要保持一致。\n"
             "严禁只替换脸部、只覆盖头部或保留原视频人物的身体与服装；"
             "保持自然皮肤质感、正确肢体结构与真实透视；不得增加或删除画面主体；"
-            "不得出现文字、水印或边框。"
+            "不得新增字幕、水印或参考板边框。"
         )
         # Full mode may add user instructions, but it must not replace the
         # stable reference-role contract owned by the server.

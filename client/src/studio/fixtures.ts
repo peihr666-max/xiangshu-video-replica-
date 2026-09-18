@@ -138,6 +138,17 @@ export const sampleScript =
 
 export function createReviewData(): StudioData {
   const assets: StudioAsset[] = [
+    ...["studio", "courtyard"].map(
+      (scene): StudioAsset => ({
+        id: `oral-${scene}-demo`,
+        name: "口播分身示例封面",
+        kind: "image",
+        url: `/studio/oral-${scene}-demo.png`,
+        group: "口播分身",
+        source: "审核示例",
+        saved: true,
+      }),
+    ),
     {
       id: "zhang-studio",
       name: "设计室讲解",
@@ -267,7 +278,7 @@ export function createReviewData(): StudioData {
         {
           id: "avatar-studio",
           name: "张工 · 设计室讲解",
-          imageId: "zhang-studio",
+          imageId: "oral-studio-demo",
           ready: true,
           origin: "视频制作",
           duration: "00:31",
@@ -275,9 +286,9 @@ export function createReviewData(): StudioData {
         {
           id: "avatar-courtyard",
           name: "张工 · 庭院讲解",
-          imageId: "zhang-courtyard",
+          imageId: "oral-courtyard-demo",
           ready: true,
-          origin: "照片制作",
+          origin: "视频制作",
           duration: "00:30",
         },
       ],

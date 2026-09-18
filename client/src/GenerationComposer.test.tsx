@@ -66,6 +66,7 @@ const props = {
 // （标签页③）共享同一 useGenerationDrafts 实例；busy 上报迁至宿主，
 // 与 AnalysisWorkspace 的提升后行为保持一致。
 function WorkspaceHost({
+  analysisPrompt,
   currentUserId = props.currentUserId,
   durationSeconds = props.durationSeconds,
   firstFrameAssetId = props.firstFrameAssetId,
@@ -74,6 +75,7 @@ function WorkspaceHost({
   onRecharge,
   walletProvider,
 }: {
+  analysisPrompt?: string;
   currentUserId?: string;
   durationSeconds?: number;
   firstFrameAssetId?: string;
@@ -83,6 +85,7 @@ function WorkspaceHost({
   walletProvider?: () => Promise<number | null>;
 }) {
   const drafts = useGenerationDrafts({
+    analysisPrompt,
     characterVersionId: props.characterVersionId,
     currentUserId,
     durationSeconds,
@@ -156,6 +159,8 @@ function promptVersion(status: "SAVED" | "LOCKED" | "USED" = "SAVED") {
     kind: "h3_prompt",
     payload: {
       status,
+      final_composition: true,
+      confirmed_script_text: props.originalScript,
       prompt_text: "编译后的 Prompt",
       script_version_id: "script-1",
       shot_card_version_id: "shot-card-1",
@@ -183,6 +188,11 @@ describe("GenerationComposer", () => {
       stale: false,
       stale_reasons: [],
     });
+    vi.mocked(api.createScriptVersion).mockResolvedValue({
+      ...baseVersion,
+      id: "script-1",
+      payload: { full_text: props.originalScript },
+    });
     vi.mocked(api.getLatestScriptRewriteTask).mockResolvedValue(null);
     vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
       version: null,
@@ -206,6 +216,47 @@ describe("GenerationComposer", () => {
     vi.mocked(api.saveGenerationPrompt).mockRejectedValue(
       new Error("library unavailable"),
     );
+  });
+
+  it.each(["刚刚修改的当前稿", ""])(
+    "preserves the immediate edit %j when a frame changes",
+    async (text) => {
+      const view = render(<WorkspaceHost analysisPrompt="已验收的拆解稿" />);
+      const editor = await screen.findByLabelText("视频生成提示词内容");
+      fireEvent.change(editor, { target: { value: text } });
+      view.rerender(
+        <WorkspaceHost
+          analysisPrompt="已验收的拆解稿"
+          firstFrameAssetId="new-frame"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(text),
+      );
+      view.rerender(
+        <WorkspaceHost analysisPrompt="" firstFrameAssetId="new-frame" />,
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(text),
+      );
+      view.rerender(
+        <WorkspaceHost
+          analysisPrompt="稍后加载的 H3 拆解稿"
+          firstFrameAssetId="new-frame"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(text),
+      );
+    },
+  );
+
+  it("does not treat old analysis output as the final prompt", async () => {
+    render(<WorkspaceHost analysisPrompt="拆解直接返回的 H3 正文" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(""),
+    );
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
   });
 
   it("shows a saved prompt library load failure instead of an empty library", async () => {
@@ -423,50 +474,44 @@ describe("GenerationComposer", () => {
     );
   });
 
-  it("一键流水线：Prompt 存在未保存修订时提示先保存且不发起任何请求（P0-04-01）", async () => {
-    window.localStorage.clear();
-    vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
-      version: {
-        ...baseVersion,
-        payload: {
-          source: "original",
-          full_text: "原稿第一句。原稿第二句。",
-          shot_card_version_id: "shot-card-1",
-          shot_mappings: [],
-        },
-      },
-      stale: false,
-      stale_reasons: [],
-    });
+  it("直接提交当前未保存提示词，不调用编译或锁定", async () => {
     vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
       version: promptVersion("SAVED"),
       stale: false,
       stale_reasons: [],
     });
-
+    vi.mocked(api.createGenerationBatch).mockResolvedValue({
+      id: "batch-direct",
+      project_id: "project-1",
+      prompt_version_id: "server-snapshot",
+      status: "QUEUED",
+      quantity: 1,
+      stale: false,
+      creation_kind: "replica",
+      progress: {
+        total_count: 1,
+        terminal_count: 0,
+        progress_percent: 0,
+        counts: {},
+      },
+      tasks: [],
+    });
     render(<WorkspaceHost />);
-
-    // 等 drafts 重载完成后锚定已保存文本，再制造人工修订中的脏 Prompt。
-    const promptField = await waitFor(() => {
-      const field = screen.getByLabelText("视频生成提示词内容");
-      expect(field).toHaveValue("编译后的 Prompt");
-      return field;
-    });
-    fireEvent.change(promptField, {
-      target: { value: "人工修订中的草稿" },
-    });
+    const input = await screen.findByLabelText("视频生成提示词内容");
+    fireEvent.change(input, { target: { value: "人工修订中的草稿" } });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "触发一键流水线" }));
-
-    // 红线：不自动接受未保存草稿，也不编译/锁定/建批。
-    expect(
-      await screen.findByText(
-        "Prompt 存在未保存修订，请先在「生成设置」中保存后再开始生成。",
-      ),
-    ).toBeInTheDocument();
+    await waitFor(() => expect(props.onBatchCreated).toHaveBeenCalled());
+    expect(api.createGenerationBatch).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ prompt_text: "人工修订中的草稿" }),
+    );
     expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
     expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.createGenerationBatch).not.toHaveBeenCalled();
-    expect(props.onBatchCreated).not.toHaveBeenCalled();
   });
 
   it("runs custom script, prompt revision, lock and max-quantity batch creation", async () => {
@@ -548,7 +593,9 @@ describe("GenerationComposer", () => {
     expect(await screen.findByText("S01：自定义口播稿")).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("16:9"));
-    fireEvent.click(screen.getByRole("button", { name: "编译视频生成提示词" }));
+    if (!(screen.getByLabelText("采用这份文案") as HTMLInputElement).checked)
+      fireEvent.click(screen.getByLabelText("采用这份文案"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
     await waitFor(() =>
       expect(api.compileGenerationPrompt).toHaveBeenCalledWith("project-1", {
         script_version_id: "script-1",
@@ -557,6 +604,8 @@ describe("GenerationComposer", () => {
         output_duration_seconds: 15,
         resolution: "768P",
         ratio: "16:9",
+        timeline_policy: "preserve",
+        opening_action: "",
       }),
     );
     expect(
@@ -605,7 +654,7 @@ describe("GenerationComposer", () => {
       "project-1",
       expect.objectContaining({
         quantity: 4,
-        prompt_version_id: "prompt-2",
+        prompt_text: "人工修订 Prompt",
         first_frame_asset_id: "first-frame-1",
         provider: "metaso",
       }),
@@ -638,7 +687,7 @@ describe("GenerationComposer", () => {
     const button = await screen.findByRole("button", {
       name: "创建 1 个生成任务",
     });
-    expect(button).toBeEnabled();
+    await waitFor(() => expect(button).toBeEnabled());
 
     const quantity = screen.getByLabelText("生成数量");
     expect(
@@ -680,7 +729,7 @@ describe("GenerationComposer", () => {
     const createButton = await screen.findByRole("button", {
       name: "创建 1 个生成任务",
     });
-    expect(createButton).toBeEnabled();
+    await waitFor(() => expect(createButton).toBeEnabled());
 
     fireEvent.change(screen.getByLabelText("成片时长"), {
       target: { value: "4" },
@@ -688,7 +737,7 @@ describe("GenerationComposer", () => {
 
     expect(createButton).toBeDisabled();
     expect(
-      screen.getByText("生成参数已变化，请重新编译 Prompt"),
+      screen.getByText("生成参数已变化，请核对当前提示词"),
     ).toBeInTheDocument();
   });
 
@@ -724,7 +773,7 @@ describe("GenerationComposer", () => {
 
     expect(await screen.findByLabelText("成片时长")).toHaveValue("4");
     expect(
-      screen.getByText("生成参数已变化，请重新编译 Prompt"),
+      screen.getByText("生成参数已变化，请核对当前提示词"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/4–15 秒的整数/)).toBeNull();
   });
@@ -815,7 +864,7 @@ describe("GenerationComposer", () => {
     ).toBeEnabled();
   });
 
-  it("keeps a legacy locked prompt without frozen parameters usable", async () => {
+  it("requires final composition for a legacy prompt without frozen parameters", async () => {
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,
@@ -845,13 +894,13 @@ describe("GenerationComposer", () => {
 
     expect(
       await screen.findByRole("button", { name: "创建 1 个生成任务" }),
-    ).toBeEnabled();
+    ).toBeDisabled();
     expect(
-      screen.queryByText("生成参数已变化，请重新编译 Prompt"),
+      screen.queryByText("生成参数已变化，请核对当前提示词"),
     ).not.toBeInTheDocument();
   });
 
-  it("requires saving visible script edits before prompt compilation", async () => {
+  it("requires confirmation again when the visible script changes", async () => {
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,
@@ -874,13 +923,16 @@ describe("GenerationComposer", () => {
 
     render(<WorkspaceHost />);
     const compileButton = await screen.findByRole("button", {
-      name: "编译视频生成提示词",
+      name: "合成最终提示词",
     });
+    expect(compileButton).toBeDisabled();
+    if (!(screen.getByLabelText("采用这份文案") as HTMLInputElement).checked)
+      fireEvent.click(screen.getByLabelText("采用这份文案"));
     expect(compileButton).toBeEnabled();
     const createButton = screen.getByRole("button", {
       name: "创建 1 个生成任务",
     });
-    expect(createButton).toBeEnabled();
+    expect(createButton).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText("口播稿内容"), {
       target: { value: "尚未保存的新稿" },
@@ -948,7 +1000,7 @@ describe("GenerationComposer", () => {
     expect(prompt).toHaveValue("等待保存的修订");
   });
 
-  it("blocks prompt recompilation while manual edits are unsaved", async () => {
+  it("keeps unsaved manual edits when a confirmed script is recomposed", async () => {
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,
@@ -971,18 +1023,22 @@ describe("GenerationComposer", () => {
 
     render(<WorkspaceHost />);
     const compileButton = await screen.findByRole("button", {
-      name: "编译视频生成提示词",
+      name: "合成最终提示词",
     });
     fireEvent.change(screen.getByLabelText("视频生成提示词内容"), {
       target: { value: "尚未保存的手工修订" },
     });
 
-    expect(compileButton).toBeDisabled();
+    await waitFor(() => expect(compileButton).toBeEnabled());
+    vi.mocked(api.compileGenerationPrompt).mockResolvedValue(promptVersion());
     fireEvent.click(compileButton);
-    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    await screen.findByRole("button", { name: "采用这份最终稿" });
+    expect(screen.getByLabelText("视频生成提示词内容")).toHaveValue(
+      "尚未保存的手工修订",
+    );
   });
 
-  it("freezes prompt editing while recompilation is pending", async () => {
+  it("preserves manual editing while recompilation is pending", async () => {
     vi.mocked(api.getLatestScriptVersion).mockResolvedValue({
       version: {
         ...baseVersion,
@@ -1014,10 +1070,13 @@ describe("GenerationComposer", () => {
 
     render(<WorkspaceHost />);
     const prompt = await screen.findByLabelText("视频生成提示词内容");
-    fireEvent.click(screen.getByRole("button", { name: "编译视频生成提示词" }));
+    if (!(screen.getByLabelText("采用这份文案") as HTMLInputElement).checked)
+      fireEvent.click(screen.getByLabelText("采用这份文案"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
 
-    expect(prompt).toHaveAttribute("readonly");
-    expect(screen.getByRole("button", { name: "正在编译" })).toBeDisabled();
+    expect(prompt).not.toHaveAttribute("readonly");
+    await waitFor(() => expect(api.compileGenerationPrompt).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "正在合成…" })).toBeDisabled();
 
     await act(async () => {
       resolveCompile?.({
@@ -1033,6 +1092,8 @@ describe("GenerationComposer", () => {
     });
 
     expect(prompt).not.toHaveAttribute("readonly");
+    expect(prompt).toHaveValue("编译后的 Prompt");
+    fireEvent.click(screen.getByRole("button", { name: "采用这份最终稿" }));
     expect(prompt).toHaveValue("重新编译后的 Prompt");
   });
 
@@ -1165,9 +1226,12 @@ describe("GenerationComposer", () => {
       .mockResolvedValueOnce(recoveredBatch);
 
     render(<WorkspaceHost />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
     );
+    fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
     expect(await screen.findByText("网络连接失败")).toBeInTheDocument();
 
     const firstRequest = vi.mocked(api.createGenerationBatch).mock.calls[0][1];
@@ -1243,9 +1307,12 @@ describe("GenerationComposer", () => {
     const { rerender } = render(
       <WorkspaceHost currentUserId="employee_scope" projectId={projectId} />,
     );
-    fireEvent.click(
-      await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
     );
+    fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
     expect(await screen.findByText("网络连接失败")).toBeInTheDocument();
     expect(window.localStorage.getItem(employeeStorageKey)).not.toBeNull();
 
@@ -1294,9 +1361,12 @@ describe("GenerationComposer", () => {
     );
 
     render(<WorkspaceHost />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
     );
+    fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
 
     expect(
       await screen.findByText("上游内容已变化，请重新确认后再试"),
@@ -1339,8 +1409,13 @@ describe("GenerationComposer", () => {
       );
 
       render(<WorkspaceHost projectId={projectId} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "创建 1 个生成任务" }),
+        ).toBeEnabled(),
+      );
       fireEvent.click(
-        await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
       );
 
       expect(
@@ -1402,9 +1477,12 @@ describe("GenerationComposer", () => {
       });
 
     render(<WorkspaceHost />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
     );
+    fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
 
     expect(await screen.findByText("网络连接失败")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
@@ -1451,9 +1529,12 @@ describe("GenerationComposer", () => {
     );
 
     const { rerender } = render(<WorkspaceHost projectId="project-old" />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
     );
+    fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
     rerender(
       <WorkspaceHost projectId="project-2" firstFrameAssetId="first-frame-2" />,
     );
@@ -1542,9 +1623,12 @@ describe("GenerationComposer", () => {
       });
 
     const { unmount } = render(<WorkspaceHost />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "创建 1 个生成任务" }),
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "创建 1 个生成任务" }),
+      ).toBeEnabled(),
     );
+    fireEvent.click(screen.getByRole("button", { name: "创建 1 个生成任务" }));
     const idempotencyKey = vi.mocked(api.createGenerationBatch).mock.calls[0][1]
       .idempotency_key;
     expect(idempotencyKey).toBeTruthy();
@@ -1611,6 +1695,7 @@ describe("GenerationComposer", () => {
     const submit = await screen.findByRole("button", {
       name: "创建 1 个生成任务",
     });
+    await waitFor(() => expect(submit).toBeEnabled());
     fireEvent.click(submit);
 
     await waitFor(() => {
@@ -1657,6 +1742,7 @@ describe("GenerationComposer", () => {
     const submit = await screen.findByRole("button", {
       name: "创建 1 个生成任务",
     });
+    await waitFor(() => expect(submit).toBeEnabled());
     fireEvent.click(submit);
 
     await waitFor(() =>

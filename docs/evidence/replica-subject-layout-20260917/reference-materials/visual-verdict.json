@@ -1,0 +1,53 @@
+{
+  "scope": "reference-material-order-and-preview",
+  "score": 98,
+  "pass": true,
+  "differences": [
+    "本机添加框位于已添加素材列表上方，素材列表保持序号、@引用类型、用途输入和删除操作。",
+    "单击素材缩略卡打开独立预览弹窗；图片显示大图，视频和音频使用共享 Media 控件播放。",
+    "移除按钮保持独立事件，不会打开预览弹窗。",
+    "通过关闭按钮或 Escape 退出预览后，焦点返回原素材缩略卡且不滚动页面。"
+  ],
+  "evidence": {
+    "browser_geometry": "geometry.json",
+    "screenshots": [
+      "1440-reference-materials.png",
+      "390-reference-materials.png",
+      "1440-video-playback.png",
+      "1440-audio-playback.png"
+    ],
+    "desktop": {
+      "upload_bottom_px": 457,
+      "first_material_top_px": 544.5,
+      "ordered_vertically": true,
+      "horizontal_overflow": false,
+      "console_errors": [],
+      "focus_returned_after_close": true,
+      "focus_returned_after_escape": true
+    },
+    "mobile": {
+      "upload_bottom_px": 496,
+      "first_material_top_px": 583.5,
+      "ordered_vertically": true,
+      "horizontal_overflow": false,
+      "console_errors": [],
+      "focus_returned_after_close": true,
+      "focus_returned_after_escape": true
+    },
+    "interaction_tests": {
+      "image_dialog_open_and_close": true,
+      "video_controls_after_signed_url_resolution": true,
+      "audio_controls_after_signed_url_resolution": true,
+      "remove_does_not_open_preview": true,
+      "video_browser_decoded_640x360": true,
+      "video_browser_time_advanced": true,
+      "audio_browser_duration_seconds": 5,
+      "audio_browser_time_advanced": true,
+      "media_paused_after_dialog_unmount": true,
+      "playback_console_errors": [],
+      "focus_returned_after_close_and_escape": true
+    },
+    "review_fixture_limit": "普通 review fixture 未配置 VITE_API_BASE_URL；另通过 Playwright 注入本地 MP4/MP3 URL 并拦截响应，完成浏览器真实解码、播放时间推进、关闭后暂停与卸载验证，无真实 provider 调用。",
+    "local_playback": "local-playback.json"
+  }
+}

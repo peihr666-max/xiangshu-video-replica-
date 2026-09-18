@@ -45,9 +45,9 @@ from app.generation import (
 from app.operation_costs import snapshot_generation_rates
 from app.permissions import require_asset_access, require_not_auditor
 
-IndependentMode = Literal["t2v", "i2v", "r2v"]
+IndependentMode = Literal["t2v", "i2v", "l2v", "r2v"]
 
-_MODE_UPPPER = {"t2v": "T2V", "i2v": "I2V", "r2v": "R2V"}
+_MODE_UPPPER = {"t2v": "T2V", "i2v": "I2V", "r2v": "R2V", "l2v": "I2V"}
 # 首帧/尾帧/参考图允许的资产类别：用户素材图片与既有图片资产通道。
 _FRAME_IMAGE_KINDS = {
     "image",
@@ -76,7 +76,7 @@ class IndependentVideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: IndependentMode
-    prompt_text: str = Field(min_length=1, max_length=4000)
+    prompt_text: str = Field(min_length=1, max_length=7000)
     first_frame_asset_id: str | None = Field(default=None, min_length=1)
     last_frame_asset_id: str | None = Field(default=None, min_length=1)
     reference_asset_ids: list[str] = Field(default_factory=list, max_length=_MAX_REFERENCE_TOTAL)
@@ -96,6 +96,7 @@ class IndependentCapabilities(BaseModel):
     i2v_enabled: bool
     r2v_enabled: bool
     last_frame_enabled: bool
+    l2v_enabled: bool = False
     max_reference_images: int = MAX_REFERENCE_IMAGES
     max_reference_videos: int = MAX_REFERENCE_VIDEOS
     max_reference_audios: int = MAX_REFERENCE_AUDIOS
@@ -208,6 +209,12 @@ def _validate_independent_mode_assets(
     （图≤8/视≤3/音≤3）依赖资产 kind，在触库分流后由
     ``_validate_reference_kind_limits`` 校验。
     """
+    if request.mode == "l2v":
+        raise generation_error(
+            409,
+            "LAST_FRAME_MODE_PENDING_VERIFICATION",
+            "仅尾帧生成尚待供应商验证；可以编辑或优化提示词。",
+        )
     uses_tail_frame = request.last_frame_asset_id is not None
     uses_references = bool(request.reference_asset_ids)
     if (request.mode in {"t2v", "r2v"} or uses_tail_frame) and not extended_enabled:
@@ -421,6 +428,36 @@ def create_independent_batch(
         if mode_upper == "R2V"
         else request.prompt_text
     )
+
+    from typing import cast
+
+    from app.h3_prompts import Mode, prompt_issues
+
+    labels = (
+        list(reference_labels.values())
+        if mode_upper == "R2V"
+        else (
+            ["<Picture 1>", "<Picture 2>"] if last_frame else ["<Picture 1>"] if first_frame else []
+        )
+    )
+    prompt_mode = (
+        "Ref2VA"
+        if mode_upper == "R2V"
+        else "FL2VA"
+        if last_frame
+        else "I2VA"
+        if first_frame
+        else "T2VA"
+    )
+    issues = prompt_issues(
+        provider_prompt,
+        mode=cast(Mode, prompt_mode),
+        duration=request.output_duration_seconds,
+        labels=labels,
+        strict=False,
+    )
+    if issues:
+        raise generation_error(422, issues[0].code, issues[0].message)
 
     try:
         conn.execute("BEGIN IMMEDIATE")

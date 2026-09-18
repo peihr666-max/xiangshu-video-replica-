@@ -39,6 +39,7 @@ from app.first_frames import (
     ImageInput,
     evaluate_generated_video_quality,
 )
+from app.h3_prompts import FORMATTER_VERSION, GenerationContext
 from app.internal_billing import (
     BillingInvariantError,
     InsufficientCreditsError,
@@ -72,7 +73,7 @@ from app.storage import (
 SCRIPT_KIND = "script"
 H3_PROMPT_KIND = "h3_prompt"
 GENERATION_SCHEMA_VERSION = "c.generation.v1"
-H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v6"
+H3_PROMPT_TEMPLATE_VERSION = "h3.prompt.v7"
 H3_PROMPT_TEMPLATE_SPEC = (
     (
         "intro",
@@ -84,17 +85,24 @@ H3_PROMPT_TEMPLATE_SPEC = (
         "严格延续已确认首帧中的完整人物身份、脸部、发型、肤色、身形比例、上下装、鞋履与手部，"
         "保持场景和光线连续；不得退化为局部换脸，不得恢复原视频人物的身体或服装，不得身份漂移。",
     ),
+    # v7 新增：整体风格锚点（视觉风格/主色调/节奏/运镜语言基调）。内容由
+    # build_style_clause() 按拆解结果动态拼接，任一字段缺失就跳过该子句，
+    # 全部缺失（旧镜头卡）时 compile_prompt_text() 直接跳过整段，不留空行。
+    ("style", "{style_clause}"),
     (
         "shot",
-        "[{start:.1f}-{end:.1f}s] {shot_type}，{composition}，{camera_motion}；"
-        "主体：已确认首帧中的人物（身份与完整外观均以该图为准）；"
+        "[{start}-{end}] {shot_type}，{composition}，{camera_motion}；"
+        "主体：已确认首帧中的人物（身份与完整外观均以该图为准{wardrobe_clause}）；"
         "人物动作：{motion_clause}；场景：{scene}，转场：{transition}。"
         "口播意图：{spoken}",
     ),
     ("script", "口播意图：{full_text}"),
+    # v7：outro 更名为 audio，audio_clause 由 build_audio_clause() 汇总
+    # 各镜头的 ambient_sound/music_style_hint；旧镜头卡没有这些字段时
+    # audio_clause 为空串，行为退化为原 outro 常量文案（不劣化）。
     (
-        "outro",
-        "环境音与音乐保持自然；不要增加无关人物，不要身份突变、肢体异常或画面闪烁。",
+        "audio",
+        "{audio_clause}环境音与音乐保持自然；不要增加无关人物，不要身份突变、肢体异常或画面闪烁。",
     ),
     (
         "narration_sync",
@@ -109,6 +117,12 @@ H3_PROMPT_TEMPLATE_HASH = hashlib.sha256(
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode()
+).hexdigest()
+
+# Final replica compilation is a separate contract from the retained preview API.
+FINAL_REPLICA_TEMPLATE_VERSION = "h3.replica.final.v2"
+FINAL_REPLICA_TEMPLATE_HASH = hashlib.sha256(
+    b"h3.replica.final.v2:confirmed-script:frame-scene-authority:real-cuts:explicit-duration:human-opening"
 ).hexdigest()
 
 # 拆解结果 motion 枚举到中文运动指令的确定性映射：渲染逻辑在代码里，
@@ -140,6 +154,11 @@ MOTION_CAMERA_MOTION_LABELS = {
     "PAN": "镜头横摇",
     "TILT": "镜头纵摇",
     "FOLLOW": "镜头跟随主体",
+    "ORBIT": "镜头环绕主体",
+    "CRANE_UP": "镜头升高",
+    "CRANE_DOWN": "镜头降低",
+    "ZOOM_IN": "镜头光学变焦推近",
+    "ZOOM_OUT": "镜头光学变焦拉远",
 }
 PROMPT_STATUSES = {"SAVED", "LOCKED", "USED"}
 TERMINAL_STATUSES = {"FAILED", "CANCELLED"}
@@ -197,7 +216,7 @@ logger = logging.getLogger(__name__)
 class ScriptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["original", "custom"]
+    source: Literal["original", "custom", "no_narration"]
     text: str = Field(max_length=8000)
     shot_card_version_id: str = Field(min_length=1)
 
@@ -211,6 +230,8 @@ class PromptCompileRequest(BaseModel):
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
     ratio: Literal["adaptive", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] = "adaptive"
+    timeline_policy: Literal["preserve", "scale_confirmed"] = "preserve"
+    opening_action: str = Field(default="", max_length=1000)
 
 
 class PromptPreviewRequest(BaseModel):
@@ -245,6 +266,7 @@ class SavedPromptRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     prompt_text: str = Field(min_length=1, max_length=7_000)
     base_prompt_version_id: str | None = Field(default=None, min_length=1)
+    generation_context: GenerationContext | None = None
 
 
 class ApplySavedPromptRequest(BaseModel):
@@ -253,11 +275,25 @@ class ApplySavedPromptRequest(BaseModel):
     base_prompt_version_id: str = Field(min_length=1)
 
 
+class PromptContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["analysis", "manual", "ai", "imported"] = "manual"
+    analysis_version_id: str | None = None
+    shot_card_version_id: str | None = None
+    script_version_id: str | None = None
+    optimization_task_id: str | None = None
+    context_hash: str | None = None
+    final_prompt_version_id: str | None = None
+
+
 class GenerationBatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     quantity: int = Field(ge=1)
-    prompt_version_id: str = Field(min_length=1)
+    prompt_version_id: str | None = Field(default=None, min_length=1)
+    prompt_text: str | None = Field(default=None, min_length=1, max_length=7000)
+    prompt_context: PromptContext | None = None
     first_frame_asset_id: str = Field(min_length=1)
     output_duration_seconds: int = Field(ge=4, le=15)
     resolution: Literal["768P", "2K"] = "768P"
@@ -265,6 +301,16 @@ class GenerationBatchRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     provider: Literal["fake_h3", "metaso"] = "fake_h3"
     fake_audio_quality: Literal["ok", "missing"] = "ok"
+
+    @model_validator(mode="after")
+    def require_one_prompt(self) -> GenerationBatchRequest:
+        if (self.prompt_version_id is None) == (self.prompt_text is None):
+            raise ValueError("provide exactly one of prompt_text and prompt_version_id")
+        if self.prompt_text is not None and not self.prompt_text.strip():
+            raise ValueError("prompt_text cannot be blank")
+        if self.prompt_version_id is not None and self.prompt_context is not None:
+            raise ValueError("prompt_context requires prompt_text")
+        return self
 
 
 class PaidRegenerationRequest(BaseModel):
@@ -961,13 +1007,21 @@ def version_stale_reasons(conn: BusinessConnection, *, row: sqlite3.Row) -> list
 
     frozen_template_version = payload.get("template_version")
     frozen_template_hash = payload.get("template_hash")
-    if (
-        frozen_template_version is not None
-        and frozen_template_version != H3_PROMPT_TEMPLATE_VERSION
-    ) or (frozen_template_hash is not None and frozen_template_hash != H3_PROMPT_TEMPLATE_HASH):
+    expected_version = (
+        FINAL_REPLICA_TEMPLATE_VERSION
+        if payload.get("final_composition")
+        else H3_PROMPT_TEMPLATE_VERSION
+    )
+    expected_hash = (
+        FINAL_REPLICA_TEMPLATE_HASH if payload.get("final_composition") else H3_PROMPT_TEMPLATE_HASH
+    )
+    if (frozen_template_version is not None and frozen_template_version != expected_version) or (
+        frozen_template_hash is not None and frozen_template_hash != expected_hash
+    ):
         reasons.append("TEMPLATE_SUPERSEDED")
 
-    frozen_script_id = payload.get("script_version_id")
+    source_context = payload.get("prompt_context") or {}
+    frozen_script_id = payload.get("script_version_id") or source_context.get("script_version_id")
     if isinstance(frozen_script_id, str):
         script = latest_version(conn, project_id=project_id, kind=SCRIPT_KIND)
         if script is None or frozen_script_id != str(script["id"]):
@@ -975,7 +1029,9 @@ def version_stale_reasons(conn: BusinessConnection, *, row: sqlite3.Row) -> list
         else:
             reasons.extend(version_stale_reasons(conn, row=script))
 
-    frozen_shot_card_id = payload.get("shot_card_version_id")
+    frozen_shot_card_id = payload.get("shot_card_version_id") or source_context.get(
+        "shot_card_version_id"
+    )
     if isinstance(frozen_shot_card_id, str):
         shot_card = latest_version(conn, project_id=project_id, kind="shot_card")
         if shot_card is None or frozen_shot_card_id != str(shot_card["id"]):
@@ -1076,6 +1132,7 @@ def confirmed_first_frame_sources(
             "character_reference_selection_id"
         ),
         "first_frame_reconstruction_mode": candidate_payload.get("reconstruction_mode"),
+        "first_frame_replace_scene": candidate_payload.get("replace_scene") is True,
         "character_contract": candidate_payload.get("character_contract"),
         "project_character_appearance_version_id": candidate_payload.get(
             "project_character_appearance_version_id"
@@ -1122,12 +1179,14 @@ def create_script_version(
             )
         shot_payload = json.loads(str(shot_card["payload_json"]))
         text = request.text.strip()
-        if not text:
+        if not text and request.source != "no_narration":
             raise generation_error(
                 422,
                 "SCRIPT_TEXT_REQUIRED",
                 "Script text cannot be blank.",
             )
+        if request.source == "no_narration" and text:
+            raise generation_error(422, "SCRIPT_SOURCE_CONFLICT", "无口播选项不能同时包含台词。")
         payload = {
             "schema_version": GENERATION_SCHEMA_VERSION,
             "source": request.source,
@@ -1256,13 +1315,35 @@ def compile_prompt_version(
 
         shot_payload = json.loads(str(shot_card["payload_json"]))
         source_duration_seconds = shot_timeline_duration(shot_payload)
-        timeline_scale_factor = request.output_duration_seconds / source_duration_seconds
-        prompt_text = compile_prompt_text(
-            script_payload=script_payload,
+        from app.h3_prompts import compile_replica_final_text, dialogue, prompt_issues
+
+        source_frame_id = first_frame_sources.get("source_frame_selection_version_id")
+        source_frame_time = -1.0  # Historical selections may not include a source timestamp.
+        if source_frame_id:
+            source_frame = require_version(
+                conn,
+                version_id=str(source_frame_id),
+                project_id=project_id,
+                kind="source_frame_selection",
+            )
+            source_frame_payload = json.loads(str(source_frame["payload_json"]))
+            timestamp = source_frame_payload.get("timestamp_seconds")
+            if isinstance(timestamp, int | float):
+                source_frame_time = float(timestamp)
+        timeline_scale_factor = (
+            request.output_duration_seconds / source_duration_seconds
+            if request.output_duration_seconds != source_duration_seconds
+            else 1.0
+        )
+        prompt_text = compile_replica_final_text(
             shot_payload=shot_payload,
-            source_duration_seconds=source_duration_seconds,
-            duration_seconds=request.output_duration_seconds,
-            resolution=request.resolution,
+            script_text=str(script_payload["full_text"]),
+            source_duration=source_duration_seconds,
+            duration=request.output_duration_seconds,
+            timeline_policy=request.timeline_policy,
+            source_frame_time=source_frame_time,
+            opening_action=request.opening_action,
+            replace_scene=first_frame_sources["first_frame_replace_scene"],
         )
         if len(prompt_text) > MAX_GENERATION_PROMPT_CHARS:
             raise generation_error(
@@ -1270,13 +1351,25 @@ def compile_prompt_version(
                 "PROMPT_TEXT_TOO_LONG",
                 "Generation prompt must not exceed 7000 characters.",
             )
+        issues = prompt_issues(
+            prompt_text,
+            mode="I2VA",
+            duration=request.output_duration_seconds,
+            labels=["<Picture 1>"],
+        )
+        if issues:
+            raise generation_error(422, issues[0].code, issues[0].message)
+        if dialogue(prompt_text) != "".join(str(script_payload["full_text"]).split()):
+            raise generation_error(
+                409, "DIALOGUE_MISMATCH", "最终稿中存在未确认的台词，请检查分镜和开场方案。"
+            )
         payload = {
             "schema_version": GENERATION_SCHEMA_VERSION,
             "status": "SAVED",
             "prompt_text": prompt_text,
             "content_hash": content_hash(prompt_text),
-            "template_version": H3_PROMPT_TEMPLATE_VERSION,
-            "template_hash": H3_PROMPT_TEMPLATE_HASH,
+            "template_version": FINAL_REPLICA_TEMPLATE_VERSION,
+            "template_hash": FINAL_REPLICA_TEMPLATE_HASH,
             "source_analysis_version_id": shot_payload.get("source_analysis_version_id"),
             "script_version_id": request.script_version_id,
             "shot_card_version_id": request.shot_card_version_id,
@@ -1284,7 +1377,11 @@ def compile_prompt_version(
             "first_frame_uri": str(first_frame["storage_uri"]),
             "source_duration_seconds": source_duration_seconds,
             "timeline_scale_factor": timeline_scale_factor,
-            "timeline_policy": "linear_scale_to_output.v1",
+            "timeline_policy": request.timeline_policy,
+            "source_frame_time": source_frame_time,
+            "opening_action": request.opening_action,
+            "final_composition": True,
+            "confirmed_script_text": str(script_payload["full_text"]),
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
             "ratio": request.ratio,
@@ -1569,7 +1666,15 @@ def save_prompt_to_library(
         raise generation_error(422, "PROMPT_TEXT_REQUIRED", "Prompt text cannot be blank.")
     if not name:
         raise generation_error(422, "PROMPT_NAME_REQUIRED", "Prompt name cannot be blank.")
+    template_context = None
+    if request.generation_context is not None:
+        from app.prompt_context import resolve_context
+
+        target = request.generation_context.model_copy(update={"project_id": project_id})
+        template_context = resolve_context(conn, actor=actor, request=target)
+        template_context["formatter_version"] = FORMATTER_VERSION
     payload = {
+        "generation_context": template_context,
         "schema_version": GENERATION_SCHEMA_VERSION,
         "name": name,
         "prompt_text": prompt_text,
@@ -1993,12 +2098,164 @@ def create_generation_batch(
                     "Save a readable METASO API Key before queuing a real H3 task.",
                 ) from exc
 
-        prompt = require_version(
-            conn,
-            version_id=request.prompt_version_id,
-            project_id=project_id,
-            kind=H3_PROMPT_KIND,
-        )
+        if request.prompt_text is not None:
+            sources = confirmed_first_frame_sources(
+                conn, project_id=project_id, first_frame_asset_id=request.first_frame_asset_id
+            )
+            context = request.prompt_context or PromptContext()
+            from app.h3_prompts import prompt_issues
+
+            issues = prompt_issues(
+                request.prompt_text,
+                mode="I2VA",
+                duration=request.output_duration_seconds,
+                labels=["<Picture 1>"],
+                strict=False,
+            )
+            if issues:
+                raise generation_error(422, issues[0].code, issues[0].message)
+            if context.optimization_task_id:
+                task = conn.execute(
+                    "SELECT * FROM prompt_optimization_receipts WHERE id=%s AND owner_user_id=%s",
+                    (context.optimization_task_id, actor.id),
+                ).fetchone()
+                if task is None:
+                    raise generation_error(404, "PROMPT_TASK_NOT_FOUND", "优化任务不存在。")
+                snapshot = json.loads(str(task["request_json"]))["context"]
+                if (
+                    snapshot["project_id"] != project_id
+                    or snapshot["first_frame_asset_id"] != request.first_frame_asset_id
+                    or snapshot["duration_seconds"] != request.output_duration_seconds
+                    or snapshot["ratio"] != request.ratio
+                    or snapshot["context_hash"] != context.context_hash
+                ):
+                    raise generation_error(
+                        409, "PROMPT_CONTEXT_CHANGED", "素材或生成参数已改变，请核对提示词。"
+                    )
+
+                for key, kind in (
+                    ("analysis_version_id", "analysis"),
+                    ("shot_card_version_id", "shot_card"),
+                    ("script_version_id", SCRIPT_KIND),
+                ):
+                    if snapshot.get(key):
+                        source = require_version(
+                            conn, version_id=snapshot[key], project_id=project_id, kind=kind
+                        )
+                        require_latest_version(
+                            conn,
+                            row=source,
+                            project_id=project_id,
+                            kind=kind,
+                            code="PROMPT_STALE",
+                            message="优化稿来源已更新，请重新合成最终提示词。",
+                        )
+                        if getattr(context, key) not in (None, snapshot[key]):
+                            raise generation_error(
+                                409, "PROMPT_CONTEXT_CHANGED", "优化稿与确认来源不同。"
+                            )
+
+            for version_id, kind in (
+                (context.analysis_version_id, "analysis"),
+                (context.shot_card_version_id, "shot_card"),
+                (context.script_version_id, SCRIPT_KIND),
+            ):
+                if version_id is not None:
+                    source_version = require_version(
+                        conn, version_id=version_id, project_id=project_id, kind=kind
+                    )
+                    require_latest_version(
+                        conn,
+                        row=source_version,
+                        project_id=project_id,
+                        kind=kind,
+                        code="PROMPT_STALE",
+                        message="文案或分镜已更新，请重新合成最终提示词。",
+                    )
+            final_payload: dict[str, Any] = {}
+            if context.final_prompt_version_id:
+                final_version = require_version(
+                    conn,
+                    version_id=context.final_prompt_version_id,
+                    project_id=project_id,
+                    kind=H3_PROMPT_KIND,
+                )
+                if version_stale_reasons(conn, row=final_version):
+                    raise generation_error(409, "PROMPT_STALE", "最终稿的来源已变化，请重新合成。")
+                final_payload = json.loads(str(final_version["payload_json"]))
+                if not final_payload.get("final_composition"):
+                    raise generation_error(409, "FINAL_PROMPT_REQUIRED", "请先完成最终提示词合成。")
+                for key in (
+                    "first_frame_asset_id",
+                    "output_duration_seconds",
+                    "resolution",
+                    "ratio",
+                ):
+                    if final_payload.get(key) != getattr(request, key):
+                        raise generation_error(
+                            409,
+                            "PROMPT_PARAMETERS_MISMATCH",
+                            "首帧或参数已变化，请重新合成最终稿。",
+                        )
+                from app.h3_prompts import dialogue
+
+                final_script = require_version(
+                    conn,
+                    version_id=final_payload["script_version_id"],
+                    project_id=project_id,
+                    kind=SCRIPT_KIND,
+                )
+                protected = json.loads(str(final_script["payload_json"]))["full_text"]
+                if "".join(protected.split()) != dialogue(request.prompt_text):
+                    raise generation_error(
+                        409,
+                        "DIALOGUE_MISMATCH",
+                        "提示词台词与确认文案不同，请先更新确认文案并重新合成。",
+                    )
+                final_issues = prompt_issues(
+                    request.prompt_text,
+                    mode="I2VA",
+                    duration=request.output_duration_seconds,
+                    labels=["<Picture 1>"],
+                )
+                if final_issues:
+                    raise generation_error(422, final_issues[0].code, final_issues[0].message)
+            prompt = insert_version(
+                conn,
+                project_id=project_id,
+                asset_id=request.first_frame_asset_id,
+                kind=H3_PROMPT_KIND,
+                created_by_user_id=actor.id,
+                commit=False,
+                payload={
+                    **final_payload,
+                    **sources,
+                    "schema_version": GENERATION_SCHEMA_VERSION,
+                    "status": "LOCKED",
+                    "prompt_text": request.prompt_text,
+                    "content_hash": content_hash(request.prompt_text),
+                    "prompt_context": context.model_dump(mode="json"),
+                    "script_version_id": final_payload.get("script_version_id")
+                    or context.script_version_id,
+                    "shot_card_version_id": final_payload.get("shot_card_version_id")
+                    or context.shot_card_version_id,
+                    "source_analysis_version_id": final_payload.get("source_analysis_version_id")
+                    or context.analysis_version_id,
+                    "first_frame_asset_id": request.first_frame_asset_id,
+                    "output_duration_seconds": request.output_duration_seconds,
+                    "resolution": request.resolution,
+                    "ratio": request.ratio,
+                },
+            )
+        else:
+            assert request.prompt_version_id is not None
+            prompt = require_version(
+                conn,
+                version_id=request.prompt_version_id,
+                project_id=project_id,
+                kind=H3_PROMPT_KIND,
+            )
+        prompt_version_id = str(prompt["id"])
         if version_stale_reasons(conn, row=prompt):
             raise generation_error(
                 409,
@@ -2070,6 +2327,7 @@ def create_generation_batch(
             )
 
         request_snapshot = generation_request_snapshot(request, prompt_snapshot)
+        request_snapshot["prompt_version_id"] = prompt_version_id
         task_prompt_snapshot = {
             **prompt_snapshot,
             "output_duration_seconds": request.output_duration_seconds,
@@ -2086,7 +2344,7 @@ def create_generation_batch(
             """,
             (
                 json.dumps(used_prompt_snapshot, ensure_ascii=True, sort_keys=True),
-                request.prompt_version_id,
+                prompt_version_id,
                 str(prompt["payload_json"]),
             ),
         )
@@ -2152,7 +2410,7 @@ def create_generation_batch(
                     "PENDING",
                     "PENDING",
                     "PENDING",
-                    request.prompt_version_id,
+                    prompt_version_id,
                     json.dumps(task_prompt_snapshot, ensure_ascii=True, sort_keys=True),
                     request.output_duration_seconds,
                 ),
@@ -2789,9 +3047,7 @@ def require_confirmed_first_frame(
         isinstance(selection_payload, dict) and selection_payload.get("quality_override") is True
     )
     manual_review_confirmed = (
-        isinstance(candidate_payload, dict)
-        and candidate_payload.get("review_mode") == "HUMAN_CONFIRMATION"
-        and isinstance(selection_payload, dict)
+        isinstance(selection_payload, dict)
         and selection_payload.get("review_mode") == "HUMAN_CONFIRMATION"
         and bool(selection["created_by_user_id"])
         and selection_payload.get("reviewed_by_user_id") == selection["created_by_user_id"]
@@ -5814,6 +6070,7 @@ def persist_generation_result_archive(
     stored: StoredObject,
     duration_seconds: float,
     normalization_metadata: dict[str, Any] | None = None,
+    thumbnail_key: str | None = None,
 ) -> TaskResult:
     """Publish one physical asset; archiving never changes settled billing."""
     task_id = str(prepared["id"])
@@ -5852,6 +6109,7 @@ def persist_generation_result_archive(
                             if normalization_metadata is not None
                             else {}
                         ),
+                        **({"thumbnail_key": thumbnail_key} if thumbnail_key is not None else {}),
                     }
                 ),
                 current["created_by_user_id"],
@@ -6100,7 +6358,7 @@ def list_generation_batches(
                 created_at=str(row["created_at"]),
                 updated_at=str(row["updated_at"]),
                 display_name=batch_display_name(
-                    row["display_name"], row["creation_kind"], row["request_snapshot_json"]
+                    row["display_name"], row["creation_kind"], row["project_name"]
                 ),
                 source_batch_id=optional_text(row["source_batch_id"]),
                 source_task_id=optional_text(row["source_task_id"]),
@@ -6303,7 +6561,7 @@ def get_generation_batch(
         quantity=len(tasks),
         stale=stale,
         display_name=batch_display_name(
-            batch["display_name"], batch["creation_kind"], batch["request_snapshot_json"]
+            batch["display_name"], batch["creation_kind"], batch["project_name"]
         ),
         source_batch_id=optional_text(batch["source_batch_id"]),
         source_task_id=optional_text(batch["source_task_id"]),
@@ -6571,29 +6829,9 @@ def build_h3_request(
                 }
             )
     else:
-        if not first_frame_url:
-            return {
-                "model": H3_MODEL,
-                "content": content,
-                "resolution": resolution,
-                "duration": duration_seconds,
-                "ratio": ratio,
-            }
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": first_frame_url},
-                "role": "first_frame",
-            }
-        )
-        if last_frame_url:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": last_frame_url},
-                    "role": "last_frame",
-                }
-            )
+        for role, frame_url in (("first_frame", first_frame_url), ("last_frame", last_frame_url)):
+            if frame_url:
+                content.append({"type": "image_url", "image_url": {"url": frame_url}, "role": role})
     return {
         "model": H3_MODEL,
         "content": content,
@@ -6617,6 +6855,9 @@ def validate_h3_request(request: dict[str, Any]) -> None:
         raise ValueError("H3 ratio is unsupported")
     if not roles:
         return  # T2V：仅文本。
+    if roles == ["last_frame"]:
+        _validate_h3_image_element(content[1], expected_role="last_frame")
+        return
     if roles == ["first_frame"]:
         _validate_h3_image_element(content[1], expected_role="first_frame")
         return
@@ -7063,6 +7304,77 @@ def shot_camera_motion_text(shot: Mapping[str, Any]) -> str:
     return str(shot.get("camera_motion", ""))
 
 
+def _format_shot_timestamp(seconds: float) -> str:
+    """秒数转 MM:SS.mmm，对齐 MiniMax H3 官方提示词指南的时间戳格式。"""
+    total_ms = round(max(0.0, seconds) * 1000)
+    minutes, remainder_ms = divmod(total_ms, 60_000)
+    secs, ms = divmod(remainder_ms, 1000)
+    return f"{minutes:02d}:{secs:02d}.{ms:03d}"
+
+
+def build_style_clause(shot_payload: Mapping[str, Any]) -> str | None:
+    """把拆解出的整体风格字段拼成 style 段。
+
+    任一字段缺失就跳过该子句；全部缺失（旧镜头卡，落库时还没有这些
+    顶层字段）时返回 None，调用方直接跳过整个 style 段，不留空行。
+    """
+    labelled_fields = (
+        ("visual_style", "整体视觉风格"),
+        ("color_tone", "主色调"),
+        ("pace", "剪辑节奏"),
+        ("camera_language", "运镜语言基调"),
+    )
+    parts = [
+        f"{label}：{value}"
+        for field, label in labelled_fields
+        if (value := str(shot_payload.get(field) or "").strip())
+    ]
+    if not parts:
+        return None
+    return "；".join(parts) + "；全片风格统一，中途不得切换。"
+
+
+def shot_wardrobe_clause(shot: Mapping[str, Any]) -> str:
+    """非身份类外观细节（服装/配饰/姿态），插入主体子句；缺失时不插入。"""
+    detail = str(shot.get("wardrobe_pose_detail") or "").strip()
+    if not detail or detail == "无人物出镜":
+        return ""
+    return f"，本镜头新增细节：{detail}"
+
+
+def shot_scene_text(shot: Mapping[str, Any]) -> str:
+    """场景描述 = scene + 可选的背景陈设 + 可选的光线质感。"""
+    parts = [str(shot.get("scene", ""))]
+    for field in ("scene_dressing", "scene_lighting"):
+        value = str(shot.get(field) or "").strip()
+        if value:
+            parts.append(value)
+    return "，".join(parts)
+
+
+def build_audio_clause(shot_payload: Mapping[str, Any]) -> str:
+    """汇总各镜头的环境音/配乐倾向；旧镜头卡没有这些字段时返回空串，
+    audio 段退化为原 outro 常量文案（行为不劣化）。
+    """
+    ambient_sounds: list[str] = []
+    music_hints: list[str] = []
+    for shot in shot_payload.get("shots", []):
+        if not isinstance(shot, Mapping):
+            continue
+        ambient = str(shot.get("ambient_sound") or "").strip()
+        if ambient and ambient not in ("无", "无人物出镜") and ambient not in ambient_sounds:
+            ambient_sounds.append(ambient)
+        music = str(shot.get("music_style_hint") or "").strip()
+        if music and music not in music_hints:
+            music_hints.append(music)
+    parts = []
+    if ambient_sounds:
+        parts.append(f"环境音：{'；'.join(ambient_sounds)}")
+    if music_hints:
+        parts.append(f"配乐风格：{'；'.join(music_hints)}")
+    return "；".join(parts) + "；" if parts else ""
+
+
 def compile_prompt_text(
     *,
     script_payload: dict[str, Any],
@@ -7078,6 +7390,9 @@ def compile_prompt_text(
         ),
         H3_PROMPT_TEMPLATES["continuity"],
     ]
+    style_clause = build_style_clause(shot_payload)
+    if style_clause is not None:
+        lines.append(H3_PROMPT_TEMPLATES["style"].format(style_clause=style_clause))
     mappings_by_shot = {
         str(mapping["shot_id"]): str(mapping["text"])
         for mapping in script_payload.get("shot_mappings", [])
@@ -7091,19 +7406,20 @@ def compile_prompt_text(
         end = max(start, min(float(duration_seconds), float(shot["end_time"]) * timeline_scale))
         lines.append(
             H3_PROMPT_TEMPLATES["shot"].format(
-                start=start,
-                end=end,
+                start=_format_shot_timestamp(start),
+                end=_format_shot_timestamp(end),
                 shot_type=shot["shot_type"],
                 composition=shot["composition"],
                 camera_motion=shot_camera_motion_text(shot),
+                wardrobe_clause=shot_wardrobe_clause(shot),
                 motion_clause=render_shot_motion_clause(shot),
-                scene=shot["scene"],
+                scene=shot_scene_text(shot),
                 transition=shot["transition"],
                 spoken=spoken,
             )
         )
     lines.append(H3_PROMPT_TEMPLATES["script"].format(full_text=script_payload["full_text"]))
-    lines.append(H3_PROMPT_TEMPLATES["outro"])
+    lines.append(H3_PROMPT_TEMPLATES["audio"].format(audio_clause=build_audio_clause(shot_payload)))
     lines.append(H3_PROMPT_TEMPLATES["narration_sync"])
     return "\n".join(lines)
 
@@ -7157,6 +7473,7 @@ def generation_request_snapshot(
         "character_version_id": prompt_snapshot.get("character_version_id"),
         "character_reference_selection_id": prompt_snapshot.get("character_reference_selection_id"),
         "first_frame_reconstruction_mode": prompt_snapshot.get("first_frame_reconstruction_mode"),
+        "first_frame_replace_scene": prompt_snapshot.get("first_frame_replace_scene") is True,
         "character_contract": prompt_snapshot.get("character_contract"),
         "project_character_appearance_version_id": prompt_snapshot.get(
             "project_character_appearance_version_id"
@@ -7173,6 +7490,9 @@ def generation_request_snapshot(
 
 def idempotency_request_hash(request: GenerationBatchRequest) -> str:
     payload = request.model_dump(mode="json", exclude={"idempotency_key"})
+    if request.prompt_version_id is not None:
+        for key in ("prompt_text", "prompt_context"):
+            payload.pop(key, None)
     return content_hash(json.dumps(payload, ensure_ascii=True, sort_keys=True))
 
 
@@ -7518,20 +7838,19 @@ def completed_duration_seconds(*, started_at: str | None, completed_at: str | No
         return None
 
 
-def batch_display_name(name: Any, creation_kind: Any, snapshot: Any) -> str | None:
-    explicit = optional_text(name)
-    if explicit and explicit.strip():
+def batch_display_name(name: Any, creation_kind: Any, project_name: Any) -> str:
+    explicit = (optional_text(name) or "").strip()
+    if explicit:
         return explicit
-    if creation_kind != "independent":
-        return explicit
-    try:
-        payload = json.loads(str(snapshot))
-    except (TypeError, ValueError):
-        return explicit
-    prompt = payload.get("prompt_text") if isinstance(payload, dict) else None
-    if not isinstance(prompt, str):
-        return explicit
-    return " ".join(prompt.split())[:80] or explicit
+    project = (optional_text(project_name) or "").strip()
+    # 自动名称用中文；用户主动命名保持原样。提示词属于正文，不是作品名。
+    if project and any("\u4e00" <= char <= "\u9fff" for char in project):
+        return project
+    return {
+        "replica": "视频复刻",
+        "independent": "视频生成",
+        "replacement": "人物置换",
+    }.get(str(creation_kind), "视频作品")
 
 
 def request_prompt_version_id(value: Any) -> str:

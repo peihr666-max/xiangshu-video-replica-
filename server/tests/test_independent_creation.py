@@ -479,7 +479,7 @@ def test_i2v_batch_creation_reserves_seconds_and_marks_independent(scene: str) -
     assert batch.creation_kind == "independent"
     assert batch.stale is False
     assert batch.progress.total_count == 2
-    assert batch.display_name == "镜头缓缓推进，展示乡墅庭院的黄昏"
+    assert batch.display_name == "视频生成"
     listed = next(item for item in _list_batches(EMPLOYEE_1).items if item.id == batch.id)
     assert listed.display_name == batch.display_name
     with pg_transaction() as raw:
@@ -1147,7 +1147,7 @@ def test_r2v_reference_video_and_audio_flow_through_worker_payload(
     _create(
         IndependentVideoRequest(
             mode="r2v",
-            prompt_text="视频@1的人物用图片@2替换，音色参考@3，保留@10与user@1.example。",
+            prompt_text="视频@1的人物用图片@2替换，音色参考@3，保留user@1.example。",
             reference_asset_ids=["material-video-owned", "frame-owned", "material-audio-owned"],
             output_duration_seconds=6,
             quantity=1,
@@ -1174,7 +1174,7 @@ def test_r2v_reference_video_and_audio_flow_through_worker_payload(
     ]
     request_payload = json.loads(str(row["provider_request_json"]))
     assert request_payload["content"][0]["text"] == (
-        "视频<Video 1>的人物用图片<Picture 1>替换，音色参考<Audio 1>，保留@10与user@1.example。"
+        "视频<Video 1>的人物用图片<Picture 1>替换，音色参考<Audio 1>，保留user@1.example。"
     )
     assert snapshot["reference_labels"] == {"1": "<Video 1>", "2": "<Picture 1>", "3": "<Audio 1>"}
     roles = [item.get("role") for item in request_payload["content"][1:]]
@@ -1182,6 +1182,33 @@ def test_r2v_reference_video_and_audio_flow_through_worker_payload(
     assert request_payload["content"][1]["image_url"]["url"]
     assert request_payload["content"][2]["video_url"]["url"]
     assert request_payload["content"][3]["audio_url"]["url"]
+
+
+@pytest.mark.parametrize(
+    ("unbound", "code"),
+    [("@10", "REFERENCE_ALIAS_UNRESOLVED"), ("<Video 2>", "REFERENCE_NOT_BOUND")],
+)
+def test_r2v_rejects_unbound_prompt_references_before_reserve(
+    scene: str, unbound: str, code: str
+) -> None:
+    _enable_extended_modes()
+    balance = _wallet(EMPLOYEE_1.id)
+    with pytest.raises(HTTPException) as exc:
+        _create(
+            IndependentVideoRequest(
+                mode="r2v",
+                prompt_text=f"人物动作参考 {unbound}",
+                reference_asset_ids=["material-video-owned", "frame-owned"],
+                output_duration_seconds=6,
+                quantity=1,
+                idempotency_key="unbound-reference",
+            ),
+            EMPLOYEE_1,
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == code
+    assert _wallet(EMPLOYEE_1.id) == balance
+    assert _ledger_count("RESERVE") == 0
 
 
 def test_r2v_rejects_replica_source_video_as_reference(scene: str) -> None:

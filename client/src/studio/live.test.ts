@@ -78,8 +78,26 @@ import {
   publishScriptVersion,
   reloadTasks,
   retryStudioTask,
+  sameTasks,
 } from "./live";
 import type { StudioTask } from "./types";
+
+it("sameTasks 判定任务清单是否无实质变化（P1-3）", () => {
+  const task = {
+    id: "task-1",
+    type: "视频生成" as const,
+    title: "任务",
+    status: "running" as const,
+    progress: 40,
+    submitted: "2026-09-17 10:00:00",
+  };
+  expect(sameTasks([task], [{ ...task }])).toBe(true);
+  expect(sameTasks([task], [{ ...task, status: "completed" as const }])).toBe(
+    false,
+  );
+  expect(sameTasks([task], [{ ...task, progress: 60 }])).toBe(false);
+  expect(sameTasks([task], [])).toBe(false);
+});
 
 const user: CurrentUser = {
   id: "user-1",
@@ -426,6 +444,28 @@ describe("真实 Studio 只读适配器", () => {
     });
   });
 
+  it.each([1, 5000, 5001, 0, 1.5])(
+    "恢复云端自定义字数 %s 时校验范围",
+    async (wordCount) => {
+      api.getStudioDraft.mockResolvedValue({
+        draft_kind: "copy",
+        payload: {
+          ...createDraft(),
+          rewriteLength: "custom",
+          rewriteWordCount: wordCount,
+        },
+        script_confirmed: false,
+        revision: 5,
+        updated_at: "2026-09-07T10:00:00+08:00",
+      });
+      const restored = await loadCloudDraft();
+      expect(restored?.draft.rewriteLength).toBe("custom");
+      expect(restored?.draft.rewriteWordCount).toBe(
+        wordCount === 1 || wordCount === 5000 ? wordCount : undefined,
+      );
+    },
+  );
+
   it("恢复旧模板草稿时迁移到当前真实可用的标准口播", async () => {
     api.getStudioDraft.mockResolvedValue({
       draft_kind: "copy",
@@ -701,7 +741,8 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.draft.script).toMatchObject({
       title: "三层新中式乡墅",
       original: "分析得到的原始口播。",
-      text: "分析得到的原始口播。",
+      text: "",
+      resultKind: "extracted",
       version: 1,
       confirmed: false,
     });
@@ -741,10 +782,24 @@ describe("真实 Studio 只读适配器", () => {
     expect(result.draft.script.id).toMatch(/^script-/);
     expect(result.draft.script).toMatchObject({
       original: "分析得到的原始口播。",
-      text: "分析得到的原始口播。",
+      text: "",
+      resultKind: "extracted",
       version: 1,
       confirmed: false,
     });
+  });
+
+  it("启动切片瞬时失败自动重试一次（P0-6）", async () => {
+    let analyticsCalls = 0;
+    // allSettled 依序发起 analytics7 → analytics30；第一次调用瞬时失败。
+    api.getStudioAnalytics.mockImplementation(async () => {
+      analyticsCalls += 1;
+      if (analyticsCalls === 1) throw new Error("瞬时超时");
+      return null;
+    });
+    api.getStudioStats.mockResolvedValue(null);
+    const data = await loadStudioData(user);
+    expect(data.errors).toEqual([]);
   });
 
   it("映射项目、单张五视图合成图和真实批次进度", async () => {
@@ -1513,6 +1568,8 @@ describe("runReplicaGeneration（复刻一键管线）", () => {
 
   const baseInput = {
     promptText: "编辑后的提示词",
+    finalPromptVersionId: "final-preview",
+    scriptVersionId: "script-confirmed",
     originalScriptText: "原片口播稿",
     shotCardVersionId: "scv-1",
     firstFrameAssetId: "ff-1",
@@ -1543,125 +1600,65 @@ describe("runReplicaGeneration（复刻一键管线）", () => {
     api.createGenerationBatch.mockResolvedValue({ id: "batch-r1" });
   }
 
-  it("编辑过 Prompt 时走 revise 再锁定，建批引用锁定版本", async () => {
-    mockHappyPath();
-    const batch = await live.runReplicaGeneration("project-1", baseInput);
-
-    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
-      source: "original",
-      text: "原片口播稿",
-      shot_card_version_id: "scv-1",
-    });
-    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({
-        script_version_id: "script-1",
-        shot_card_version_id: "scv-1",
-        first_frame_asset_id: "ff-1",
-      }),
-    );
-    expect(api.reviseGenerationPrompt).toHaveBeenCalledWith("project-1", {
-      base_prompt_version_id: "prompt-compiled",
-      prompt_text: "编辑后的提示词",
-    });
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-revised",
-    );
-    expect(api.createGenerationBatch).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({ idempotency_key: "replica-idempotency-1" }),
-    );
-    expect(batch.id).toBe("batch-r1");
-  });
-
-  it("已确认工坊终稿以 custom 来源写入真实镜头映射并使用重编译 Prompt", async () => {
-    mockHappyPath();
-    await live.runReplicaGeneration("project-1", {
-      ...baseInput,
-      idempotencyKey: "confirmed-copy-request",
-      confirmedScriptText: "客户确认的新口播终稿",
-    });
-    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
-      source: "custom",
-      text: "客户确认的新口播终稿",
-      shot_card_version_id: "scv-1",
-    });
-    expect(api.compileGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      expect.objectContaining({ script_version_id: "script-1" }),
-    );
-    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-compiled",
-    );
-  });
+  it.each([undefined, "客户确认的新口播終稿"])(
+    "直接提交当前提示词，确认文案=%s",
+    async (confirmedScriptText) => {
+      mockHappyPath();
+      const batch = await live.runReplicaGeneration("project-1", {
+        ...baseInput,
+        confirmedScriptText,
+      });
+      expect(batch.id).toBe("batch-r1");
+      expect(api.createScriptVersion).not.toHaveBeenCalled();
+      expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
+      expect(api.createGenerationBatch).toHaveBeenCalledWith(
+        "project-1",
+        expect.objectContaining({
+          prompt_text: "编辑后的提示词",
+          prompt_context: expect.objectContaining({
+            shot_card_version_id: "scv-1",
+          }),
+          idempotency_key: baseInput.idempotencyKey,
+        }),
+      );
+    },
+  );
 
   it("建批响应不确定时复用已冻结的完整请求", async () => {
-    api.createScriptVersion.mockResolvedValue({
-      id: "script-first",
-      payload: { shot_card_version_id: "scv-1" },
-    });
-    api.compileGenerationPrompt.mockResolvedValue({
-      id: "prompt-compiled-first",
-      payload: { prompt_text: "编译产物提示词" },
-    });
-    api.reviseGenerationPrompt.mockResolvedValue({
-      id: "prompt-revised-first",
-      payload: { prompt_text: "编辑后的提示词" },
-    });
-    api.lockGenerationPrompt.mockResolvedValue({ id: "prompt-locked-first" });
     api.createGenerationBatch
-      .mockRejectedValueOnce(new Error("提交结果未知，请安全重试。"))
+      .mockRejectedValueOnce(new Error("提交结果未知"))
       .mockResolvedValueOnce({ id: "batch-replayed" });
-
     await expect(
       live.runReplicaGeneration("project-1", baseInput),
     ).rejects.toThrow("提交结果未知");
     await expect(
       live.runReplicaGeneration("project-1", {
         ...baseInput,
-        idempotencyKey: "replica-key-after-reenter",
+        idempotencyKey: "new-click",
       }),
     ).resolves.toEqual({ id: "batch-replayed" });
-
-    expect(api.createScriptVersion).toHaveBeenCalledOnce();
-    expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.reviseGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.createGenerationBatch).toHaveBeenCalledTimes(2);
     expect(api.createGenerationBatch.mock.calls[1]).toEqual(
       api.createGenerationBatch.mock.calls[0],
     );
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
   });
 
-  it("Prompt 未编辑时跳过 revise 直接锁定编译产物", async () => {
-    mockHappyPath();
-    await live.runReplicaGeneration("project-1", {
-      ...baseInput,
-      promptText: "编译产物提示词",
-    });
-
-    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-      "project-1",
-      "prompt-compiled",
-    );
-  });
-
-  it("原稿为空时回退纯画面叙事文案并以 custom 来源存稿", async () => {
-    mockHappyPath();
-    await live.runReplicaGeneration("project-1", {
-      ...baseInput,
-      originalScriptText: "",
-    });
-
-    expect(api.createScriptVersion).toHaveBeenCalledWith("project-1", {
-      source: "custom",
-      text: "",
-      shot_card_version_id: "scv-1",
-    });
+  it("空白提示词不回退成编译稿，页面已变化时停止提交", async () => {
+    await expect(
+      live.runReplicaGeneration("project-1", {
+        ...baseInput,
+        promptText: "  ",
+      }),
+    ).rejects.toThrow();
+    await expect(
+      live.runReplicaGeneration("project-1", {
+        ...baseInput,
+        isCurrent: () => false,
+      }),
+    ).rejects.toThrow();
+    expect(api.createGenerationBatch).not.toHaveBeenCalled();
   });
 });
 
@@ -1840,5 +1837,103 @@ describe("studioAssetFromMaterial（素材映射数值时长）", () => {
       duration_seconds: null,
     });
     expect(asset.durationSeconds).toBeUndefined();
+  });
+});
+
+describe("声音克隆输入格式", () => {
+  it.each([
+    "mp3",
+    "M4A",
+    "wav",
+    "wma",
+    "wmv",
+    "aac",
+    "flac",
+    "ogg",
+    "opus",
+    "aiff",
+    "aif",
+    "amr",
+  ])("支持 %s 声音样本", (extension) => {
+    expect(
+      live.validateOralAudioFile(
+        new File(["sample"], `sample.${extension}`),
+        "voice_clone",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("不放宽完整口播格式或允许未知文件", () => {
+    expect(
+      live.validateOralAudioFile(new File(["sample"], "sample.wav")),
+    ).toContain("MP3");
+    expect(
+      live.validateOralAudioFile(
+        new File(["sample"], "sample.exe"),
+        "voice_clone",
+      ),
+    ).toBeTruthy();
+    expect(
+      live.validateOralAudioFile(new File([], "sample.wav"), "voice_clone"),
+    ).toContain("不能为空");
+  });
+});
+
+describe("音频元数据读取", () => {
+  it("浏览器不返回元数据时有界结束并释放临时 URL", async () => {
+    vi.useFakeTimers();
+    const audio = document.createElement("audio");
+    const create = vi.spyOn(document, "createElement").mockReturnValue(audio);
+    const createUrl = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:voice-sample");
+    const revokeUrl = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => {});
+    try {
+      const pending = live.readAudioDuration(
+        new File(["sample"], "sample.wma"),
+      );
+      const rejection = expect(pending).rejects.toThrow("超时");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+      expect(revokeUrl).toHaveBeenCalledWith("blob:voice-sample");
+      expect(audio.getAttribute("src")).toBeNull();
+    } finally {
+      create.mockRestore();
+      createUrl.mockRestore();
+      revokeUrl.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("单个克隆声音状态", () => {
+  it("只为就绪声音解析试听资产，不重新加载人物或源素材", async () => {
+    const record: OralVoiceRecord = {
+      id: "voice-1",
+      identity_id: "person-1",
+      title: "本人音色",
+      status: "READY",
+      submission_state: "SUBMITTED",
+      source_asset_id: "source-wma",
+      demo_asset_id: "demo-mp3",
+      confirmed: true,
+      error_message: null,
+      created_at: "",
+      updated_at: "",
+    };
+    api.getAssetDownloadUrl.mockResolvedValue({ url: "/demo.mp3" });
+    const result = await live.loadStudioVoice(record);
+    expect(result).toMatchObject({
+      id: "voice-1",
+      name: "本人音色",
+      status: "READY",
+      confirmed: true,
+      url: "/demo.mp3",
+    });
+    expect(api.getAssetDownloadUrl).toHaveBeenCalledExactlyOnceWith("demo-mp3");
+    expect(api.listOralVoices).not.toHaveBeenCalled();
+    expect(api.listSimpleCharacterLibraryPage).not.toHaveBeenCalled();
   });
 });

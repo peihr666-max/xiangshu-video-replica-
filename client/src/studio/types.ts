@@ -2,6 +2,7 @@ import type {
   CurrentUser,
   IndependentCapabilities,
   Project,
+  SavedPromptItem,
   StudioAnalytics,
 } from "../api";
 
@@ -94,6 +95,11 @@ export type StudioPerson = {
   scope: string;
   audience: string;
   expression: string;
+  audience_needs?: string;
+  factual_background?: string;
+  sample_script?: string;
+  forbidden_claims?: string;
+
   sheetId?: string;
   sceneLookCount: number;
   photoIds: string[];
@@ -194,6 +200,8 @@ export type StudioData = {
   };
 };
 export type StudioScript = {
+  resultKind?: "extracted" | "rewritten" | "manual";
+  rewriteTaskId?: string;
   id: string;
   title: string;
   original: string;
@@ -205,16 +213,33 @@ export type StudioScript = {
   sourceKind?: "viral" | "project" | "link" | "upload";
 };
 export type StudioDraft = {
+  pendingRewrite?: {
+    scopeKey: string;
+    resultText: string;
+    taskId?: string;
+    requestKey?: string;
+    startedAt?: number;
+  };
+  rewriteCandidate?: { scopeKey: string; text: string };
+  rewriteMethod?: "ip" | "custom";
+  rewriteInstructions?: string;
+  rewriteLength?: "original" | "100" | "200" | "300" | "custom";
+  rewriteWordCount?: number;
   id: string;
   ipId?: string;
   sourceId?: string;
   /** 上传来源视频的资产 id：提取文案（script-from-audio）管线输入。 */
   sourceAssetId?: string;
+  analysisTaskId?: string;
+  analysisTaskStatus?: string;
   projectId?: string;
   selectedShotId: string;
   originalImageId?: string;
   imageId?: string;
   firstFrameId?: string;
+  /** 已确认源画面，用于判断是否需要填写中段帧开场衔接。 */
+  sourceFrameSelectionVersionId?: string;
+  sourceFrameTimestampSeconds?: number;
   /** 人物置换流程交接的已确认首帧版本。 */
   firstFrameSelectionVersionId?: string;
   tailFrameId?: string;
@@ -225,9 +250,18 @@ export type StudioDraft = {
   /** 当前脚本是否包含尚未发布为项目版本的本地编辑，包括主动清空。 */
   scriptEdited?: boolean;
   prompt: string;
+  /** 复刻准备保留拆解依据，最终提示词独立存于 prompt。 */
+  replicaSourcePrompt?: string;
+  /** 新提示词对应的项目、来源、文案与拆解内容，供交接前校验。 */
+  replicaPromptBasis?: string;
+  /** 内容准备变更后，须显式交接最新提示词与采用首帧。 */
+  replicaPreparationPending?: boolean;
   /** 当前 Prompt 是否包含尚未保存为项目版本的本地编辑，包括主动清空。 */
   promptEdited?: boolean;
   referenceIds: string[];
+  referencePurposes?: Record<string, string>;
+  promptBindingsStale?: boolean;
+  importedPromptContext?: SavedPromptItem["generation_context"];
   resolution: string;
   ratio: string;
   duration: number;
@@ -256,10 +290,13 @@ export type StudioPublishDraft = {
   assetId: string;
   coverId?: string;
   platform: "抖音" | "视频号" | "小红书";
+  /** Server-side publish account id (publish_browser_accounts); "" when unset. */
   account: string;
   title: string;
   description: string;
   tags: string[];
+  /** ISO timestamp for a scheduled delivery; absent = publish immediately. */
+  scheduledAt?: string;
 };
 export type StudioPublishAccount = {
   id: string;

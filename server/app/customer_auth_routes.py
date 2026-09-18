@@ -40,9 +40,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from app.api_errors import http_error as _http
 from app.bootstrap import customer_public_origin, is_customer_production
 from app.db_pg import get_pg_pool, pg_transaction
-from app.ops_metrics import set_current_result_code
 from app.password_hashing import PasswordPolicyError, hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -67,11 +67,6 @@ MAX_USERNAME_LENGTH = 32
 # no '@' — this lane has no email verification, so an email-shaped username
 # would falsely imply one.
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    set_current_result_code(code)
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 class CustomerRegistrationRequest(BaseModel):

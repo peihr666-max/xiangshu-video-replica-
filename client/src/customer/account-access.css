@@ -37,7 +37,7 @@
   border: 0;
   background: transparent;
   color: #eee;
-  font-size: 17px;
+  font-size: var(--font-subtitle);
 }
 .account-access-story {
   border-right: 1px solid #4d473b;
@@ -60,7 +60,7 @@
 }
 .account-official-brand span {
   color: #f4c450;
-  font-size: clamp(18px, 2vw, 30px);
+  font-size: clamp(16px, 2vw, 24px);
   border-left: 1px solid #746139;
   padding-left: 18px;
   font-weight: 700;
@@ -70,7 +70,7 @@
   padding-bottom: 1vh;
 }
 .account-access-message h1 {
-  font-size: clamp(32px, 3.5vw, 56px);
+  font-size: clamp(28px, 3.5vw, 32px);
   line-height: 1.42;
   font-weight: 750;
   letter-spacing: 1px;
@@ -85,7 +85,7 @@
 }
 .account-access-message p {
   color: #a6a6aa;
-  font-size: clamp(18px, 2vw, 26px);
+  font-size: clamp(16px, 2vw, 24px);
   font-weight: 600;
 }
 .account-access-form-panel {
@@ -95,18 +95,18 @@
   padding: 55px 0 25px 5vw;
 }
 .account-access-form-panel h2 {
-  font-size: clamp(30px, 3.7vw, 52px);
+  font-size: clamp(24px, 3.7vw, 32px);
   line-height: 1.2;
   margin: 0 0 14px;
 }
 .account-access-subtitle {
   color: #a3a3a8;
-  font-size: clamp(17px, 1.9vw, 24px);
+  font-size: clamp(16px, 1.9vw, 24px);
   margin: 0 0 40px;
 }
 .account-access-form-panel label {
   display: block;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   margin: 26px 0 12px;
   font-weight: 600;
 }
@@ -133,7 +133,7 @@
   color: #f6f6f6;
   height: 100%;
   outline: none;
-  font-size: 18px;
+  font-size: var(--font-subtitle);
   padding: 0;
   border-radius: 0;
 }
@@ -147,7 +147,7 @@
   border: 0;
   background: transparent;
   color: #bfc0c5;
-  font-size: 13px;
+  font-size: var(--font-label);
   white-space: nowrap;
   padding: 8px 0;
 }
@@ -155,7 +155,7 @@
   display: block;
   margin-top: 9px;
   color: #a6a6ad;
-  font-size: 12px;
+  font-size: var(--font-caption);
 }
 .account-submit {
   display: block;
@@ -166,7 +166,7 @@
   border-radius: 10px;
   background: #f4c450;
   color: #151109;
-  font-size: 21px;
+  font-size: var(--font-section);
   font-weight: 700;
 }
 .account-submit:hover {
@@ -174,7 +174,7 @@
 }
 .account-switch {
   text-align: center;
-  font-size: 19px;
+  font-size: var(--font-section);
   color: #a7a7ad;
   margin: 30px 0;
 }
@@ -189,7 +189,7 @@
 .account-access-footer {
   text-align: center;
   color: #99999f;
-  font-size: 16px;
+  font-size: var(--font-body);
   margin: 32px 0 0;
 }
 .account-error {
@@ -224,7 +224,7 @@
     width: 210px;
   }
   .account-official-brand span {
-    font-size: 20px;
+    font-size: var(--font-section);
   }
   .account-access-message {
     display: none;
@@ -251,7 +251,7 @@
   }
   .account-official-brand span {
     padding-left: 10px;
-    font-size: 18px;
+    font-size: var(--font-subtitle);
   }
   .account-field {
     height: 58px;

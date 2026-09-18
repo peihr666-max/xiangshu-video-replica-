@@ -1,5 +1,13 @@
 # Customer Edition Task Evidence Record V3
 
+> 2026-09-17 BRAND-CORRECTION：首排恢复横排，Logo/文字/间距按原基线放大20%；欢迎页接入共享组件，修复无尺寸约束巨图；桌面图标仅补纯黑底。回归先红后绿，静态门1676前端与PG2527通过/1既有skip，独立评审APPROVE。已打开本地示例预览，未合并或部署。见[独立证据](evidence/BRAND-CORRECTION-20260917.md)。
+
+## DESKTOP-ACTIONS-20260917
+
+GitHub Actions 三平台桌面安装包与可下载 Artifact；复用现有 Tauri、API 校验与内测渠道，不改原三门禁。范围、先红后绿、构建与下载证据见[独立记录](evidence/DESKTOP-ACTIONS-20260917.md)；当前 AUTOMATED_VERIFIED（前端 1674 passed、后端 2540 passed / 1 既有 skip、21 项构建合同、独立评审通过）；远程构建待执行，未合并或部署。
+
+> 2026-09-17 PRELAUNCH-REMEDIATION：上线评审 R02—R06 修复通过本地完整质量门与失败补验；R01/#130、R07/#129、R08/#126 已合入主线并整合。已提交 [PR #131](https://github.com/peihr666-max/xiangshu-video-replica-/pull/131)。仅代码修复，不变更生产验收等级。见[独立证据](evidence/PRELAUNCH-REMEDIATION-20260917.md)。
+
 ## 2026-09-15 MATERIAL-CACHE / R90 浏览器持久缓存
 
 缓存 API 24 项新增回归覆盖授权、账号/版本隔离、容量、校验、超时、并发及清理竞争，完整 API 134 项通过；页面新增 5 项回归，完整 ContentPages 90 项通过。有效 RED 后实现，最终完整前端 100 文件 1544 项通过；TypeScript/Biome/秘密扫描及独立交叉评审通过。真实既有视频从 Blob 完整播放 4.458333 秒，清理后容量由 15.3 MB 归零，45 条云端素材保留，已打开视频播放至结束无媒体错误。原始日志和浏览器观察仅留本机。该项为本机验证，不代表离线素材库或全部历史素材验收；详见[任务证据](evidence/BUSINESS-REMEDIATION-20260914.md)。
@@ -1460,3 +1468,83 @@ R28 收尾：完整 PostgreSQL 四分片为 486 + 505 + 612 + 510 = 2113 passed 
 2026-09-15 08:05 BUSINESS-REMEDIATION-20260914 / R46—R50：已授权删除备份 CAM 历史版本 1 并追加爆款两目录，当前版本 6 保留 2—5，七目录检测通过。修复口播归档目录后原 AUDIO 任务 24 秒成片完整播放，预扣 50/实扣 48/退回 2；四端余额 733、冻结 0、累计 267。飞影新增 217、累计 809 供应商积分，秘塔 46.5、Apilio 0.880704 算力单位已核对，现金换算保守预算另记。用户新增后台复杂表格重设计已实现，详情/搜索实际验证；修复手动精选遗漏普通目录、历史 local 恢复后迁移 COS、非生产客户预览地址。专项通过，当前全量门进行中；所有剩余流程验收及 PR 当前 CI 通过后才按用户授权正常 squash 合并，不部署、不充值、不对外发布。详见任务证据 R46—R50。
 
 2026-09-15 BUSINESS-REMEDIATION-20260914 / R51：视频号详情补采接入管理页，按页进度、缓存/失败保留、幂等/只读控制、稳定大整数ID及专用45秒等待已实现。真实单条四字段、无重复调用及平台计量通过；150条分批补采与失败复测仍在进行。前端1453、最终四PG2175 passed/1原有skip，静态门通过。15秒H3四端预扣/结算150一致，余额583/冻结0/累计417。当前独立环境无采集专用worker且关键词为空，视频号自动归档待受控验收。详见证据R51，整体验收未完成，不合并部署。
+
+## PUBLISH-INLINE-QR-20260916
+
+个人中心三平台内嵌扫码增量，独立分支 `fix/publish-inline-qr-20260916`，基线 `f0b45b2`，Owner 当前 Codex；Reviewer 执行者自检及 PR 门禁。点击无账号的平台直接在当前面板加载二维码，桌面扫码窗口默认隐藏，成功后直接加入对应平台列表；已有账号平台仅切换列表。本地完整 Linux 静态门（1582 前端测试）及 PostgreSQL 2389 passed / 1 既有 skipped 通过，三平台实际取码和组件浏览器验证通过。实现提交 `d6564d7`，提交 Draft PR；未合并部署、未声称手机真实登录验收。详见[独立证据](evidence/PUBLISH-INLINE-QR-20260916.md)。
+
+## 2026-09-16 UI-TYPOGRAPHY-BRAND-20260916
+
+本地实现及独立评审完成，远程凭据不可用，未推送、合并或部署。范围：统一字号/用户名入口/透明图标/任务中心操作、文案工坊纵向流程、人物IP档案、自定义二创及1–5000文案字数、DeepSeek统一文本通道、复刻时长和数量明示。前端1594测试；后端全量2391通过/1既有skip/5个Git路径环境错误，5项修正环境后全部复验通过；最终新增7项专项通过，静态检查通过。无真实付费调用，测试Docker资源已清理。独立评审review_copy_ip的恢复隔离意见已修复。具体范围、限制及原始结果见 [独立证据](evidence/UI-TYPOGRAPHY-BRAND-20260916.md)。
+
+2026-09-16 UI-TYPOGRAPHY-BRAND 后续评审修复：四项问题已处理（Logo生产资源、云端/本地任务恢复、总超时与有效租约、JSON修复统一DeepSeek），并补齐跨设备重试及终态失败清理。最终前端1600通过，相关后端148通过、最终租约/构建契约2项复验通过，静态检查及独立复审通过。新增DeepSeek内部成本科目隔离旧Apilio费率，不向用户新增收费；新分析须配置Apilio与DeepSeek。仍未远程推送/合并/部署，正式安装包与付费5000字验收未做。详见 [修复复验记录](evidence/ui-typography-brand/review-fixes.md)。
+
+## 2026-09-16 PUBLISH-INLINE-QR-20260916
+
+个人中心三平台内嵌扫码增量，独立分支 `fix/publish-inline-qr-20260916`，基线 `f0b45b2`，Owner 当前 Codex；Reviewer 执行者自检及 PR 门禁。点击无账号的平台直接在当前面板加载二维码，桌面扫码窗口默认隐藏，成功后直接加入对应平台列表；已有账号平台仅切换列表。本地完整 Linux 静态门（1582 前端测试）及 PostgreSQL 2389 passed / 1 既有 skipped 通过，三平台实际取码和组件浏览器验证通过。实现提交 `d6564d7`，提交 Draft PR；未合并部署、未声称手机真实登录验收。详见[独立证据](evidence/PUBLISH-INLINE-QR-20260916.md)。
+
+## 2026-09-16 PROMPT-OPTIMIZE-20260916 · 证据登记
+
+用户已授权 Codex 接手 Claude 会话 fbeae78e 的既有独立 worktree/分支，原进程已停止且成果已备份；不重复开发。H01—H14 实现与代码自检完成；本地静态门和后端全量后的全部失败项/新增专项通过，H15 已提交 [PR #125](https://github.com/peihr666-max/xiangshu-video-replica-/pull/125) 并触发 CI，当前为 REVIEW 交付状态。改动范围、规格映射、评审与测试见 [H3 实施证据](evidence/PROMPT-OPTIMIZE-20260916-EVIDENCE.md)。AUTOMATED_VERIFIED（本地）；远程三门禁以 PR 当前 head 的 Checks 为准，未宣称独立评审、真实链路、合并或部署完成。
+
+## CREATION-WORKFLOW-UI-20260916 · 创作界面与复刻准备流程
+
+用户已确认“一起修改实际页面”。Owner 为 Codex 会话 01a0aa65；Reviewer 为执行者自检及待进行的 PR 评审。独立分支 `feat/creation-workflow-ui-20260916`，基线 `ba616f46`，锁定 worktree `.worktrees/CREATION-WORKFLOW-UI-20260916`，已检查共享 claim、本地/远程分支及在制 PR；复用已合并 #125，不重复实现优化器，不修改 #126 口播范围。实现顶层导航合并、去面包屑、横向参数与加号上传、单框文案改写、提示词/首帧双素材交接及场景替换设置。前端完整 1621 项和最终专项 241 项、静态门已通过；后端全量 2432 通过、1 既有跳过；唯一脚本执行权限环境失败恢复后补验 1 通过。AUTOMATED_VERIFIED（本地），已提交 [Draft PR #128](https://github.com/peihr666-max/xiangshu-video-replica-/pull/128)，状态 REVIEW；未合并/部署。测试独立 PostgreSQL 与质量容器均使用 --rm，已清理且临时卷无残留；本地预览 5217。详见[独立证据](evidence/CREATION-WORKFLOW-UI-20260916.md)。
+
+2026-09-16 布局续改：文/图生视频按新参考图改为左侧首尾帧/描述/横向参数、右侧整列预览、底部操作栏；参考页维持已有布局。前端 210 项经旧布局断言更新后全部通过，桌面/手机视觉检查通过，仍随 PR #128 待评审。详见独立证据与 design-qa.md。
+
+2026-09-17 参考页续改：用户要求参考生视频与图生视频统一，现已共用左侧素材/描述/参数、右侧大预览及底部操作栏；多素材选择、预览切换与大加号上传保留。前端 204 项、类型及样式检查通过，桌面/手机复核通过，继续交付 PR #128。
+
+2026-09-17 画幅续改：新草稿默认 9:16；图片占位、首尾帧、参考缩略图与预览按生成参数所选比例显示，完整呈现图片。完整前端 106 文件 / 1631 项、TypeScript 与修改文件 Biome 通过，桌面多画幅和手机检查通过；详见 CREATION-WORKFLOW-UI-20260916 独立证据与 design-qa.md。继续随 PR #128 待评审，未合并/部署。
+
+2026-09-17 最终画幅澄清：用户明确按上传图片原始比例显示，横图自动变横框、空占位默认 9:16；替代上一条生成参数控制展示框的规则。最终前端 106 文件 / 1634 项，收尾专项 107 项及 TypeScript / Biome 通过，桌面和手机验证通过。仍随 PR #128 待评审，未合并/部署。
+
+## 2026-09-16 ORAL-VIDEO-TTS-20260916
+
+视频口播流程与独立声音档案改造；局部 AUTOMATED_VERIFIED，未调用付费飞影链路、未合并部署。前端 1565 passed，口播/素材专项 205 passed，设计 QA passed；全量 PG 及远程提交状态见 [任务证据](evidence/ORAL-VIDEO-TTS-20260916.md)。基线 f0b45b2、分支 feat/oral-video-tts-20260916。仅本任务增量登记，不核销其他业务工作包。
+
+
+## 2026-09-17 REPLICA-FINAL-PROMPT-20260917
+
+REVIEW / AUTOMATED_VERIFIED（本地）：最终提示词后置、确认文案绑定、首帧三图人工选择及文生/参考生视频链路核验。Owner Codex / 01a0aae7-8864-7c41-a255-4c8f62adc5e3，Reviewer 执行者自检与 PR 门禁；不声称独立代理评审。独立分支 fix/replica-final-prompt-20260917，从 origin/main@d95a8db4 创建 .worktrees/REPLICA-FINAL-PROMPT-20260917；共享 claim 已认领。没有执行真实付费出片、生产功能开关或部署。本地完整范围及失败项补验已通过，已合入 main 的 #128 页面增量；待 PR 当前 head 三门禁与评审，未合并部署。[详细证据](evidence/REPLICA-FINAL-PROMPT-20260917.md)。
+
+## 2026-09-17 PUBLISH-DELIVERY-20260917
+
+发布链路第二阶段 PR-A。新增迁移 `20260917T1000_publish_records`（`publish_records` 表 + `publish_browser_accounts.status/error_message/source`）、`app/publish_records.py` / `publish_record_routes.py` / `publish_credentials.py` / `publish_delivery.py`，`publish_worker` 每轮追加一条发布投递；桌面 `publish_accounts.rs` connected 时导出 storage_state 并由前端 `POST /publish/browser/accounts/import` 加密入库；发布页立即/定时发布、`PublishRecordsPanel`、首页真实 `published_total`；compose/systemd/基础镜像（Node.js）接入 `worker-publish`。本地 ruff/format/mypy、cargo test 27、client check 105 文件 1617 passed，专项与迁移矩阵见证据；全量 PostgreSQL 四分片 2452 passed / 34 failed / 1 skipped，34 项均为 Windows 本机既有失败（对照未改动主检出复现），详见证据末段。AUTOMATED_VERIFIED；全部用例合成凭据与假投递器，未触网、未真实发布、未合并部署。详见[独立证据](evidence/PUBLISH-DELIVERY-20260917.md)。
+
+## WORKSPACE-STRUCTURE-20260917 目录与导航维护
+
+2026-09-17：按用户确认完成设计资料、历史工具发行包和开发导航整理。1693 个既有文件全部保留、168 个资料文件迁移，825 个既有链接目标保留，21 项图片校验通过；V1.3 图册 28 页及 V1.4 测试 7/7 通过，秘密检查通过。业务源码与配置保持原合同；此为资料维护验证，不改变业务及生产验收等级。详见[独立证据](evidence/WORKSPACE-STRUCTURE-20260917.md)。
+
+## 2026-09-17 PUBLISH-LOGIN-RECOVERY-20260917
+
+Mac 桌面复用已有认证云端扫码及加密保存；Windows 读取失败暂停后，打开官方窗口恢复当前会话检测。后续用户反馈抖音手机确认仍不保存，追加抖音成功码兼容、迟到失败不覆盖、同源后台主动身份核验及取消清理回归。各缺陷先红后绿，完整静态门通过（前端 1646 项），最终账号相关 103 项、后端全量 2508 passed / 1 既有 skip、两轮独立复审通过，AUTOMATED_VERIFIED。同版 Mac 视频号添加成功由用户实测；未执行真实发布，抖音服务端修复尚未部署；[独立证据](evidence/PUBLISH-LOGIN-RECOVERY-20260917.md)。
+
+## 2026-09-17 REPLICA-SIMPLE-FLOW-20260917
+
+REVIEW_READY / 本地自动化通过，待 PR 评审及合并。Owner Codex 会话 `01a0ad07-554c-7a13-b90b-309b3aaef984`；Reviewer 为独立代理交叉复核和主执行者整合自检。基线 `origin/main@3932d528`，分支 `feat/replica-simple-flow-20260917`，独立 worktree `.worktrees/REPLICA-SIMPLE-FLOW-20260917`；开工已 fetch 并核对远程分支、开放 PR、工作树和共享 claim。范围：Studio 三步复刻、文案后置、分镜编辑整合、单场景参考、去字幕而保留实体文字、切镜候选、MiniMax 结构和中文默认作品名。隔离预览 5227、专项 PG 5547、四片 PG 5551—5554。不核销旧任务验收；未付费调用、合并或部署。详见[独立证据](evidence/REPLICA-SIMPLE-FLOW-20260917.md)。
+
+
+## BRAND-IDENTITY-20260917 品牌展示维护
+
+放大工作台与创作页品牌，个人中心共用金色 Logo，桌面图标加入公司及软件名两排。基线 `2f3815e0` 的完整静态门通过（前端 1675 项）；PG 和 PR 结果见[独立证据](evidence/BRAND-IDENTITY-20260917.md)。不改变客户业务验收等级；未合并部署或更新已安装客户端。
+
+
+## REPLICA-SUBJECT-LAYOUT-20260917 · 截图反馈维护增量
+
+多人首帧只替换主要人物，移除旧人数门禁，继续人工三图选择；拆解预览按原画幅调整左右区域，所有页面复用紧凑侧栏，创作内容区不重复显示 Logo。Owner Codex 当前会话；独立 worktree / 分支从 `41fc171d` main 创建。已通过本地完整静态门、前端 1680 项、PG 2548 项（1 既有跳过）及九组合浏览器布局检查；远程 CI 随 PR 核验。无生产调用、合并或部署。此段登记 §12 工作包 / §18 维护任务增量，不核销其他任务状态。详见[任务证据](evidence/REPLICA-SUBJECT-LAYOUT-20260917.md)。
+
+
+同会话追加：文案/提示词输入框翻倍；克隆声音支持常见音频和WMV抽音轨并修复结果跳动；首尾帧改大尺寸加号卡片；参考素材改上添加、下展示并可单击预览。最终本地前端1716通过、PG分片2580通过/1既有skip，评审后PG专项39通过；仅人工三图选择，不恢复图片AI质检。PR #139 继续承载该批反馈，未合并部署。完整证据见上述同名文件。
+
+
+## RELEASE-FEEDBACK-20260917 · 生产升级记录
+
+用户授权通过宝塔终端以 Git 拉取方式部署。已将服务端与客户/管理网页从 `80fee75` 升级至已合并 PR #139 的 `9ec6f566`；精确 main 三门禁成功。发布状态 SUCCESS、外层退出码 0，八个应用容器版本一致，双 API ready、公网与资源、四种合成音频转码、三份备份校验通过；任务写冻结已解除，数据库 head 未变。5 条历史首帧待核对记录无在途任务或有效租约，未修改。旧镜像及备份保留；未更新已安装桌面端，未执行付费链路或账号修改，不提高整体生产验收等级。见[生产部署证据](evidence/RELEASE-FEEDBACK-20260917.md)。本条同时更新 §12 / §18 维护任务状态；旧条目保留作为历史快照。
+
+## SIDEBAR-TOGGLE-20260917 · 工作台侧边栏折叠/展开开关
+
+桌面端左侧栏新增折叠/展开开关：顶栏按钮（≥801px 显示，≤800px 保持抽屉）、localStorage 记忆、默认展开；原 88px 图标栏样式由"按屏宽强制"改为 class 驱动收起态。Owner Claude 当前会话；基线 `origin/main@0ce6ed28`，分支 `feat/sidebar-toggle-20260917`，独立 worktree `.worktrees/SIDEBAR-TOGGLE-20260917`。测试先行（先红后绿），StudioWorkspace 100 项、前端全量 1719 项通过；完整门禁与 PR 结果见[独立证据](evidence/SIDEBAR-TOGGLE-20260917.md)。不核销其他任务状态；未合并部署。
+## LINK-FORMAT-20260917 · 抖音/小红书链接入口全格式支持
+
+服务端链接规范化：裸域名分享文本提取、短链 302 还原（SSRF 防护、3 跳上限、失败降级原链直传）、任意入口形态提取内容 ID 重写网关已知稳定形态（抖音 `/jingxuan?modal_id=`、小红书 `/explore/{id}` 保留 xsec_token）、网关 ID 校验放宽 15–22 位；计费与路由口径不变。用户明确不做真实付费探针，29 项离线表驱动测试先红后绿，既有链接测试全部保持通过。Owner Claude 当前会话；基线 `origin/main@0ce6ed28`，分支 `feat/link-format-canonical-20260917`，独立 worktree `.worktrees/LINK-FORMAT-20260917`。本地最终门禁一次通过：静态门 + 四分片 2609 passed / 1 既有 skipped；PR 与 CI 结果见[独立证据](evidence/LINK-FORMAT-20260917.md)。未合并部署。

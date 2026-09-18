@@ -9,7 +9,7 @@
 #
 # Usage:  bootstrap-base-image.sh <git-short-sha>
 # Result: video-replica-rehearsal-app:<sha>  (then point APP_IMAGE at it in
-#         deploy/customer/.env and `docker compose up -d`; see README.md)
+#         /etc/video-replica/compose.env and `docker compose up -d`; see README.md)
 #
 # The in-image checks mirror the rollout's Dockerfile contract exactly:
 # ffmpeg/ffprobe present, locked dependencies, python compileall, the four
@@ -22,6 +22,21 @@ SHORT_SHA="${1:?usage: bootstrap-base-image.sh <git-short-sha>}"
     exit 1
 }
 SOURCE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+RELEASE_SHA=$(git -C "$SOURCE" rev-parse HEAD)
+RELEASE_TREE=$(git -C "$SOURCE" rev-parse 'HEAD^{tree}')
+git -C "$SOURCE" diff --quiet HEAD -- server
+[[ -z "$(git -C "$SOURCE" ls-files --others --exclude-standard -- server)" ]]
+# Read the frozen migration manifest without needing host Python packages.
+EXPECTED_DB_HEAD=$(python3 - "$SOURCE/server/migrations/manifest.json" <<'PY'
+import json
+import sys
+manifest = json.load(open(sys.argv[1], encoding="utf-8"))
+heads = manifest["graph"]["heads"]
+if len(heads) != 1:
+    raise SystemExit("expected exactly one migration head")
+print(heads[0])
+PY
+)
 BUILD_CTX="$(mktemp -d)"
 trap 'rm -rf -- "$BUILD_CTX"' EXIT
 
@@ -36,9 +51,10 @@ rm -f "$BUILD_CTX/server/app/backup.py"
 
 cat > "$BUILD_CTX/Dockerfile" <<'DOCKERFILE'
 FROM python:3.12-slim
+ARG EXPECTED_DB_HEAD
 USER root
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv
 COPY server /opt/video-replica/server
@@ -47,20 +63,28 @@ RUN cd /opt/video-replica/server \
     && uv sync --locked --no-dev \
     && .venv/bin/python -m playwright install --with-deps chromium \
     && chmod -R a+rX /opt/video-replica/browsers \
+    && test "$(.venv/bin/python -c 'from alembic.config import Config; from alembic.script import ScriptDirectory; print(ScriptDirectory.from_config(Config("alembic.ini")).get_current_head())')" = "$EXPECTED_DB_HEAD" \
     && .venv/bin/python -m compileall -q app migrations \
-    && command -v ffmpeg && command -v ffprobe \
-    && .venv/bin/python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker" \
+    && command -v ffmpeg && command -v ffprobe && command -v node \
+    && .venv/bin/python -c "import app.main, app.admin_customer_routes, app.customer_fence, app.generation_worker, app.publish_worker" \
     && ! test -e /opt/video-replica/server/app/backup.py \
     && ! test -e /opt/video-replica/server/scripts/sqlite_to_postgres.py \
     && ! test -e /opt/video-replica/server/scripts/reconcile_customer_billing.py \
     && .venv/bin/python -c "import pathlib, sys; forbidden = {'backup.py', 'sqlite_to_postgres.py', 'reconcile_customer_billing.py'}; found = [str(p) for p in pathlib.Path('/opt/video-replica/server').rglob('*') if p.is_file() and p.name in forbidden]; sys.exit('historical SQLite tooling in the customer image: ' + repr(found) if found else 0)"
 ENV PATH="/opt/video-replica/server/.venv/bin:$PATH"
+# Rollout and Compose migration commands use `sh -lc`; Debian /etc/profile
+# resets PATH, so restore the same virtualenv for login shells as well.
+RUN printf '%s\n' 'export PATH="/opt/video-replica/server/.venv/bin:$PATH"' \
+    > /etc/profile.d/video-replica-venv.sh
 WORKDIR /opt/video-replica/server
 DOCKERFILE
 
 docker build \
-    --label "org.opencontainers.image.revision=$SHORT_SHA" \
+    --build-arg "EXPECTED_DB_HEAD=$EXPECTED_DB_HEAD" \
+    --label "org.opencontainers.image.revision=$RELEASE_SHA" \
+    --label "org.opencontainers.image.source-tree=$RELEASE_TREE" \
+    --label "video-replica.database-head=$EXPECTED_DB_HEAD" \
     -t "video-replica-rehearsal-app:$SHORT_SHA" \
     "$BUILD_CTX"
 printf 'base image ready: video-replica-rehearsal-app:%s\n' "$SHORT_SHA"
-printf 'next: set APP_IMAGE in deploy/customer/.env, then docker compose up -d (see README.md)\n'
+printf 'next: set APP_IMAGE in /etc/video-replica/compose.env, then docker compose up -d (see README.md)\n'

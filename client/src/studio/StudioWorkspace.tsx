@@ -25,6 +25,7 @@ import {
   listMaterials,
   type Project,
 } from "../api";
+import { BrandIdentity } from "../BrandIdentity";
 import { CustomerCenterPage } from "../customer/CustomerCenterPage";
 import { SettingsPanel } from "../SettingsPanel";
 import type { WorkspaceShellProps } from "../workspace-shell";
@@ -60,6 +61,7 @@ import {
   publishScriptVersion,
   reloadStats,
   reloadTasks,
+  sameTasks,
   studioAssetFromMaterial,
 } from "./live";
 import {
@@ -77,6 +79,7 @@ import {
   DEFAULT_MAX_REFERENCE_AUDIOS,
   DEFAULT_MAX_REFERENCE_IMAGES,
   DEFAULT_MAX_REFERENCE_VIDEOS,
+  hasCopyResult,
   isReferenceAsset,
   MAX_REFERENCE_MEDIA_SECONDS,
   navigateStudioState,
@@ -124,13 +127,23 @@ type WalletSummary = Pick<
   "walletStatus" | "availableCredits"
 >;
 
-function walletSummaryLabel(summary: WalletSummary) {
-  if (summary.walletStatus === "ready" && summary.availableCredits !== null) {
-    return `${summary.availableCredits} 积分`;
+// 侧边栏折叠是设备级偏好：仅存本地，不上服务端。
+const SIDEBAR_COLLAPSED_KEY = "studio.sidebar.collapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
   }
-  if (summary.walletStatus === "loading") return "查询中";
-  if (summary.walletStatus === "error") return "读取失败";
-  return "未查询";
+}
+
+function persistSidebarCollapsed(collapsed: boolean) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // 存储不可用（隐私模式等）时静默降级为会话内状态
+  }
 }
 
 function quoteMatchesInput(
@@ -302,7 +315,6 @@ export function StudioWorkspace({
     identityId: string;
     tab: "base" | "scenes";
   }>();
-  const [liveProject, setLiveProject] = useState<Project>();
   const [handoffBatch, setHandoffBatch] = useState<GenerationBatch | null>(
     null,
   );
@@ -316,6 +328,13 @@ export function StudioWorkspace({
   const closeMenu = () => {
     setMenuOpen(false);
     menuButtonRef.current?.focus();
+  };
+  const [sidebarCollapsed, setSidebarCollapsed] =
+    useState(readSidebarCollapsed);
+  const toggleSidebarCollapsed = () => {
+    const next = !sidebarCollapsed;
+    persistSidebarCollapsed(next);
+    setSidebarCollapsed(next);
   };
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
@@ -376,10 +395,6 @@ export function StudioWorkspace({
   const [videoSubmitting, setVideoSubmitting] = useState(false);
   const [videoSubmitError, setVideoSubmitError] = useState("");
   const [videoSubmitRejected, setVideoSubmitRejected] = useState(false);
-  const busyRef = useRef(false);
-  const pendingRouteRef = useRef<
-    ReturnType<typeof studioRouteFromHash> | undefined
-  >(undefined);
   const operationRef = useRef(0);
   const loadedPeopleRef = useRef(new Set<string>());
   const restoredAssetsRef = useRef<StudioAsset[]>([]);
@@ -398,7 +413,6 @@ export function StudioWorkspace({
     generationDialogRevisionRef.current += 1;
     oralSubmitAttemptRef.current += 1;
     videoSubmitAttemptRef.current += 1;
-    pendingRouteRef.current = undefined;
   }
   const notify = useCallback((message: string) => {
     window.clearTimeout(noticeTimerRef.current);
@@ -703,11 +717,7 @@ export function StudioWorkspace({
     setOralPriceFen(null);
     setOralQuoteStatus("loading");
     setOralQuoteError("");
-    void getOralPrice(
-      state.page === "oral-audio"
-        ? { audio_asset_id: state.draft.audioId || undefined }
-        : { script_text: state.draft.script.text },
-    )
+    void getOralPrice({ script_text: state.draft.script.text })
       .then((price) => {
         if (active) {
           setOralPriceFen(price.unit_price_fen);
@@ -736,14 +746,7 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [
-    review,
-    generation,
-    oralQuoteRevision,
-    state.page,
-    state.draft.audioId,
-    state.draft.script.text,
-  ]);
+  }, [review, generation, oralQuoteRevision, state.draft.script.text]);
 
   const retryOralQuote = useCallback(
     () => setOralQuoteRevision((value) => value + 1),
@@ -882,13 +885,13 @@ export function StudioWorkspace({
     oralSubmittingRef.current = true;
     setOralSubmitting(true);
     try {
-      const mode = state.page === "oral-audio" ? "audio" : "text";
+      const mode = "text";
       const input = buildOralInput(draft, mode);
       const request = {
         identityId: input.ipId,
         avatarId: input.avatarId,
         voiceId: input.voiceId,
-        mode: mode === "audio" ? ("AUDIO" as const) : ("TTS" as const),
+        mode: "TTS" as const,
         title: draft.script.title || "未命名口播",
         scriptText: draft.script.text,
         audioAssetId: input.audioAssetId,
@@ -964,6 +967,10 @@ export function StudioWorkspace({
     if (videoSubmittingRef.current || generationRef.current !== "视频生成")
       return;
     const draft = latestDraftRef.current;
+    if (draft.replicaPreparationPending) {
+      notify("请先完成复刻准备并交接新提示词与采用首帧。");
+      return;
+    }
     const draftFingerprint = JSON.stringify(draft);
     const page = studioPageRef.current;
     const dialogRevision = generationDialogRevisionRef.current;
@@ -977,6 +984,10 @@ export function StudioWorkspace({
       generationRef.current === "视频生成" &&
       studioPageRef.current === page &&
       JSON.stringify(latestDraftRef.current) === draftFingerprint;
+    if (draft.promptBindingsStale) {
+      notify("请先核对当前提示词与参考素材的绑定。");
+      return;
+    }
     const quoteInput = videoQuoteInput(draft);
     if (
       videoQuoteStatus !== "ready" ||
@@ -990,7 +1001,13 @@ export function StudioWorkspace({
     setVideoSubmitError("");
     setVideoSubmitRejected(false);
     try {
-      const mode = resolveVideoMode(state.page, Boolean(draft.firstFrameId));
+      const mode = resolveVideoMode(
+        state.page,
+        Boolean(draft.firstFrameId),
+        Boolean(draft.tailFrameId),
+      );
+      if (mode === "l2v")
+        throw new Error("仅尾帧生成尚待验证，可先编辑或优化提示词。");
       if (mode === "r2v") {
         const error = referenceDraftError(draft);
         if (error) throw new Error(error);
@@ -1106,7 +1123,10 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, workspaceUser, revision]);
+    // MATERIAL-PERF-C（P0-5）：bootstrap 只随 user.id 重跑——profile 异步到达
+    // 只改 display_name/username，若随整个 workspaceUser 依赖会把首屏全量
+    // 加载整体重跑一遍（double bootstrap，第一遍全部作废）。
+  }, [review, workspaceUser.id, revision]);
 
   // Silent tasks poll: the shell reads everything once on entry, so a batch
   // that finishes while the customer watches would otherwise stay "running"
@@ -1116,19 +1136,20 @@ export function StudioWorkspace({
   useEffect(() => {
     if (review) return;
     const timer = window.setInterval(() => {
-      if (document.hidden || busyRef.current) return;
+      if (document.hidden) return;
       retryWallet();
       void reloadTasks(currentUser)
         .then((tasks) => {
           setData((previous) => {
+            // MATERIAL-PERF-D（P1-3）：任务无实质变化时返回原引用，跳过
+            // 全树重渲染（此前每 20s 必然重渲染整个工作区）。
             const refreshedIds = new Set(tasks.map((task) => task.id));
-            return {
-              ...previous,
-              tasks: [
-                ...tasks,
-                ...previous.tasks.filter((task) => !refreshedIds.has(task.id)),
-              ],
-            };
+            const merged = [
+              ...tasks,
+              ...previous.tasks.filter((task) => !refreshedIds.has(task.id)),
+            ];
+            if (sameTasks(previous.tasks, merged)) return previous;
+            return { ...previous, tasks: merged };
           });
         })
         .catch(() => {});
@@ -1210,11 +1231,6 @@ export function StudioWorkspace({
   useEffect(() => {
     const onHashChange = () => {
       const route = studioRouteFromHash(window.location.hash);
-      if (busyRef.current) {
-        pendingRouteRef.current = route;
-        notify("当前操作正在处理中，请等待完成后切换页面。");
-        return;
-      }
       operationRef.current += 1;
       setState((previous) => ({ ...previous, ...route }));
       if (livePanel) refresh();
@@ -1226,13 +1242,9 @@ export function StudioWorkspace({
       window.removeEventListener("hashchange", onHashChange);
       window.removeEventListener("popstate", onHashChange);
     };
-  }, [notify, livePanel, refresh]);
+  }, [livePanel, refresh]);
 
   const navigate: StudioContextValue["navigate"] = (page, patch = {}) => {
-    if (busyRef.current) {
-      notify("当前操作正在处理中，请等待完成后切换页面。");
-      return;
-    }
     operationRef.current += 1;
     setState((previous) => {
       const nextState = navigateStudioState(previous, page, patch);
@@ -1260,7 +1272,10 @@ export function StudioWorkspace({
         if (
           patch.avatarId &&
           owner?.avatars.some(
-            (avatar) => avatar.id === patch.avatarId && avatar.ready,
+            (avatar) =>
+              avatar.id === patch.avatarId &&
+              avatar.ready &&
+              avatar.origin === "视频制作",
           )
         )
           next.avatarId = patch.avatarId;
@@ -1323,7 +1338,10 @@ export function StudioWorkspace({
             script: {
               ...current.script,
               original: text,
-              text: current.script.text.trim() ? current.script.text : text,
+              text: hasCopyResult(current.script) ? current.script.text : "",
+              resultKind: hasCopyResult(current.script)
+                ? "manual"
+                : "extracted",
               confirmed: false,
             },
             scriptEdited: true,
@@ -1371,6 +1389,10 @@ export function StudioWorkspace({
     notify,
   ]);
   const openLive: StudioContextValue["openLive"] = (panel, character) => {
+    if (panel === "analysis") {
+      navigate("replica");
+      return;
+    }
     if (review) {
       notify(
         "当前为示例审核。此入口在正式登录后打开已实现的上传、分析、人物或账户功能，不调用真实业务接口。",
@@ -1397,20 +1419,23 @@ export function StudioWorkspace({
         });
       return;
     }
-    if (panel === "analysis")
-      setLiveProject(
-        data.projects.find((project) => project.id === state.draft.projectId),
-      );
     setCharacterTarget(character);
     setLivePanel(panel);
   };
   const importProject = async (project: Project) => {
     const operation = ++operationRef.current;
-    setLiveProject(project);
     try {
       const imported = await loadProjectDraft(project);
       if (operation !== operationRef.current) return;
-      setState((previous) => withImportedProject(previous, imported.draft));
+      setState((previous) => {
+        return {
+          ...withImportedProject(previous, imported.draft),
+          page: "replica" as const,
+        };
+      });
+      window.history.pushState(null, "", "#studio/replica");
+      setCharacterTarget(undefined);
+      setLivePanel(undefined);
       if (imported.errors.length) notify(imported.errors.join("；"));
       else notify("已带入项目来源与已保存文案。请核对内容并确认终稿。");
     } catch (cause) {
@@ -1419,20 +1444,27 @@ export function StudioWorkspace({
     }
   };
   const requestGeneration = (kind: StudioTask["type"]) => {
+    if (
+      kind === "视频生成" &&
+      latestDraftRef.current.replicaPreparationPending
+    ) {
+      notify("请先完成复刻准备并交接新提示词与采用首帧。");
+      return;
+    }
     if (currentUserRoleRef.current === "auditor") {
       notify("当前账号为只读权限，不能提交生成。");
       return;
     }
     try {
       if (kind === "数字人口播") {
-        const input = buildOralInput(
-          state.draft,
-          state.page === "oral-audio" ? "audio" : "text",
-        );
+        const input = buildOralInput(state.draft, "text");
         const person = data.people.find((item) => item.id === input.ipId);
         if (
           !person?.avatars.some(
-            (avatar) => avatar.id === input.avatarId && avatar.ready,
+            (avatar) =>
+              avatar.id === input.avatarId &&
+              avatar.ready &&
+              avatar.origin === "视频制作",
           )
         )
           throw new Error("请选择当前人物已就绪的口播分身");
@@ -1458,6 +1490,7 @@ export function StudioWorkspace({
         const mode = resolveVideoMode(
           state.page,
           Boolean(state.draft.firstFrameId),
+          Boolean(state.draft.tailFrameId),
         );
         if (!state.draft.prompt.trim()) {
           throw new Error("请先填写提示词");
@@ -1689,6 +1722,13 @@ export function StudioWorkspace({
       openLive("projects");
       return;
     }
+    const extractionScope = JSON.stringify([
+      latestDraftRef.current.id,
+      latestDraftRef.current.projectId,
+      latestDraftRef.current.sourceId,
+      latestDraftRef.current.sourceAssetId,
+    ]);
+    const extractionAccount = currentUser.id;
     extractingRef.current = true;
     const permissionGeneration = permissionGenerationRef.current;
     notify("正在提取音频并转写文案，预计一到两分钟，请勿关闭页面…");
@@ -1700,7 +1740,28 @@ export function StudioWorkspace({
           permissionGenerationRef.current !== permissionGeneration
         )
           return;
-        const currentScript = latestDraftRef.current.script;
+        const currentDraft = latestDraftRef.current;
+        if (
+          saveAccountRef.current !== extractionAccount ||
+          (JSON.stringify([
+            currentDraft.id,
+            currentDraft.projectId,
+            currentDraft.sourceId,
+            currentDraft.sourceAssetId,
+          ]) !== extractionScope &&
+            !(
+              explicitSource &&
+              currentDraft.projectId === projectId &&
+              (currentDraft.sourceAssetId ?? currentDraft.sourceId) === assetId
+            ))
+        )
+          return;
+        const sameSource =
+          currentDraft.projectId === projectId &&
+          (currentDraft.sourceAssetId ?? currentDraft.sourceId) === assetId;
+        const currentScript = sameSource
+          ? currentDraft.script
+          : createDraft().script;
         patchDraft({
           projectId,
           sourceId: assetId,
@@ -1709,13 +1770,14 @@ export function StudioWorkspace({
           script: {
             ...currentScript,
             original: text,
-            text: currentScript.text.trim() ? currentScript.text : text,
+            text: hasCopyResult(currentScript) ? currentScript.text : "",
+            resultKind: hasCopyResult(currentScript) ? "manual" : "extracted",
             confirmed: false,
           },
         });
         navigate("copy", { returnTo: "workbench" });
         setWalletRevision((value) => value + 1);
-        notify("文案已提取，请在文案工坊核对内容并确认终稿。");
+        notify("文案已提取，请核对原文并选择二创方式。");
       })
       .catch((cause: unknown) => {
         extractingRef.current = false;
@@ -1771,12 +1833,7 @@ export function StudioWorkspace({
     ["running", "queued"].includes(task.status),
   ).length;
   const closeLive = () => {
-    if (busyRef.current) {
-      notify("操作尚未结束，请稍候。");
-      return;
-    }
     operationRef.current += 1;
-    setLiveProject(undefined);
     setLivePanel(undefined);
     refresh();
   };
@@ -1793,10 +1850,14 @@ export function StudioWorkspace({
         ]
       : navGroups;
 
+  const creationWorkspace =
+    ["replica", "replacement", "video", "reference"].includes(state.page) &&
+    !livePanel;
+
   return (
     <StudioContext.Provider value={context}>
       <div
-        className={`studio-shell ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
+        className={`studio-shell ${creationWorkspace ? "studio-shell--creation" : ""} ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""} ${sidebarCollapsed ? "studio-shell--sidebar-collapsed" : ""}`}
       >
         {menuOpen && (
           <button
@@ -1824,10 +1885,7 @@ export function StudioWorkspace({
               navigate("workbench");
             }}
           >
-            <span>
-              <img src="/studio/brand.png" alt="众墅之家" />
-              <b>｜ AI 即创</b>
-            </span>
+            <BrandIdentity />
             <small>乡墅爆款视频创作平台</small>
           </button>
           <Button
@@ -1853,6 +1911,7 @@ export function StudioWorkspace({
                     key={item.id}
                     aria-current={activeNav === item.id ? "page" : undefined}
                     className={activeNav === item.id ? "is-active" : ""}
+                    title={sidebarCollapsed ? item.title : undefined}
                     onClick={() => navigate(item.id)}
                   >
                     <Icon name={item.icon} />
@@ -1868,18 +1927,27 @@ export function StudioWorkspace({
           <button
             type="button"
             className={`studio-account-entry ${state.page === "profile" ? "is-active" : ""}`}
-            aria-label={`用户档案，积分 ${walletSummaryLabel(walletSummary)}`}
+            aria-label={`用户档案，${currentUser.username}`}
             onClick={() => navigate("profile")}
           >
             <WorkspaceUserAvatar currentUser={currentUser} review={review} />
-            <span className="studio-account-points">
-              <small>积分</small>
-              <strong>{walletSummaryLabel(walletSummary)}</strong>
+            <span className="studio-account-name" title={currentUser.username}>
+              {currentUser.username}
             </span>
           </button>
         </aside>
         <main className={`studio-main studio-route-${state.page}`}>
           <div className="studio-topbar">
+            <button
+              type="button"
+              aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              aria-expanded={!sidebarCollapsed}
+              aria-controls="studio-sidebar"
+              className="studio-sidebar-toggle"
+              onClick={toggleSidebarCollapsed}
+            >
+              <Icon name={sidebarCollapsed ? "chevron" : "back"} />
+            </button>
             <button
               type="button"
               aria-label="展开导航"
@@ -1937,24 +2005,8 @@ export function StudioWorkspace({
                 characterInitialTab={characterTarget?.tab}
                 customerAccount={customerAccount}
                 customerWallet={customerWallet}
-                project={liveProject}
                 handoffBatch={handoffBatch}
                 onClose={closeLive}
-                onBusyChange={(busy) => {
-                  busyRef.current = busy;
-                  if (!busy && pendingRouteRef.current) {
-                    const pendingRoute = pendingRouteRef.current;
-                    pendingRouteRef.current = undefined;
-                    operationRef.current += 1;
-                    setState((previous) => ({ ...previous, ...pendingRoute }));
-                    setLivePanel(undefined);
-                  }
-                }}
-                onBatchCreated={(batch) => {
-                  setHandoffBatch(batch);
-                  setLivePanel("tasks");
-                  refresh();
-                }}
                 onHandoffConsumed={() => {
                   setHandoffBatch(null);
                   refresh();
@@ -2130,10 +2182,10 @@ export function StudioWorkspace({
                 <Button
                   onClick={() => {
                     closeGenerationDialog();
-                    openLive("analysis");
+                    navigate("replica");
                   }}
                 >
-                  进入项目生成流程
+                  进入视频拆解
                 </Button>
               )}
           </StudioDialog>
@@ -2578,7 +2630,9 @@ function StudioPicker({
                 ))
             : kind === "avatar"
               ? person?.avatars
-                  .filter((avatar) => avatar.ready)
+                  .filter(
+                    (avatar) => avatar.ready && avatar.origin === "视频制作",
+                  )
                   .map((avatar) => (
                     <button
                       type="button"
@@ -2718,7 +2772,9 @@ function StudioPicker({
       {((kind === "voice" &&
         !person?.voices.some((voice) => voice.confirmed)) ||
         (kind === "avatar" &&
-          !person?.avatars.some((avatar) => avatar.ready)) ||
+          !person?.avatars.some(
+            (avatar) => avatar.ready && avatar.origin === "视频制作",
+          )) ||
         (kind === "person" && !data.people.length)) && (
         <Empty
           title="没有可选的已就绪资产"

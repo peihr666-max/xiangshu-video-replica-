@@ -24,7 +24,7 @@
   border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
   border-radius: 6px;
   background: color-mix(in srgb, currentColor 10%, transparent);
-  font-size: 12px;
+  font-size: var(--font-caption);
   white-space: nowrap;
 }
 

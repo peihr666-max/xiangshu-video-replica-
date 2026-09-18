@@ -1,0 +1,28 @@
+{
+  "iteration": 1,
+  "verdict": "PASS",
+  "method": "Native browser screenshots and read-only DOM measurements; visual-verdict skill not installed",
+  "reference": "User images 2 and 3",
+  "checks": {
+    "horizontal_first_row": true,
+    "scale": 1.2,
+    "image_css_px": [
+      50.4,
+      43.2
+    ],
+    "text_css_px": 15.6,
+    "subtitle_css_px": 12,
+    "desktop_and_mobile_no_brand_overflow": true,
+    "same_brand_all_three_pages": true,
+    "black_icon_preserves_paths": true
+  },
+  "screenshots": [
+    "workbench.png",
+    "brand-header.png",
+    "customer-center.png",
+    "customer-center-mobile.png",
+    "mobile-navigation.png",
+    "creation-1280.png",
+    "creation-960.png"
+  ]
+}

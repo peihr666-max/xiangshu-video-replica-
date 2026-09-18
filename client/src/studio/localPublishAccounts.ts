@@ -9,6 +9,15 @@ export type LocalPublishAccount = {
   username: string;
   verified_at: number;
 };
+export type CloudPublishAccount = LocalPublishAccount & {
+  status: "connected" | "invalid";
+  error_message: string | null;
+  source: "cloud" | "desktop";
+};
+export type PublishStorageState = {
+  cookies: Record<string, unknown>[];
+  origins: Record<string, unknown>[];
+};
 export type LocalPublishLoginStatus = {
   phase:
     | "loading"
@@ -21,16 +30,27 @@ export type LocalPublishLoginStatus = {
   image: string | null;
   account: LocalPublishAccount | null;
   message?: string;
+  /** Desktop only: one-shot login export to hand to the server-side worker. */
+  storage_state?: PublishStorageState | null;
 };
-export const canUseLocalPublishAccounts = () => isTauri();
+// Native profiles and cookie export are implemented with Windows WebView2.
+// Other desktop platforms use the existing encrypted cloud login flow.
+export const canUseLocalPublishAccounts = () =>
+  isTauri() && navigator.userAgent.includes("Windows");
+export const isPublishStorageState = (
+  value: unknown,
+): value is PublishStorageState =>
+  typeof value === "object" &&
+  value !== null &&
+  Array.isArray((value as PublishStorageState).cookies) &&
+  Array.isArray((value as PublishStorageState).origins) &&
+  (value as PublishStorageState).cookies.length > 0;
 async function command<T>(
   name: string,
   args: Record<string, unknown>,
 ): Promise<T> {
-  if (!isTauri())
-    throw new Error(
-      "请使用 Windows 桌面客户端扫码连接账号，本机登录状态不会同步到网页。",
-    );
+  if (!canUseLocalPublishAccounts())
+    throw new Error("此操作需要 Windows 桌面客户端的本机账号功能。");
   try {
     return await invoke<T>(name, args);
   } catch (error) {
@@ -38,7 +58,7 @@ async function command<T>(
   }
 }
 export const listLocalPublishAccounts = (owner: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<LocalPublishAccount[]>("list_local_publish_accounts", { owner })
     : cloudAccounts();
 export const startLocalPublishLogin = (
@@ -46,7 +66,7 @@ export const startLocalPublishLogin = (
   platform: PublishPlatform,
   accountId?: string,
 ) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<string>("start_local_publish_login", {
         owner,
         platform,
@@ -54,7 +74,7 @@ export const startLocalPublishLogin = (
       })
     : startCloudLogin(owner, platform, accountId);
 export const checkLocalPublishLogin = (owner: string, loginId: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<LocalPublishLoginStatus>("check_local_publish_login", {
         owner,
         loginId,
@@ -63,15 +83,45 @@ export const checkLocalPublishLogin = (owner: string, loginId: string) =>
 export const focusLocalPublishLogin = (owner: string, loginId: string) =>
   command<void>("focus_local_publish_login", { owner, loginId });
 export const cancelLocalPublishLogin = (owner: string, loginId: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<void>("cancel_local_publish_login", { owner, loginId })
     : cancelCloudLogin(owner, loginId);
 export const removeLocalPublishAccount = (owner: string, accountId: string) =>
-  isTauri()
+  canUseLocalPublishAccounts()
     ? command<void>("remove_local_publish_account", { owner, accountId })
     : cloudDeleteAccount(accountId);
 export const openLocalPublishAccount = (owner: string, accountId: string) =>
   command<void>("open_local_publish_account", { owner, accountId });
+/** Re-export a connected desktop profile (hidden window) for the server-side worker. */
+export const exportLocalPublishAccountState = (
+  owner: string,
+  accountId: string,
+) =>
+  command<{
+    identity: { platform_user_id: string; username: string };
+    storage_state: PublishStorageState;
+  }>("export_local_publish_account_state", { owner, accountId });
+
+/** Server-side accounts (cloud QR logins and imported desktop logins) — the delivery source. */
+export const listCloudPublishAccounts = (): Promise<CloudPublishAccount[]> =>
+  cloudAccounts() as Promise<CloudPublishAccount[]>;
+export async function importCloudPublishAccount(
+  platform: PublishPlatform,
+  identity: { platform_user_id: string; username: string },
+  storageState: PublishStorageState,
+): Promise<CloudPublishAccount> {
+  const response = await publishBrowserRequest(`${cloudBase}/accounts/import`, {
+    method: "POST",
+    body: JSON.stringify({ platform, identity, storage_state: storageState }),
+    signal: AbortSignal.timeout(20000),
+  });
+  return (await response.json()) as CloudPublishAccount;
+}
+export async function deleteCloudPublishAccount(
+  accountId: string,
+): Promise<void> {
+  await cloudDeleteAccount(accountId);
+}
 
 type CloudLogin = {
   owner: string;

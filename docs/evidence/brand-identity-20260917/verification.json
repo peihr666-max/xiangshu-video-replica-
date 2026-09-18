@@ -1,0 +1,28 @@
+{
+  "base_sha": "2f3815e0650852981333d8d62d548cc83cc717fc",
+  "static": "PASS: npm run check:static",
+  "frontend": {
+    "files": 107,
+    "passed": 1675
+  },
+  "backend": {
+    "shards": [
+      633,
+      686,
+      648,
+      560
+    ],
+    "passed": 2527,
+    "skipped": 1,
+    "command": "CI_SHARD_BASE_PORT=5561 CI_SHARD_LOG_DIR=/tmp/brand-identity-shards-final bash scripts/ci/run-pytest-shards.sh"
+  },
+  "final_icon_cargo_check": "PASS",
+  "secret_scan": "PASS",
+  "dependency_changes": false,
+  "ci_only_checks": [
+    "dependency audit",
+    "Windows NSIS",
+    "customer bundle/E2E"
+  ],
+  "deployment": "not performed"
+}

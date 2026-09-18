@@ -3,7 +3,6 @@ import {
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
-  compileGenerationPrompt,
   completeMaterialUpload,
   completeVideoUpload,
   createGenerationBatch,
@@ -45,16 +44,16 @@ import {
   listSimpleCharacterLibraryPage,
   listStudioSavedScripts,
   listViralVideos,
-  lockGenerationPrompt,
   type MaterialItem,
   type OralAvatarRecord,
   type OralTaskRecord,
+  type OralVoiceRecord,
   type Project,
   type PublishAccountItem,
+  putMaterial,
   readAnalysisPayload,
   resolveMaterials,
   retryOralTaskArchive,
-  reviseGenerationPrompt,
   type SimpleLibraryEntry,
   type StudioDraftKind,
   type StudioSavedScriptInput,
@@ -65,6 +64,11 @@ import {
   type ViralVideoItem,
   verifyPublishAccount,
 } from "../api";
+import {
+  clearIdempotencyRecord,
+  restoreIdempotencyRecord,
+  restoreOrCreateIdempotencyRecord,
+} from "../useGenerationDrafts";
 import { createDraft } from "./state";
 import type {
   StudioAsset,
@@ -79,6 +83,7 @@ import type {
   StudioVideo,
   StudioVoice,
 } from "./types";
+import { readAppliedOptimization } from "./usePromptOptimization";
 
 const projectLimit = 24;
 const personLimit = 8;
@@ -87,6 +92,7 @@ const sceneLimit = 12;
 const MAX_ORAL_SOURCE_BYTES = 50 * 1024 * 1024;
 
 type FrozenReplicaRequest = {
+  storageKey: string;
   fingerprint: string;
   idempotencyKey: string;
   projectId: string;
@@ -101,6 +107,9 @@ function replicaRequestContextKey(projectId: string, fingerprint: string) {
 }
 
 function clearFrozenReplicaRequest(frozen: FrozenReplicaRequest) {
+  const saved = restoreIdempotencyRecord(frozen.storageKey);
+  if (saved?.key === frozen.idempotencyKey)
+    clearIdempotencyRecord(frozen.storageKey, saved);
   if (frozenReplicaRequests.get(frozen.idempotencyKey) === frozen) {
     frozenReplicaRequests.delete(frozen.idempotencyKey);
   }
@@ -163,8 +172,35 @@ export function studioAssetFromMaterial(item: MaterialItem): StudioAsset {
 
 export type OralAudioPurpose = "oral_audio" | "voice_clone";
 
-export function validateOralAudioFile(file: File) {
-  if (!file.name.toLowerCase().endsWith(".mp3")) return "仅支持 MP3 音频。";
+export const VOICE_CLONE_EXTENSIONS = [
+  "mp3",
+  "m4a",
+  "wav",
+  "wma",
+  "wmv",
+  "aac",
+  "flac",
+  "ogg",
+  "opus",
+  "aiff",
+  "aif",
+  "amr",
+];
+export const VOICE_CLONE_ACCEPT = VOICE_CLONE_EXTENSIONS.map(
+  (extension) => `.${extension}`,
+).join(",");
+
+export function validateOralAudioFile(
+  file: File,
+  purpose: OralAudioPurpose = "oral_audio",
+) {
+  const extension = file.name.toLowerCase().split(".").pop();
+  const allowed = purpose === "voice_clone" ? VOICE_CLONE_EXTENSIONS : ["mp3"];
+  if (!extension || !allowed.includes(extension)) {
+    return purpose === "voice_clone"
+      ? "请选择 MP3、M4A、WAV、WMA、AAC、FLAC、OGG、OPUS、AIFF、AMR 音频或带音轨的 WMV 文件。"
+      : "仅支持 MP3 音频。";
+  }
   if (file.size <= 0) return "上传文件不能为空。";
   if (file.size > MAX_ORAL_SOURCE_BYTES) return "上传文件不能超过 50 MB。";
   return undefined;
@@ -175,19 +211,27 @@ export function readAudioDuration(file: File): Promise<number> {
     const url = URL.createObjectURL(file);
     const audio = document.createElement("audio");
     const cleanup = () => {
+      clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
       audio.removeAttribute("src");
       URL.revokeObjectURL(url);
     };
+    // Some WebViews cannot decode Windows audio containers; callers may defer to server probing.
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("读取音频时长超时。"));
+    }, 10_000);
     audio.preload = "metadata";
     audio.onloadedmetadata = () => {
       const duration = audio.duration;
       cleanup();
       if (Number.isFinite(duration) && duration > 0) resolve(duration);
-      else reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
+      else reject(new Error("无法读取音频时长，请重新选择声音文件。"));
     };
     audio.onerror = () => {
       cleanup();
-      reject(new Error("无法读取音频时长，请重新选择 MP3 文件。"));
+      reject(new Error("无法读取音频时长，请重新选择声音文件。"));
     };
     audio.src = url;
   });
@@ -354,7 +398,8 @@ export async function loadProjectDraft(
   }
 
   draft.script.original = original;
-  draft.script.text = original;
+  draft.script.text = "";
+  draft.script.resultKind = "extracted";
   if (scriptResult.status === "rejected") {
     errors.push(`读取项目已保存文案失败：${errorText(scriptResult.reason)}`);
   } else {
@@ -363,6 +408,7 @@ export async function loadProjectDraft(
     if (!state.stale && state.version && typeof fullText === "string") {
       draft.script.id = state.version.id;
       draft.script.text = fullText;
+      draft.script.resultKind = "manual";
       draft.script.version = state.version.version_number;
     }
   }
@@ -458,6 +504,11 @@ function basePerson(
     scope: entry.service_scope,
     audience: entry.target_audience,
     expression: entry.expression_style,
+    audience_needs: entry.audience_needs ?? "",
+    factual_background: entry.factual_background ?? "",
+    sample_script: entry.sample_script ?? "",
+    forbidden_claims: entry.forbidden_claims ?? "",
+
     sheetId: entry.contact_sheet_asset_id ?? undefined,
     sceneLookCount: entry.scene_look_count,
     photoIds: [],
@@ -552,23 +603,12 @@ async function loadOralIdentityAssets(
       origin: avatar.source_kind === "IMAGE" ? "照片制作" : "视频制作",
       duration: oralStatusLabel(avatar.status, avatar.submission_state),
     })),
-    voices: voiceRows.map((voice) => {
-      const demoUrl = voice.demo_asset_id
-        ? previewUrls.get(voice.demo_asset_id)
-        : undefined;
-      return {
-        id: voice.id,
-        name: voice.title,
-        confirmed:
-          voice.status === "READY" &&
-          Boolean(voice.confirmed) &&
-          Boolean(demoUrl),
-        status: voice.status,
-        submissionState: voice.submission_state,
-        error: voice.error_message ?? undefined,
-        url: demoUrl,
-      };
-    }),
+    voices: voiceRows.map((voice) =>
+      studioVoice(
+        voice,
+        voice.demo_asset_id ? previewUrls.get(voice.demo_asset_id) : undefined,
+      ),
+    ),
     assets: sourceEntries.map(([id, descriptor]) => ({
       id,
       name: descriptor.name,
@@ -581,6 +621,28 @@ async function loadOralIdentityAssets(
     })),
     errors,
   };
+}
+
+function studioVoice(voice: OralVoiceRecord, url?: string): StudioVoice {
+  return {
+    id: voice.id,
+    name: voice.title,
+    confirmed:
+      voice.status === "READY" && Boolean(voice.confirmed) && Boolean(url),
+    status: voice.status,
+    submissionState: voice.submission_state,
+    error: voice.error_message ?? undefined,
+    url,
+  };
+}
+
+export async function loadStudioVoice(
+  voice: OralVoiceRecord,
+): Promise<StudioVoice> {
+  const url = voice.demo_asset_id
+    ? await signedUrl(voice.demo_asset_id, getAssetDownloadUrl)
+    : undefined;
+  return studioVoice(voice, url);
 }
 
 async function loadPeople(): Promise<{
@@ -690,6 +752,22 @@ export const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
   replacement: "人物置换",
 };
 
+/** MATERIAL-PERF-D（P1-3）：任务清单是否无实质变化（id/状态/进度/提交时间一致）。
+ * 任务轮询据此在无变化时返回原 data 引用，避免每 20s 全树重渲染。 */
+export function sameTasks(a: StudioTask[], b: StudioTask[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((task, index) => {
+    const other = b[index];
+    if (!other) return false;
+    return (
+      task.id === other.id &&
+      task.status === other.status &&
+      task.progress === other.progress &&
+      task.submitted === other.submitted
+    );
+  });
+}
+
 function studioTask(batch: GenerationBatchListItem): StudioTask {
   return {
     id: batch.id,
@@ -793,20 +871,27 @@ export async function uploadWorkbenchSourceVideo(
   file: File,
   onProgress: (percent: number) => void,
   signal?: AbortSignal,
+  purpose: "replica" | "script" = "replica",
 ): Promise<{
   projectId: string;
   assetId: string;
   project?: Project;
   asset?: StudioAsset;
+  analysisTaskId?: string;
+  analysisTaskStatus?: string;
 }> {
   const base = file.name.replace(/\.(mp4|mov)$/i, "").trim();
   const project = await createProject((base || file.name).slice(0, 120));
-  const intent = await createVideoUploadIntent(project.id, file);
+  const intent = await createVideoUploadIntent(project.id, file, purpose);
+  let analysisTaskId: string | undefined;
+  let analysisTaskStatus: string | undefined;
   let assetId = intent.asset_id;
   if (intent.upload_required !== false) {
     await uploadReferenceVideo(intent, file, onProgress, signal);
     const completed = await completeVideoUpload(intent.asset_id);
     assetId = completed.asset_id;
+    analysisTaskId = completed.analysis_task_id ?? undefined;
+    analysisTaskStatus = completed.analysis_task_status ?? undefined;
   }
   const uploadedProject: Project = {
     ...project,
@@ -818,6 +903,8 @@ export async function uploadWorkbenchSourceVideo(
     assetId,
     project: uploadedProject,
     asset: projectAsset(uploadedProject),
+    analysisTaskId,
+    analysisTaskStatus,
   };
 }
 
@@ -980,6 +1067,18 @@ export async function loadViralVideos(): Promise<{
   return { videos, errors };
 }
 
+/** MATERIAL-PERF-C（P0-6）：失败切片重试一次（400ms 退避）——启动 allSettled
+ * 扇出里任何一片瞬时失败都会把对应数据降级为空数组且无自动重试，用户只能
+ * 重进页面。这里给每个切片一次自动补救机会，最终语义仍由 allSettled 兜底。 */
+async function retryOnce<T>(factory: () => Promise<T>): Promise<T> {
+  try {
+    return await factory();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return factory();
+  }
+}
+
 export async function loadStudioData(
   currentUser: CurrentUser,
   options: { includeViral?: boolean } = {},
@@ -995,17 +1094,17 @@ export async function loadStudioData(
     viralResult,
     materialsResult,
   ] = await Promise.allSettled([
-    loadProjects(),
-    loadPeople(),
-    loadTasks(currentUser),
-    getStudioStats(),
-    getStudioAnalytics(7),
-    getStudioAnalytics(30),
-    loadOralTasks(),
+    retryOnce(loadProjects),
+    retryOnce(loadPeople),
+    retryOnce(() => loadTasks(currentUser)),
+    retryOnce(getStudioStats),
+    retryOnce(() => getStudioAnalytics(7)),
+    retryOnce(() => getStudioAnalytics(30)),
+    retryOnce(loadOralTasks),
     options.includeViral === false
       ? Promise.resolve({ videos: [], errors: [] })
-      : loadViralVideos(),
-    loadVideoMaterialMetadata(),
+      : retryOnce(loadViralVideos),
+    retryOnce(loadVideoMaterialMetadata),
   ]);
   const errors: string[] = [];
   const projectData =
@@ -1120,7 +1219,7 @@ export async function uploadVideoMaterial(
 export async function uploadOralAudioMaterial(
   file: File,
   purpose: OralAudioPurpose,
-  durationSeconds: number,
+  durationSeconds: number | undefined,
   onProgress: (progress: number) => void,
   signal?: AbortSignal,
 ): Promise<StudioAsset> {
@@ -1130,8 +1229,7 @@ export async function uploadOralAudioMaterial(
     audioPurpose: purpose,
     durationSeconds,
   });
-  await uploadMaterial(intent, file, onProgress, signal);
-  const material = await completeMaterialUpload(intent.asset_id);
+  const material = await putMaterial(intent, file, onProgress, signal);
   const asset = studioAssetFromMaterial(material);
   const url = material.asset_id
     ? await getAssetDownloadUrl(material.asset_id)
@@ -1208,6 +1306,25 @@ function draftFromPayload(payload: unknown): StudioDraft | null {
             (value) => typeof value === "string" && value.length > 0,
           ),
   };
+  merged.rewriteMethod = payload.rewriteMethod === "custom" ? "custom" : "ip";
+  merged.rewriteInstructions =
+    typeof payload.rewriteInstructions === "string"
+      ? payload.rewriteInstructions
+      : "";
+  merged.rewriteLength = ["100", "200", "300", "custom"].includes(
+    String(payload.rewriteLength),
+  )
+    ? (payload.rewriteLength as StudioDraft["rewriteLength"])
+    : "original";
+  if (!["extracted", "rewritten", "manual"].includes(String(script.resultKind)))
+    delete merged.script.resultKind;
+  merged.rewriteWordCount =
+    typeof payload.rewriteWordCount === "number" &&
+    Number.isInteger(payload.rewriteWordCount) &&
+    payload.rewriteWordCount >= 1 &&
+    payload.rewriteWordCount <= 5000
+      ? payload.rewriteWordCount
+      : undefined;
   merged.style = "standard";
   return merged;
 }
@@ -1257,6 +1374,7 @@ export function savedScriptFromRecord(record: {
   source_kind?: string | null;
 }): StudioScript {
   return {
+    resultKind: "manual",
     id: record.script_id,
     title: record.title,
     original: record.original ?? "",
@@ -1449,11 +1567,14 @@ export async function loadLatestScriptFromUpload(projectId: string) {
     : null;
 }
 
-/** 复刻一键生成：存稿 → 编译 →（编辑过则存修订）→ 锁定 → 建批。 */
+/** 复刻一键生成：冻结当前可见文本与素材 → 原子建批。 */
 export async function runReplicaGeneration(
   projectId: string,
   input: {
     promptText: string;
+    currentUserId?: string;
+    finalPromptVersionId?: string;
+    scriptVersionId?: string;
     originalScriptText: string;
     confirmedScriptText?: string;
     shotCardVersionId: string;
@@ -1469,9 +1590,20 @@ export async function runReplicaGeneration(
   const { idempotencyKey, isCurrent, ...stableInput } = input;
   const fingerprint = JSON.stringify(stableInput);
   const contextKey = replicaRequestContextKey(projectId, fingerprint);
+  const storageKey = `replica.submission/${input.currentUserId ?? "legacy"}/${contextKey}`;
+  const saved = restoreIdempotencyRecord(storageKey);
   const frozen =
     frozenReplicaRequests.get(idempotencyKey) ??
-    frozenReplicaRequestsByContext.get(contextKey);
+    frozenReplicaRequestsByContext.get(contextKey) ??
+    (saved
+      ? {
+          storageKey,
+          projectId,
+          fingerprint,
+          idempotencyKey: saved.key,
+          request: saved.request,
+        }
+      : null);
   if (frozen) {
     if (frozen.projectId !== projectId || frozen.fingerprint !== fingerprint) {
       throw new Error("复刻提交参数已变化，请重新确认费用后再试。");
@@ -1483,42 +1615,32 @@ export async function runReplicaGeneration(
     clearFrozenReplicaRequest(frozen);
     return batch;
   }
-  const script = await createScriptVersion(projectId, {
-    source: input.confirmedScriptText?.trim()
-      ? "custom"
-      : input.originalScriptText.trim()
-        ? "original"
-        : "custom",
-    text: input.confirmedScriptText?.trim() || input.originalScriptText,
-    shot_card_version_id: input.shotCardVersionId,
-  });
-  const compiled = await compileGenerationPrompt(projectId, {
-    script_version_id: script.id,
-    shot_card_version_id: input.shotCardVersionId,
-    first_frame_asset_id: input.firstFrameAssetId,
-    output_duration_seconds: input.outputDurationSeconds,
-    resolution: input.resolution,
-    ratio: input.ratio,
-  });
-  const compiledText = String(
-    (compiled.payload as Record<string, unknown>).prompt_text ?? "",
-  );
-  const finalPrompt =
-    !input.confirmedScriptText?.trim() &&
-    input.promptText.trim() &&
-    input.promptText !== compiledText
-      ? await reviseGenerationPrompt(projectId, {
-          base_prompt_version_id: compiled.id,
-          prompt_text: input.promptText.trim(),
-        })
-      : compiled;
-  const locked = await lockGenerationPrompt(projectId, finalPrompt.id);
+  if (!input.promptText.trim() || Array.from(input.promptText).length > 7000) {
+    throw new Error("请输入 1–7000 字的提示词。");
+  }
+  if (!input.finalPromptVersionId || !input.scriptVersionId) {
+    throw new Error("请先确认文案与首帧并合成最终提示词，再核对费用提交。");
+  }
   if (isCurrent && !isCurrent()) {
     throw new Error("复刻页面已变化，本次旧提交已停止。");
   }
   const request: GenerationBatchInput = {
     quantity: input.quantity,
-    prompt_version_id: locked.id,
+    prompt_text: input.promptText,
+    prompt_context: {
+      source: "manual",
+      ...readAppliedOptimization(
+        `${input.currentUserId}:${projectId}`,
+        input.promptText,
+        {
+          script_version_id: input.scriptVersionId,
+          shot_card_version_id: input.shotCardVersionId,
+        },
+      ),
+      shot_card_version_id: input.shotCardVersionId,
+      script_version_id: input.scriptVersionId,
+      final_prompt_version_id: input.finalPromptVersionId,
+    },
     first_frame_asset_id: input.firstFrameAssetId,
     output_duration_seconds: input.outputDurationSeconds,
     resolution: input.resolution,
@@ -1527,7 +1649,16 @@ export async function runReplicaGeneration(
     provider: defaultBatchProvider(),
     fake_audio_quality: "ok",
   };
+  const { idempotency_key: preferredKey, ...requestBody } = request;
+  const record = restoreOrCreateIdempotencyRecord(
+    storageKey,
+    requestBody,
+    null,
+    preferredKey,
+  );
+  if (!record) throw new Error("已有提交待恢复，请先核对任务记录。");
   const prepared = {
+    storageKey,
     fingerprint,
     idempotencyKey,
     projectId,

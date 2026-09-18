@@ -1,0 +1,242 @@
+[
+  {
+    "tag": "SECTION",
+    "cls": "studio-panel content-publish-editor",
+    "text": "编辑发布草稿发布文案独立于口播终稿；点击发布后由服务端投递到平台。视频预览00:42封面选择00:4",
+    "left": 564,
+    "right": 1144,
+    "width": 580
+  },
+  {
+    "tag": "HEADER",
+    "cls": "content-publish-editor-heading",
+    "text": "编辑发布草稿发布文案独立于口播终稿；点击发布后由服务端投递到平台。",
+    "left": 573,
+    "right": 1135,
+    "width": 562
+  },
+  {
+    "tag": "IMG",
+    "cls": "video-preview__backdrop",
+    "text": "",
+    "left": 1043.827392578125,
+    "right": 1127.453857421875,
+    "width": 83.62646484375
+  },
+  {
+    "tag": "IMG",
+    "cls": "video-preview__backdrop",
+    "text": "",
+    "left": 1043.827392578125,
+    "right": 1127.453857421875,
+    "width": 83.62646484375
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-publish-media-grid",
+    "text": "视频预览00:42封面选择00:42上传自定义封面",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "SECTION",
+    "cls": "content-publish-cover",
+    "text": "封面选择00:42上传自定义封面",
+    "left": 882.875,
+    "right": 1123,
+    "width": 240.125
+  },
+  {
+    "tag": "H3",
+    "cls": "",
+    "text": "封面选择",
+    "left": 882.875,
+    "right": 1123,
+    "width": 240.125
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-cover-options",
+    "text": "00:42",
+    "left": 882.875,
+    "right": 1123,
+    "width": 240.125
+  },
+  {
+    "tag": "BUTTON",
+    "cls": "",
+    "text": "",
+    "left": 1048.28125,
+    "right": 1123,
+    "width": 74.71875
+  },
+  {
+    "tag": "BUTTON",
+    "cls": "",
+    "text": "",
+    "left": 1048.28125,
+    "right": 1123,
+    "width": 74.71875
+  },
+  {
+    "tag": "BUTTON",
+    "cls": "studio-button studio-button--outline ",
+    "text": "上传自定义封面",
+    "left": 882.875,
+    "right": 1123,
+    "width": 240.125
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-publish-fields",
+    "text": "发布平台 抖音 视频号 小红书发布账号张工说乡墅审核示例账号发布时间立即定时发布标题发布描述主体之外",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "studio-field",
+    "text": "发布账号张工说乡墅审核示例账号",
+    "left": 862,
+    "right": 1123,
+    "width": 261
+  },
+  {
+    "tag": "LABEL",
+    "cls": "",
+    "text": "发布账号",
+    "left": 862,
+    "right": 1123,
+    "width": 261
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-publish-account",
+    "text": "张工说乡墅审核示例账号",
+    "left": 862,
+    "right": 1123,
+    "width": 261
+  },
+  {
+    "tag": "DIV",
+    "cls": "studio-field",
+    "text": "发布时间立即定时",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "LABEL",
+    "cls": "",
+    "text": "发布时间",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-publish-schedule",
+    "text": "立即定时",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "studio-field",
+    "text": "发布标题",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "LABEL",
+    "cls": "",
+    "text": "发布标题",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "INPUT",
+    "cls": "",
+    "text": "",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "studio-field",
+    "text": "发布描述主体之外，门窗、水电、防水和庭院，也要提前规划。",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "LABEL",
+    "cls": "",
+    "text": "发布描述",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "TEXTAREA",
+    "cls": "",
+    "text": "主体之外，门窗、水电、防水和庭院，也要提前规划。",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "studio-field",
+    "text": "标签# 农村自建房 ×# 建房预算 ×",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "LABEL",
+    "cls": "",
+    "text": "标签",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-publish-tags",
+    "text": "# 农村自建房 ×# 建房预算 ×",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "P",
+    "cls": "",
+    "text": "点击「立即发布」或「定时发布」后，服务端会用所选账号的登录态自动上传并创建作品；桌面端仍可打开官方页",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "DIV",
+    "cls": "content-publish-actions",
+    "text": "保存草稿移除当前草稿下载视频下载封面复制发布文案立即发布",
+    "left": 585,
+    "right": 1123,
+    "width": 538
+  },
+  {
+    "tag": "BUTTON",
+    "cls": "studio-button studio-button--outline ",
+    "text": "下载封面",
+    "left": 1029,
+    "right": 1123,
+    "width": 94
+  }
+]

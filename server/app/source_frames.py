@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -40,6 +41,8 @@ SOURCE_FRAME_SELECTION_KIND = "source_frame_selection"
 SOURCE_FRAME_SCHEMA_VERSION = "b4.source-frame.v2"
 SOURCE_FRAME_TIMESTAMPS_SECONDS = (0.5, 1.5, 2.5)
 FFMPEG_TIMEOUT_SECONDS = 15
+SCENE_BOUNDARY_THRESHOLD = 0.35
+MAX_SCENE_BOUNDARY_CANDIDATES = 24
 SOURCE_FRAME_TASK_LEASE_MINUTES = 5
 
 logger = logging.getLogger(__name__)
@@ -58,11 +61,11 @@ def source_video_duration_seconds(asset: sqlite3.Row) -> float | None:
 
 
 def adaptive_source_frame_timestamps(duration_seconds: float | None) -> tuple[float, ...]:
-    """Spread default candidates across the usable video instead of its intro."""
+    """Include the opening state and representative later frames."""
 
     if duration_seconds is None or duration_seconds <= 0:
         return SOURCE_FRAME_TIMESTAMPS_SECONDS
-    return tuple(round(duration_seconds * ratio, 3) for ratio in (0.1, 0.3, 0.5, 0.7, 0.9))
+    return tuple(round(duration_seconds * ratio, 3) for ratio in (0.0, 0.3, 0.5, 0.7, 0.9))
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,68 @@ class SourceFrameExtractorUnavailable(RuntimeError):
 
 class SourceFrameExtractionFailed(RuntimeError):
     pass
+
+
+class SceneBoundaryDetectionFailed(RuntimeError):
+    pass
+
+
+class FFmpegSceneBoundaryDetector:
+    """Return bounded FFmpeg scene-change candidates for model review."""
+
+    def detect(
+        self,
+        content: bytes,
+        *,
+        filename: str,
+        duration_seconds: float,
+    ) -> tuple[float, ...]:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            raise SourceFrameExtractorUnavailable("ffmpeg is required for scene detection")
+
+        suffix = Path(filename).suffix.lower()
+        with tempfile.TemporaryDirectory(prefix="video-replica-scene-boundary-") as directory:
+            video_path = Path(directory) / f"reference{suffix}"
+            with video_path.open("wb") as video_file:
+                video_file.write(content)
+            try:
+                result = subprocess.run(
+                    [
+                        ffmpeg,
+                        "-v",
+                        "info",
+                        "-i",
+                        str(video_path),
+                        "-vf",
+                        f"select=gt(scene\\,{SCENE_BOUNDARY_THRESHOLD}),showinfo",
+                        "-an",
+                        "-f",
+                        "null",
+                        "-",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    timeout=FFMPEG_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise SceneBoundaryDetectionFailed("ffmpeg scene detection timed out") from exc
+            if result.returncode != 0:
+                raise SceneBoundaryDetectionFailed("ffmpeg could not detect scene boundaries")
+
+        candidates = [
+            round(float(value), 3)
+            for value in re.findall(rb"pts_time:([0-9]+(?:\.[0-9]+)?)", result.stderr)
+            if 0.05 < float(value) < duration_seconds - 0.05
+        ]
+        unique_candidates = tuple(dict.fromkeys(candidates))
+        if len(unique_candidates) <= MAX_SCENE_BOUNDARY_CANDIDATES:
+            return unique_candidates
+        last_index = len(unique_candidates) - 1
+        return tuple(
+            unique_candidates[round(index * last_index / (MAX_SCENE_BOUNDARY_CANDIDATES - 1))]
+            for index in range(MAX_SCENE_BOUNDARY_CANDIDATES)
+        )
 
 
 class FFmpegSourceFrameExtractor:
@@ -246,35 +311,6 @@ def score_grayscale_frame(pixels: bytes) -> float:
     sharpness = min(1.0, detail / 32)
     exposure = max(0.0, 1.0 - abs(average - 127.5) / 127.5)
     return float(round(0.6 * sharpness + 0.25 * contrast + 0.15 * exposure, 3))
-
-
-def extract_source_frame_candidates(
-    conn: BusinessConnection,
-    *,
-    project_id: str,
-    asset_id: str,
-    actor: CurrentUser,
-    storage: StorageAdapter,
-    extractor: SourceFrameExtractor,
-    timestamps_seconds: tuple[float, ...] | None = None,
-) -> sqlite3.Row:
-    plan = prepare_source_frame_extraction(
-        conn,
-        project_id=project_id,
-        asset_id=asset_id,
-        actor=actor,
-        timestamps_seconds=timestamps_seconds,
-    )
-    stored = perform_source_frame_extraction(
-        plan,
-        storage=storage,
-        extractor=extractor,
-    )
-    try:
-        return complete_source_frame_extraction(conn, plan=plan, stored=stored)
-    except Exception:
-        delete_created_source_frames(storage, stored.created_assets, actor_id=actor.id)
-        raise
 
 
 def prepare_source_frame_extraction(

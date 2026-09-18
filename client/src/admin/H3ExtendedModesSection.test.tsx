@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { setAdminCsrfToken } from "../api";
@@ -62,9 +62,9 @@ describe("H3ExtendedModesSection", () => {
     const fetchMock = installFetch({ enabled: false });
     render(<H3ExtendedModesSection />);
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "开启扩展模式" }),
-    );
+    const toggle = await screen.findByRole("button", { name: "开启扩展模式" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    fireEvent.click(toggle);
 
     await screen.findByRole("dialog", { name: "开启扩展模式" });
     expect(screen.queryByLabelText("操作原因")).not.toBeInTheDocument();

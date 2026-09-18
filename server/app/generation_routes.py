@@ -74,6 +74,7 @@ from app.generation import (
     version_result,
     version_state,
 )
+from app.material_thumbs import store_video_thumbnail
 from app.media import MAX_UPLOAD_BYTES, FFprobeVideoProbe, VideoProbeFailed, VideoProbeUnavailable
 from app.media_routes import MediaStorage
 from app.media_tools import (
@@ -113,6 +114,10 @@ class ScriptRewriteIpProfileSummary(BaseModel):
     service_scope: str
     target_audience: str
     expression_style: str
+    audience_needs: str = ""
+    factual_background: str = ""
+    sample_script: str = ""
+    forbidden_claims: str = ""
     profile_version: int
 
 
@@ -124,6 +129,7 @@ class ScriptRewriteTaskResponse(BaseModel):
     ip_profile_snapshot: ScriptRewriteIpProfileSummary | None
     source_asset_id: str | None
     source_text: str
+    instructions: str = ""
     status: str
     attempt: int
     result: ScriptRewriteResult | None
@@ -188,6 +194,7 @@ def rewrite_project_script(
             idempotency_key=request.idempotency_key or str(uuid4()),
             identity_id=request.identity_id,
             source_asset_id=request.source_asset_id,
+            instructions=request.instructions,
         )
         return script_rewrite_task_response(row)
 
@@ -294,6 +301,7 @@ def script_rewrite_task_response(row: sqlite3.Row) -> ScriptRewriteTaskResponse:
         ip_profile_snapshot=snapshot,
         source_asset_id=request.source_asset_id,
         source_text=request.source_text,
+        instructions=request.instructions,
         status=str(row["status"]),
         attempt=int(row["attempt"]),
         result=script_rewrite_task_result(row),
@@ -819,6 +827,8 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
             content,
             content_type="video/mp4",
         )
+        # MATERIAL-THUMBS-B：成片字节在手时抽首帧（写事务之外）；失败只损失缩略图。
+        thumbnail_key = store_video_thumbnail(storage, stored.key, content)
         with db.write() as (conn, actor):
             return persist_generation_result_archive(
                 conn,
@@ -827,6 +837,7 @@ def archive_generation_result(task_id: str, db: BusinessDbDep, storage: MediaSto
                 stored=stored,
                 duration_seconds=duration_seconds,
                 normalization_metadata=normalization_metadata,
+                thumbnail_key=thumbnail_key,
             )
     except (
         H3ProviderFailed,

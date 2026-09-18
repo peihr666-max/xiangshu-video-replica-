@@ -49,8 +49,10 @@
   display: grid;
   place-content: center;
   gap: 10px;
-  height: 100%;
-  min-height: 120px;
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  overflow: auto;
   padding: 12px;
   color: #a9aca4;
   text-align: center;

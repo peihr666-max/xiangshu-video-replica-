@@ -76,6 +76,7 @@ from app.image_tasks import (
     complete_character_sheet_task,
     complete_first_frame_task,
     fail_image_task,
+    log_image_task_failure,
     perform_character_sheet_task,
     prepare_character_sheet_task,
     prepare_first_frame_task,
@@ -771,6 +772,7 @@ def run_worker_once(
                     stored=stored,
                 )
             except Exception as exc:
+                log_image_task_failure("first_frame_tasks", first_frame_lease, exc)
                 if stored is not None and work is not None:
                     from app.first_frames import delete_created_first_frames
 
@@ -816,6 +818,7 @@ def run_worker_once(
                     storage=storage,
                 )
             except Exception as exc:
+                log_image_task_failure("character_sheet_tasks", character_sheet_lease, exc)
                 fail_image_task(
                     conn,
                     table="character_sheet_tasks",
@@ -1189,6 +1192,13 @@ def run_pg_worker_once(
                 ).fetchone()[0]:
                     reconcile_operations(reconcile_conn)
         processed_round = False
+        from app.prompt_optimizer import run_prompt_task
+
+        if run_prompt_task(_pg_audio_connection, worker_id=worker_id, storage=storage):
+            processed += 1
+            processed_round = True
+            if max_tasks is not None and processed >= max_tasks:
+                return processed
         with pg_transaction() as raw_conn:
             viral_import_lease = acquire_viral_import_task(
                 BusinessConnection.postgres(raw_conn), worker_id=worker_id
@@ -1639,6 +1649,7 @@ def run_pg_worker_once(
                         stored=stored,
                     )
             except Exception as exc:
+                log_image_task_failure("first_frame_tasks", first_frame_lease, exc)
                 if stored is not None and work is not None:
                     from app.first_frames import delete_created_first_frames
 
@@ -1713,6 +1724,7 @@ def run_pg_worker_once(
                         storage=storage,
                     )
             except Exception as exc:
+                log_image_task_failure("character_sheet_tasks", character_sheet_lease, exc)
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     complete_operation_cost(

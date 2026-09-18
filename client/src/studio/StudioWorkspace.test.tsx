@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   act,
   fireEvent,
@@ -177,13 +178,11 @@ const livePanel = vi.hoisted(() => ({
 vi.mock("./LiveWorkspacePanel", () => ({
   LiveWorkspacePanel: (props: {
     handoffBatch?: { id: string } | null;
-    onBatchCreated: (batch: { id: string }) => void;
     onClose: () => void;
     onHandoffConsumed?: () => void;
     onProjectSelected: (project: typeof livePanel.project) => void;
     characterIdentityId?: string;
     panel?: string;
-    onBusyChange: (busy: boolean) => void;
   }) => {
     livePanel.props(props);
     return (
@@ -192,13 +191,13 @@ vi.mock("./LiveWorkspacePanel", () => ({
           type="button"
           onClick={() => props.onProjectSelected(livePanel.project)}
         >
-          选择测试项目
+          生成测试项目
         </button>
         <button
           type="button"
-          onClick={() => props.onBatchCreated({ id: "batch-1" })}
+          onClick={() => props.onProjectSelected(livePanel.project)}
         >
-          创建测试批次
+          查看测试项目
         </button>
         {props.handoffBatch ? (
           <span>存在交接批次</span>
@@ -212,12 +211,6 @@ vi.mock("./LiveWorkspacePanel", () => ({
         ) : null}
         <button type="button" onClick={props.onClose}>
           返回新工作台
-        </button>
-        <button type="button" onClick={() => props.onBusyChange(true)}>
-          模拟开始忙碌
-        </button>
-        <button type="button" onClick={() => props.onBusyChange(false)}>
-          模拟结束忙碌
         </button>
       </section>
     );
@@ -268,7 +261,7 @@ describe("V1.4 workspace integration", () => {
     onSessionExpired: vi.fn(),
   });
 
-  it("正式客户侧栏读取真实钱包，并把零余额明确显示为 0 积分", async () => {
+  it("账户页读取真实钱包，并把零余额明确显示为 0 积分", async () => {
     api.customerGetWallet.mockResolvedValue({
       available_credits: 0,
       reserved_credits: 0,
@@ -285,18 +278,21 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户甲",
           role: "customer",
         }}
-        customerAccount={account}
-        initialState={createState("workbench")}
+        customerWallet={account}
+        initialState={createState("profile")}
       />,
     );
 
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 0 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("0 积分")).toBeInTheDocument();
     expect(screen.getByText("0 积分")).toBeInTheDocument();
+    const accountButton = screen.getByRole("button", {
+      name: "用户档案，customer-a",
+    });
+    expect(accountButton).toHaveTextContent("customer-a");
+    expect(accountButton).not.toHaveTextContent("积分");
   });
 
-  it("正式内部工作区沿用已有钱包接口显示积分", async () => {
+  it("内部账户页沿用已有钱包接口显示积分", async () => {
     api.getWallet.mockResolvedValue({
       available_credits: 21,
       reserved_credits: 0,
@@ -312,17 +308,15 @@ describe("V1.4 workspace integration", () => {
           display_name: "员工甲",
           role: "employee",
         }}
-        initialState={createState("workbench")}
+        initialState={createState("profile")}
       />,
     );
 
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 21 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("21 积分")).toBeInTheDocument();
     expect(api.getWallet).toHaveBeenCalledOnce();
   });
 
-  it("任务轮询同步钱包，后台结算后侧栏不需要重新登录", async () => {
+  it("任务轮询同步钱包，后台结算后账户页不需要重新登录", async () => {
     const intervals = vi.spyOn(window, "setInterval");
     api.getWallet.mockResolvedValue({
       available_credits: 21,
@@ -331,10 +325,10 @@ describe("V1.4 workspace integration", () => {
     render(
       <StudioWorkspace
         currentUser={{ ...reviewUser, role: "employee" }}
-        initialState={createState("workbench")}
+        initialState={createState("profile")}
       />,
     );
-    await screen.findByRole("button", { name: "用户档案，积分 21 积分" });
+    await screen.findByText("21 积分");
     api.getWallet.mockResolvedValue({
       available_credits: 16,
       reserved_credits: 0,
@@ -347,9 +341,7 @@ describe("V1.4 workspace integration", () => {
     await act(async () => {
       callback();
     });
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 16 积分" }),
-    ).toBeVisible();
+    expect(await screen.findByText("16 积分")).toBeVisible();
   });
 
   it("切换账号后忽略旧钱包的迟到响应", async () => {
@@ -377,8 +369,8 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户甲",
           role: "customer",
         }}
-        customerAccount={olderAccount}
-        initialState={createState("workbench")}
+        customerWallet={olderAccount}
+        initialState={createState("profile")}
       />,
     );
     await waitFor(() =>
@@ -395,14 +387,12 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户乙",
           role: "customer",
         }}
-        customerAccount={newerAccount}
-        initialState={createState("workbench")}
+        customerWallet={newerAccount}
+        initialState={createState("profile")}
       />,
     );
 
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 8 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("8 积分")).toBeInTheDocument();
     resolveOlder({
       available_credits: 99,
       reserved_credits: 0,
@@ -411,12 +401,10 @@ describe("V1.4 workspace integration", () => {
       recharge_step_fen: 100,
     });
     await act(async () => Promise.resolve());
-    expect(
-      screen.getByRole("button", { name: "用户档案，积分 8 积分" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("8 积分")).toBeInTheDocument();
   });
 
-  it("侧栏钱包读取失败与未知余额明确区分", async () => {
+  it("账户页钱包读取失败与未知余额明确区分", async () => {
     api.customerGetWallet
       .mockRejectedValueOnce(new Error("wallet offline"))
       .mockResolvedValueOnce({
@@ -435,15 +423,13 @@ describe("V1.4 workspace integration", () => {
           display_name: "客户甲",
           role: "customer",
         }}
-        customerAccount={account}
-        initialState={createState("workbench")}
+        customerWallet={account}
+        initialState={createState("profile")}
       />,
     );
 
     await waitFor(() => expect(api.customerGetWallet).toHaveBeenCalledOnce());
-    expect(
-      await screen.findByRole("button", { name: "用户档案，积分 读取失败" }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("读取失败")).toBeInTheDocument();
     expect(screen.getByText("读取失败")).toBeInTheDocument();
   });
 
@@ -496,7 +482,7 @@ describe("V1.4 workspace integration", () => {
     );
     expect(api.customerGetWallet).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: "用户档案，积分 读取失败" }),
+      screen.getByRole("button", { name: "用户档案，customer-a" }),
     ).toBeInTheDocument();
   });
   it("展开导航后可直接关闭并恢复入口焦点，无需切换当前业务", () => {
@@ -514,6 +500,45 @@ describe("V1.4 workspace integration", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(toggle).toHaveFocus();
     expect(screen.getByRole("heading", { name: /工作台/ })).toBeInTheDocument();
+  });
+
+  it("桌面端默认展开侧边栏，可通过顶栏按钮收起并写入记忆", () => {
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+    const shell = container.querySelector(".studio-shell");
+    expect(shell?.className).not.toContain("studio-shell--sidebar-collapsed");
+    const toggle = screen.getByRole("button", { name: "收起侧边栏" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(shell?.className).toContain("studio-shell--sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem("studio.sidebar.collapsed")).toBe("1");
+  });
+
+  it("收起状态跨会话记忆，可再次展开并清除记忆", () => {
+    window.localStorage.setItem("studio.sidebar.collapsed", "1");
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+    const shell = container.querySelector(".studio-shell");
+    expect(shell?.className).toContain("studio-shell--sidebar-collapsed");
+    const toggle = screen.getByRole("button", { name: "展开侧边栏" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(shell?.className).not.toContain("studio-shell--sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "收起侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(window.localStorage.getItem("studio.sidebar.collapsed")).toBe("0");
   });
 
   it("保持共享壳层尺寸稳定，避免路由切换时 Logo 和标题跳动", () => {
@@ -544,6 +569,50 @@ describe("V1.4 workspace integration", () => {
     expect(sidebar?.closest("[class*='studio-route-']")).toBeNull();
   });
 
+  it("所有工作区共用可切换的侧边栏：默认展开、收起态为 88px 图标栏", () => {
+    const studioStyles = readFileSync("src/studio/studio.css", "utf8");
+
+    // 默认展开：基础变量保持 224px，不再按屏宽强制收窄
+    expect(studioStyles).toMatch(
+      /\.studio-shell\s*\{\s*[^}]*--studio-sidebar:\s*224px;/,
+    );
+    // 收起态由 class 驱动（顶栏开关 + localStorage 记忆），仅桌面端生效
+    expect(studioStyles).toMatch(
+      /@media \(min-width: 801px\)[\s\S]*?\.studio-shell--sidebar-collapsed\s*\{\s*--studio-sidebar:\s*88px;/,
+    );
+    expect(studioStyles).toContain(
+      ".studio-shell--sidebar-collapsed .studio-sidebar",
+    );
+    expect(studioStyles).not.toContain(
+      ".studio-shell--creation .studio-sidebar",
+    );
+  });
+
+  it("视频创作页仅在侧边栏显示一次品牌，页头保留通用操作", () => {
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("replica")}
+      />,
+    );
+
+    const topbar = container.querySelector(".studio-topbar");
+    expect(topbar).not.toBeNull();
+    expect(within(topbar as HTMLElement).queryByAltText("众墅之家")).toBeNull();
+    expect(screen.getAllByAltText("众墅之家")).toHaveLength(1);
+    expect(
+      within(topbar as HTMLElement).getByRole("textbox", {
+        name: "搜索工作区",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(topbar as HTMLElement).getByRole("button", {
+        name: "用户档案",
+      }),
+    ).toBeInTheDocument();
+  });
+
   it("左下角与右上角使用同一个账号头像", () => {
     render(
       <StudioWorkspace
@@ -554,7 +623,7 @@ describe("V1.4 workspace integration", () => {
     );
 
     const accountAvatar = screen
-      .getByRole("button", { name: "用户档案，积分 2680 积分" })
+      .getByRole("button", { name: "用户档案，review" })
       .querySelector("img");
     const topAvatar = screen
       .getByRole("button", { name: "用户档案" })
@@ -589,6 +658,7 @@ describe("V1.4 workspace integration", () => {
     // F-06 本地草稿会跨用例残留（防抖写入 localStorage），逐用例隔离
     window.localStorage.clear();
     vi.clearAllMocks();
+    live.loadProjectDraft.mockReset();
     api.createViralImportTask.mockReset();
     live.loadViralVideos.mockResolvedValue({ videos: [], errors: [] });
     api.customerGetWallet.mockReset();
@@ -620,33 +690,6 @@ describe("V1.4 workspace integration", () => {
     window.history.replaceState(null, "", "/#studio/workbench");
   });
 
-  it("场景形象进入口播分身后由真实 Studio 状态保留为照片来源", () => {
-    const state = createReviewState("person-photos");
-    state.draft.imageId = undefined;
-    render(
-      <StudioWorkspace
-        currentUser={reviewUser}
-        initialState={state}
-        reviewData={createReviewData()}
-      />,
-    );
-
-    const sceneCard = screen.getByText("庭院讲解", {
-      selector: "strong",
-    }).parentElement;
-    if (!sceneCard) throw new Error("scene card not found");
-    fireEvent.click(
-      within(sceneCard).getByRole("button", { name: "制作口播分身" }),
-    );
-
-    expect(
-      screen.getByRole("heading", { name: "制作口播分身" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("已选：庭院讲解")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "开始制作照片分身" }),
-    ).toBeDisabled();
-  });
   it("重新进入形象照片页读取新场景，不能永久复用首次空列表", async () => {
     const data = createReviewData();
     live.loadStudioData.mockResolvedValue({
@@ -707,18 +750,22 @@ describe("V1.4 workspace integration", () => {
       loaded: 1,
       total: 1,
     });
-    const state = createReviewState("person-avatars");
+    const state = createReviewState("person-photos");
     state.draft.imageId = "scene-after-refresh";
     const view = render(
       <StudioWorkspace currentUser={reviewUser} initialState={state} />,
     );
-    expect(await screen.findByText("已选：联调场景")).toBeVisible();
+    expect(
+      await screen.findByText("联调场景", { selector: "strong" }),
+    ).toBeVisible();
     view.rerender(
       <StudioWorkspace currentUser={{ ...reviewUser }} initialState={state} />,
     );
     expect(live.loadStudioData).toHaveBeenCalledTimes(1);
     expect(live.loadPersonAssets).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("已选：联调场景")).toBeVisible();
+    expect(
+      await screen.findByText("联调场景", { selector: "strong" }),
+    ).toBeVisible();
   });
   it("renders the approved navigation order and keeps review data isolated", () => {
     render(
@@ -735,7 +782,7 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getByText("粘贴一条爆款乡墅视频链接，")).toBeInTheDocument();
     expect(screen.getByText("快速生成它的原创视频")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "用户档案，积分 2680 积分" }),
+      screen.getByRole("button", { name: "用户档案，review" }),
     ).toBeInTheDocument();
     expect(live.loadStudioData).not.toHaveBeenCalled();
     expect(nav.queryByRole("button", { name: "系统设置" })).toBeNull();
@@ -800,7 +847,8 @@ describe("V1.4 workspace integration", () => {
     const state = createState("video");
     render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
     await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole("button", { name: "尾帧 尾帧（可选）" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加尾帧" }));
+    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
     expect(
       await screen.findByRole("img", { name: "云端尾帧" }),
     ).toHaveAttribute("src", "https://signed.example/tail.png");
@@ -832,33 +880,6 @@ describe("V1.4 workspace integration", () => {
     expect(api.getSettings).toHaveBeenCalledTimes(1);
     expect(window.location.hash).toBe("#studio/settings");
   });
-  it("busy期间浏览器回退完成后应用被延迟的历史路由", async () => {
-    live.loadStudioData.mockResolvedValue({
-      ...createReviewData(),
-      loading: false,
-    });
-    render(<StudioWorkspace currentUser={reviewUser} />);
-    await waitFor(() => expect(live.loadStudioData).toHaveBeenCalled());
-
-    window.history.pushState(null, "", "#studio/viral");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(
-      await screen.findByRole("heading", { name: "爆款视频" }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "工作台" }));
-    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-    fireEvent.click(screen.getByRole("button", { name: "模拟开始忙碌" }));
-
-    await act(async () => window.history.back());
-    await waitFor(() => expect(window.location.hash).toBe("#studio/viral"));
-    expect(screen.getByLabelText("模拟已有功能工作区")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "模拟结束忙碌" }));
-
-    expect(
-      await screen.findByRole("heading", { name: "爆款视频" }),
-    ).toBeInTheDocument();
-  });
-
   it("普通导航清除旧详情返回位置且每个详情入口写入当前来源", () => {
     const reviewData = createReviewData();
     reviewData.tasks = [
@@ -909,7 +930,7 @@ describe("V1.4 workspace integration", () => {
       within(screen.getByRole("dialog")).getByRole("button", { name: /李总/ }),
     );
     expect(screen.queryByText("张工本人音色 V1")).not.toBeInTheDocument();
-    expect(screen.getByText("待确认 V3")).toBeInTheDocument();
+    expect(screen.getByText("待确认终稿")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "生成口播视频" })).toBeDisabled();
   });
   it("cancelling a picker leaves the original draft intact", () => {
@@ -926,94 +947,7 @@ describe("V1.4 workspace integration", () => {
     );
     expect(screen.getByText("张工本人音色 V1")).toBeInTheDocument();
   });
-  it("完整口播音频选择器服务端搜索并加载首屏外音频", async () => {
-    api.listMaterials
-      .mockResolvedValueOnce({
-        items: [],
-        page: 1,
-        page_size: 12,
-        total: 13,
-      })
-      .mockResolvedValueOnce({
-        items: [
-          {
-            id: "asset:deep-audio",
-            owner_user_id: "review-user",
-            asset_id: "deep-audio",
-            generation_task_id: null,
-            project_id: null,
-            person_id: null,
-            title: "深页口播.mp3",
-            group: "完整口播音频",
-            media_type: "audio",
-            source: "upload",
-            status: "ready",
-            delivery: "stored",
-            content_type: "audio/mpeg",
-            size_bytes: 100,
-            duration_seconds: 42,
-            created_at: "2026-09-07T00:00:00Z",
-            hidden: false,
-            saved: true,
-            allowed_uses: ["oral_audio"],
-            allowed_actions: ["preview"],
-          },
-          {
-            id: "asset:clone-only",
-            owner_user_id: "review-user",
-            asset_id: "clone-only",
-            generation_task_id: null,
-            project_id: null,
-            person_id: null,
-            title: "声音克隆样本.mp3",
-            group: "声音克隆样本",
-            media_type: "audio",
-            source: "upload",
-            status: "ready",
-            delivery: "stored",
-            content_type: "audio/mpeg",
-            size_bytes: 100,
-            duration_seconds: 20,
-            created_at: "2026-09-07T00:00:00Z",
-            hidden: false,
-            saved: true,
-            allowed_uses: ["voice_clone"],
-            allowed_actions: ["preview"],
-          },
-        ],
-        page: 1,
-        page_size: 12,
-        total: 1,
-      });
-    render(
-      <StudioWorkspace
-        currentUser={reviewUser}
-        reviewData={createReviewData()}
-        initialState={createReviewState("oral-audio")}
-      />,
-    );
 
-    fireEvent.click(screen.getByRole("button", { name: "从素材库选择" }));
-    await screen.findByText("没有可用音频");
-    const picker = screen.getByRole("dialog", { name: "选择完整口播音频" });
-    fireEvent.change(within(picker).getByLabelText("搜索云端音频"), {
-      target: { value: "深页" },
-    });
-    fireEvent.click(within(picker).getByRole("button", { name: "搜索" }));
-    expect(await screen.findByLabelText("预听深页口播.mp3")).toHaveAttribute(
-      "src",
-      "https://signed.example/deep-audio.mp3",
-    );
-    expect(screen.queryByText("声音克隆样本.mp3")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "选择深页口播.mp3" }));
-    expect(screen.getByText("深页口播.mp3")).toBeInTheDocument();
-    expect(api.listMaterials).toHaveBeenLastCalledWith({
-      mediaType: "audio",
-      query: "深页",
-      page: 1,
-      pageSize: 12,
-    });
-  });
   it("loads real data without falling back to review examples", async () => {
     live.loadStudioData.mockResolvedValue({
       people: [],
@@ -1034,22 +968,105 @@ describe("V1.4 workspace integration", () => {
     expect(screen.queryByText(/示例审核/)).not.toBeInTheDocument();
   });
 
-  it("关闭已有项目工作区不会再次导入并覆盖当前草稿", async () => {
+  it.each(["生成测试项目", "查看测试项目"])(
+    "%s 导入后进入同一个复刻页并显示项目标题",
+    async (entry) => {
+      const imported = createReviewState("workbench").draft;
+      imported.projectId = livePanel.project.id;
+      live.loadStudioData.mockResolvedValue({
+        ...createReviewData(),
+        projects: [livePanel.project],
+        loading: false,
+      });
+      live.loadProjectDraft.mockResolvedValue({ draft: imported, errors: [] });
+      render(<StudioWorkspace currentUser={reviewUser} />);
+
+      fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+      fireEvent.click(screen.getByRole("button", { name: entry }));
+
+      expect(
+        await screen.findByText("来源视频 · 张工预算项目"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("模拟已有功能工作区"),
+      ).not.toBeInTheDocument();
+      expect(window.location.hash).toBe("#studio/replica");
+    },
+  );
+
+  it("项目导入失败时留在列表、保留草稿并可重试", async () => {
+    const initialState = createState("workbench");
+    initialState.draft.script.text = "不要覆盖的草稿";
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      projects: [livePanel.project],
+      loading: false,
+    });
+    const importedAfterRetry = createReviewState("replica").draft;
+    importedAfterRetry.projectId = livePanel.project.id;
+    live.loadProjectDraft
+      .mockRejectedValueOnce(new Error("暂时失败"))
+      .mockResolvedValueOnce({
+        draft: importedAfterRetry,
+        errors: [],
+      });
+    render(
+      <StudioWorkspace currentUser={reviewUser} initialState={initialState} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
+
+    expect(await screen.findByText("暂时失败")).toBeInTheDocument();
+    expect(screen.getByLabelText("模拟已有功能工作区")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "返回新工作台" }));
+    fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+    expect(screen.getByDisplayValue("不要覆盖的草稿")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "工作台" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
+    await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByText("来源视频 · 张工预算项目"),
+    ).toBeInTheDocument();
+  });
+
+  it("关闭项目列表后忽略迟到的导入结果且不覆盖草稿", async () => {
     const imported = createReviewState("workbench").draft;
+    imported.projectId = livePanel.project.id;
+    imported.script.text = "迟到结果";
+    let resolveImport:
+      | ((value: { draft: typeof imported; errors: string[] }) => void)
+      | undefined;
     live.loadStudioData.mockResolvedValue({
       ...createReviewData(),
       loading: false,
     });
-    live.loadProjectDraft.mockResolvedValue({ draft: imported, errors: [] });
-    render(<StudioWorkspace currentUser={reviewUser} />);
+    live.loadProjectDraft.mockReturnValue(
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      }),
+    );
+    const initialState = createState("workbench");
+    initialState.draft.script.text = "当前草稿";
+    render(
+      <StudioWorkspace currentUser={reviewUser} initialState={initialState} />,
+    );
 
-    // 工作台“上传视频”已是图标化的本机文件上传；打开旧项目面板的入口
-    // 是无来源时的“开始复刻”。
     fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-    fireEvent.click(screen.getByRole("button", { name: "选择测试项目" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成测试项目" }));
     await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole("button", { name: "返回新工作台" }));
-    await waitFor(() => expect(live.loadProjectDraft).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      resolveImport?.({ draft: imported, errors: [] });
+    });
+
+    expect(
+      screen.queryByText("来源视频 · 张工预算项目"),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+    expect(screen.getByDisplayValue("当前草稿")).toBeInTheDocument();
   });
 
   it("workbench metric cards show real platform stats", async () => {
@@ -1069,20 +1086,6 @@ describe("V1.4 workspace integration", () => {
     await waitFor(() => expect(screen.getByText("5")).toBeInTheDocument());
     // 队列 = running + queued（3）；待处理来自统计而非 20 条切片。
     expect(screen.getByText("4")).toBeInTheDocument();
-  });
-
-  it("消费任务交接后清除暂存批次", async () => {
-    live.loadStudioData.mockResolvedValue({
-      ...createReviewData(),
-      loading: false,
-    });
-    render(<StudioWorkspace currentUser={reviewUser} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
-    fireEvent.click(screen.getByRole("button", { name: "创建测试批次" }));
-    expect(screen.getByText("存在交接批次")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "消费交接批次" }));
-    expect(screen.getByText("没有交接批次")).toBeInTheDocument();
   });
 
   it("polls generation task progress silently while the workspace is open", async () => {
@@ -1162,6 +1165,12 @@ describe("V1.4 workspace integration", () => {
 
     async function openCopyPage() {
       fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const manual = screen.queryByRole("button", { name: "手动写稿" });
+      if (manual && !(manual as HTMLButtonElement).disabled)
+        fireEvent.click(manual);
       await waitFor(() =>
         expect(screen.getByLabelText("二创文案")).toBeInTheDocument(),
       );
@@ -1598,7 +1607,7 @@ describe("V1.4 workspace integration", () => {
           screen.queryByText(/换设备登录也能找回/),
         ).not.toBeInTheDocument();
         expect(
-          screen.getByRole("button", { name: "按 IP 二创" }),
+          screen.getByRole("button", { name: "生成二创文案" }),
         ).toBeDisabled();
 
         fireEvent.click(screen.getByRole("button", { name: "保存版本" }));
@@ -1708,8 +1717,10 @@ describe("V1.4 workspace integration", () => {
         "project-1",
         "identity-1",
       );
-      expect(screen.getByText(/已保存到我的文案/)).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeEnabled();
+      expect(await screen.findByText(/已保存到我的文案/)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "生成二创文案" }),
+      ).toBeEnabled();
       expect(live.persistCloudDraft).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "project-1",
@@ -1831,8 +1842,10 @@ describe("V1.4 workspace integration", () => {
       await waitFor(() =>
         expect(screen.getByText(/云端保存失败/)).toBeInTheDocument(),
       );
-      expect(screen.getByRole("button", { name: "按 IP 二创" })).toBeDisabled();
-      expect(screen.getByText(/先保存当前编辑/)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "生成二创文案" }),
+      ).toBeEnabled();
+      expect(screen.queryByText(/先保存当前编辑/)).not.toBeInTheDocument();
     });
 
     it("保存等待期间账号A到B再回A时不写草稿、不更新列表且保持静默", async () => {
@@ -2090,7 +2103,7 @@ describe("V1.4 workspace integration", () => {
           "copy",
           expect.any(String),
         );
-        expect(await screen.findByLabelText("二创文案")).toHaveValue(
+        expect(await screen.findByLabelText("来源原文")).toHaveValue(
           "新来源的提取结果",
         );
         expect(live.extractScriptFromUpload).toHaveBeenCalledTimes(1);
@@ -2111,7 +2124,7 @@ describe("V1.4 workspace integration", () => {
       state.draft.sourceAssetId = "asset-1";
       render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
       fireEvent.click(screen.getByRole("button", { name: /^提取文案$/ }));
-      expect(await screen.findByLabelText("二创文案")).toHaveValue(
+      expect(await screen.findByLabelText("来源原文")).toHaveValue(
         "需要保留的未保存转写原文",
       );
       fireEvent.click(screen.getByRole("button", { name: /^视频创作$/ }));
@@ -2120,7 +2133,7 @@ describe("V1.4 workspace integration", () => {
       );
       await act(async () => {});
       fireEvent.click(screen.getByRole("button", { name: /^文案工坊$/ }));
-      expect(await screen.findByLabelText("二创文案")).toHaveValue(
+      expect(await screen.findByLabelText("来源原文")).toHaveValue(
         "需要保留的未保存转写原文",
       );
       expect(screen.queryByText("尚未提取文案")).not.toBeInTheDocument();
@@ -2146,12 +2159,12 @@ describe("V1.4 workspace integration", () => {
         ),
       );
       await waitFor(() =>
-        expect(screen.getByLabelText("二创文案")).toBeInTheDocument(),
+        expect(screen.getByLabelText("来源原文")).toBeInTheDocument(),
       );
       expect(screen.getByText(/文案已提取/)).toBeInTheDocument();
       fireEvent.click(screen.getByRole("tab", { name: "文案改写" }));
       expect(
-        (screen.getByLabelText("二创文案") as HTMLTextAreaElement).value,
+        (screen.getByLabelText("来源原文") as HTMLTextAreaElement).value,
       ).toBe("提取出的乡墅口播原文");
     });
 
@@ -2176,20 +2189,21 @@ describe("V1.4 workspace integration", () => {
         render(
           <StudioWorkspace
             currentUser={{ ...reviewUser, id: "customer-a" }}
-            customerAccount={customerAccount(customerStore("session-token"))}
+            customerWallet={customerAccount(customerStore("session-token"))}
             initialState={state}
           />,
         );
-        await screen.findByRole("button", { name: "用户档案，积分 351 积分" });
+        await waitFor(() => expect(api.customerGetWallet).toHaveBeenCalled());
         fireEvent.click(screen.getByRole("button", { name: "提取文案" }));
         api.customerGetWallet.mockResolvedValue({
           available_credits: outcome === "success" ? 353 : 377,
         });
         await act(async () => finish());
+        fireEvent.click(
+          screen.getByRole("button", { name: "用户档案，review" }),
+        );
         expect(
-          await screen.findByRole("button", {
-            name: `用户档案，积分 ${outcome === "success" ? 353 : 377} 积分`,
-          }),
+          await screen.findByText(`${outcome === "success" ? 353 : 377} 积分`),
         ).toBeInTheDocument();
       },
     );
@@ -2298,7 +2312,7 @@ describe("V1.4 workspace integration", () => {
         await screen.findByText(/文案提取已完成.*恢复到当前草稿/),
       ).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "文案工坊" }));
-      expect(screen.getByLabelText("二创文案")).toHaveValue(
+      expect(screen.getByLabelText("来源原文")).toHaveValue(
         "后台已经完成的转写文案",
       );
     });
@@ -2381,6 +2395,8 @@ describe("数字人口播提交", () => {
 
   it("字幕参数进入请求，并发点击单飞且网络重试复用幂等键", async () => {
     const state = createReviewState("oral");
+    // 复刻准备只约束 AI 视频，不能阻止独立的数字人口播提交。
+    state.draft.replicaPreparationPending = true;
     state.draft.style = "standard";
     state.draft.subtitles = true;
     live.loadStudioData.mockResolvedValue({
@@ -2439,91 +2455,6 @@ describe("数字人口播提交", () => {
     expect(api.createOralTask.mock.calls[2][0].idempotencyKey).not.toBe(
       firstRequest.idempotencyKey,
     );
-  });
-
-  it("完整音频上传后回填真实 Studio 状态并允许提交 AUDIO", async () => {
-    const state = createReviewState("oral-audio");
-    state.draft.audioId = undefined;
-    live.loadStudioData.mockResolvedValue({
-      ...createReviewData(),
-      loading: false,
-    });
-    api.createMaterialUploadIntent.mockResolvedValue({
-      asset_id: "uploaded-speech",
-      material_id: "asset:uploaded-speech",
-    });
-    api.uploadMaterial.mockResolvedValue(undefined);
-    // main 的 uploadOralAudioMaterial 在 completeMaterialUpload 后还会取签名下载链接；
-    // 未 mock 时 getAssetDownloadUrl() 返回 undefined，.then 同步抛错会中断上传流程，
-    // 导致成功提示永不出现（charlib 旧流程走裸 API 不经过这一步）。
-    api.getAssetDownloadUrl.mockResolvedValue({
-      url: "https://signed.example/uploaded-speech.mp3",
-    });
-    api.completeMaterialUpload.mockResolvedValue({
-      id: "asset:uploaded-speech",
-      owner_user_id: reviewUser.id,
-      asset_id: "uploaded-speech",
-      generation_task_id: null,
-      project_id: null,
-      person_id: null,
-      title: "new-speech.mp3",
-      group: "完整口播音频",
-      media_type: "audio",
-      source: "upload",
-      status: "ready",
-      delivery: "stored",
-      content_type: "audio/mpeg",
-      size_bytes: 5,
-      duration_seconds: 42,
-      created_at: "2026-09-07T10:00:00Z",
-      hidden: false,
-      saved: true,
-      allowed_uses: ["oral_audio", "reference"],
-      allowed_actions: ["preview", "download", "rename", "hide"],
-    });
-
-    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
-    await screen.findByText("张工 · 乡墅设计师");
-    expect(screen.getByText("未选择完整口播音频")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("选择口播音频"), {
-      target: {
-        files: [new File(["audio"], "new-speech.mp3", { type: "audio/mpeg" })],
-      },
-    });
-
-    await waitFor(() =>
-      expect(api.createMaterialUploadIntent).toHaveBeenCalledOnce(),
-    );
-    expect(api.uploadMaterial).toHaveBeenCalledOnce();
-    expect((api.uploadMaterial.mock.calls[0][3] as AbortSignal).aborted).toBe(
-      false,
-    );
-    expect(api.completeMaterialUpload).toHaveBeenCalledWith("uploaded-speech");
-    await expect(
-      api.completeMaterialUpload.mock.results[0].value,
-    ).resolves.toMatchObject({ title: "new-speech.mp3", media_type: "audio" });
-    await screen.findByText(/已上传并永久保存/);
-    expect(await screen.findByText("new-speech.mp3")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "生成口播视频" })).toBeEnabled();
-    api.createOralTask.mockResolvedValue({
-      id: "oral-from-audio",
-      status: "QUEUED",
-      estimated_cost_fen: 100,
-      replayed: false,
-    });
-    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "确认费用并提交" }),
-    );
-
-    await waitFor(() => expect(api.createOralTask).toHaveBeenCalledOnce());
-    const request = api.createOralTask.mock.calls[0][0];
-    expect(request.mode).toBe("AUDIO");
-    expect(request.audioAssetId).toBe("uploaded-speech");
-    // main 无条件带上 draft.script.text（AUDIO 模式后端以 audioAssetId 为准，scriptText 仅作参考），
-    // 故不断言 scriptText 为空；AUDIO 契约由 mode/audioAssetId/voiceId/subtitle 界定。
-    expect(request.voiceId).toBeUndefined();
-    expect(request.subtitle).toBeUndefined();
   });
 });
 
@@ -2652,7 +2583,7 @@ describe("视频生成（C2 独立创作）", () => {
   async function openVideoPage() {
     // 侧边栏「视频创作」进入复刻页签组，再切到「视频生成」。
     fireEvent.click(screen.getByRole("button", { name: "视频创作" }));
-    fireEvent.click(screen.getByRole("tab", { name: "视频生成" }));
+    fireEvent.click(screen.getByRole("tab", { name: "AI 视频" }));
     await waitFor(() =>
       expect(screen.getByLabelText("提示词")).toBeInTheDocument(),
     );
@@ -3304,7 +3235,7 @@ describe("视频生成（C2 独立创作）", () => {
     );
   });
 
-  it("音频口播不展示字幕开关也不提交 TTS 字幕配置", async () => {
+  it("旧音频页面提交统一使用 TTS、克隆声音和字幕配置", async () => {
     api.createOralTask.mockResolvedValue({ id: "oral-1", status: "QUEUED" });
     live.loadStudioData.mockResolvedValue(createReviewData());
     const initial = createReviewState("oral-audio");
@@ -3312,9 +3243,7 @@ describe("视频生成（C2 独立创作）", () => {
     render(<StudioWorkspace currentUser={reviewUser} initialState={initial} />);
 
     expect(await findEnabledButton("生成口播视频")).toBeEnabled();
-    expect(
-      screen.queryByRole("button", { name: "添加" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加" })).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交"));
@@ -3322,17 +3251,14 @@ describe("视频生成（C2 独立创作）", () => {
     await waitFor(() => expect(api.createOralTask).toHaveBeenCalledTimes(1));
     expect(api.createOralTask.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
-        mode: "AUDIO",
-        audioAssetId: "speech",
-        voiceId: undefined,
+        mode: "TTS",
+        voiceId: "voice-1",
       }),
     );
-    expect(api.createOralTask.mock.calls[0]?.[0]).not.toHaveProperty(
-      "subtitle",
-    );
+    expect(api.createOralTask.mock.calls[0]?.[0]).toHaveProperty("subtitle");
   });
 
-  it("旧文案口播响应不会把字幕状态带入后来打开的音频口播", async () => {
+  it("旧口播响应不会关闭后来重新打开的生成弹窗", async () => {
     let resolveTask:
       | ((value: { id: string; status: string }) => void)
       | undefined;
@@ -3358,10 +3284,6 @@ describe("视频生成（C2 独立创作）", () => {
     expect(await screen.findByText("5.00 元/秒")).toBeInTheDocument();
     fireEvent.click(await findEnabledButton("确认费用并提交", firstDialog));
     fireEvent.click(within(firstDialog).getByRole("button", { name: "关闭" }));
-    fireEvent.click(screen.getByRole("tab", { name: "用已有音频生成" }));
-    expect(
-      screen.queryByRole("button", { name: "添加" }),
-    ).not.toBeInTheDocument();
     fireEvent.click(await findEnabledButton("生成口播视频"));
     expect(
       await screen.findByRole("dialog", { name: "生成确认 · 数字人口播" }),

@@ -116,6 +116,8 @@ from app.activation_code_service import (
     mask_activation_code,
     normalize_activation_code,
 )
+from app.api_errors import http_error as _http
+from app.auth_headers import bearer_token as _bearer_token
 from app.customer_auth import CustomerSessionContext, SessionFencingError, verify_session_context
 from app.customer_device_service import (
     APPROVE_ALREADY_CONSUMED,
@@ -162,7 +164,7 @@ from app.customer_idempotency import (
     request_hash as compute_request_hash,
 )
 from app.db_pg import get_pg_pool, pg_transaction
-from app.ops_metrics import get_or_create_request_id, set_current_result_code
+from app.ops_metrics import get_or_create_request_id
 from app.security_rate_limit import (
     DIMENSION_ACTIVATE_CODE,
     DIMENSION_ACTIVATE_IP,
@@ -186,8 +188,6 @@ from app.security_rate_limit import (
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZATION_HEADER = "Authorization"
-BEARER_SCHEME = "bearer"
 REQUEST_ID_HEADER = "X-Request-Id"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 REPLAY_HEADER = "X-Idempotent-Replay"
@@ -219,11 +219,6 @@ def _lock_reset_code_scope(conn: psycopg.Connection, scope: str) -> None:
         "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
         (f"{RESET_CODE_OPERATION}:{scope}",),
     )
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    set_current_result_code(code)
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 class _PairingRaceLost(Exception):
@@ -290,18 +285,6 @@ class ActivationCodeResetResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Bearer authentication (device credential layer)
 # ---------------------------------------------------------------------------
-
-
-def _bearer_token(request: Request) -> str | None:
-    """The raw bearer token, or ``None`` when the header is absent/malformed."""
-    header = request.headers.get(AUTHORIZATION_HEADER, "").strip()
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != BEARER_SCHEME:
-        return None
-    token = parts[1].strip()
-    return token or None
 
 
 def _authenticate(conn: psycopg.Connection, token: str | None) -> AuthenticatedDevice:

@@ -12,6 +12,7 @@ import {
   clearMaterialCache,
   createGenerationTaskPreviewUrl,
   createMaterialUploadIntent,
+  createPublishRecord,
   createViralImportTask,
   downloadMaterialAsset,
   evictMaterialCachedPreview,
@@ -19,6 +20,7 @@ import {
   fetchViralVideoMedia,
   fetchViralVideoStatistics,
   getAssetDownloadUrl,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
   getMaterialCacheUsage,
   getStudioDraft,
@@ -40,12 +42,15 @@ import { CharacterMaterialViews } from "./CharacterMaterialViews";
 import { useStudio } from "./context";
 import { studioAssetFromMaterial, studioVideoFromViral } from "./live";
 import {
+  type CloudPublishAccount,
   canUseLocalPublishAccounts,
   type LocalPublishAccount,
+  listCloudPublishAccounts,
   listLocalPublishAccounts,
   openLocalPublishAccount,
 } from "./localPublishAccounts";
 import { PlatformLogo } from "./PlatformLogo";
+import { PublishRecordsPanel } from "./PublishRecordsPanel";
 import type {
   StudioAsset,
   StudioContextValue,
@@ -61,8 +66,33 @@ import {
 } from "./viralImport";
 import "./content.css";
 
-const pageSize = 6;
+const pageSize = 24;
 const categoryTabs = ["全部", "建房预算", "户型设计", "施工避坑", "庭院案例"];
+
+/** MATERIAL-PERF-A（P0-1）：分页按钮窗口化——始终含首末页与当前页 ±1，
+ * 其余以「…」折叠，页数多时不再渲染整排页码按钮。 */
+export function visiblePageButtons(
+  page: number,
+  pages: number,
+): (number | "…")[] {
+  if (pages <= 7) {
+    return Array.from({ length: pages }, (_, index) => index + 1);
+  }
+  const wanted = new Set<number>(
+    [1, pages, page - 1, page, page + 1].filter(
+      (value) => value >= 1 && value <= pages,
+    ),
+  );
+  const ordered = [...wanted].sort((a, b) => a - b);
+  const entries: (number | "…")[] = [];
+  let previous = 0;
+  for (const value of ordered) {
+    if (previous && value - previous > 1) entries.push("…");
+    entries.push(value);
+    previous = value;
+  }
+  return entries;
+}
 
 function formatCount(value: number | null) {
   if (value === null) return "—";
@@ -1776,9 +1806,18 @@ function MaterialsPageContent() {
   const [renameValue, setRenameValue] = useState("");
   const [groupValue, setGroupValue] = useState("");
   const [previewStates, setPreviewStates] = useState<MaterialPreviewStates>({});
+  // MATERIAL-THUMBS-B：视频瓦片封面（键 = 授权 id；7 天签名，img 直接展示）。
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>(
+    {},
+  );
   const visiblePreviewIdsRef = useRef(new Set<string>());
   const previewRequestVersionsRef = useRef(new Map<string, number>());
   const previewLoadingIdsRef = useRef(new Set<string>());
+  // MATERIAL-PERF-A（P0-4）：失败/过期预览的有限自动重试记账。
+  const previewRetryCountsRef = useRef(new Map<string, number>());
+  const previewRetryTimersRef = useRef(
+    new Set<ReturnType<typeof setTimeout>>(),
+  );
   const previewResourcesRef = useRef(
     new Map<string, { url: string; release: () => void }>(),
   );
@@ -1849,8 +1888,14 @@ function MaterialsPageContent() {
       for (const resource of previewResourcesRef.current.values())
         resource.release();
       previewResourcesRef.current.clear();
+      for (const timer of previewRetryTimersRef.current) clearTimeout(timer);
+      previewRetryTimersRef.current.clear();
+      previewRetryCountsRef.current.clear();
     };
   }, [refreshCacheUsage, review]);
+  // Latest-ref 桥：loadPreview 的失败分支通过它调度自动重试（P0-4），
+  // 避免与 retryPreview 相互依赖造成的 useCallback 环。
+  const retryPreviewRef = useRef<(asset: StudioAsset) => void>(() => {});
   const loadPreview = useCallback(
     async (asset: StudioAsset) => {
       if (
@@ -1908,6 +1953,8 @@ function MaterialsPageContent() {
               }
             : { status: "error" },
         }));
+        if (url) previewRetryCountsRef.current.delete(asset.id);
+        else retryPreviewRef.current(asset);
         if (result?.cached) void refreshCacheUsage();
       } catch {
         if (
@@ -1921,6 +1968,7 @@ function MaterialsPageContent() {
           ...current,
           [asset.id]: { status: "error" },
         }));
+        retryPreviewRef.current(asset);
       } finally {
         cacheControllersRef.current.delete(controller);
         if (previewRequestVersionsRef.current.get(asset.id) === requestVersion)
@@ -1929,6 +1977,128 @@ function MaterialsPageContent() {
     },
     [refreshCacheUsage, user.id],
   );
+
+  // MATERIAL-PERF-A（P0-2）：整页可见素材一次批量授权，替代逐瓦片
+  // download-url + 元数据往返。图片仍走本机缓存判定；仅 generationTaskId
+  // 的素材保持单资产回退通道。批量整体失败（超时/网络）时退化为逐条路径。
+  const loadPreviewsBatch = useCallback(
+    async (assets: StudioAsset[]) => {
+      const pending = assets.filter(
+        (asset) =>
+          !asset.url &&
+          asset.allowedActions?.includes("preview") &&
+          (asset.previewAssetId ?? asset.assetId),
+      );
+      if (!pending.length) return;
+      const revision = cacheRevisionRef.current;
+      const controller = new AbortController();
+      cacheControllersRef.current.add(controller);
+      let batchFailed = false;
+      const versions = new Map<string, number>();
+      for (const asset of pending) {
+        previewLoadingIdsRef.current.add(asset.id);
+        const version =
+          (previewRequestVersionsRef.current.get(asset.id) ?? 0) + 1;
+        previewRequestVersionsRef.current.set(asset.id, version);
+        versions.set(asset.id, version);
+        setPreviewStates((current) =>
+          current[asset.id]
+            ? current
+            : { ...current, [asset.id]: { status: "loading" } },
+        );
+      }
+      try {
+        const { previews, thumbnails } = await getMaterialBatchPreviews(
+          user.id,
+          pending.map((asset) => ({
+            id: asset.previewAssetId ?? asset.assetId ?? "",
+            populate: asset.kind === "image" && !cacheSuppressedRef.current,
+          })),
+          { signal: controller.signal },
+        );
+        if (!aliveRef.current || revision !== cacheRevisionRef.current) {
+          for (const resource of Object.values(previews)) resource.release();
+          return;
+        }
+        setThumbnailUrls((current) => {
+          const next = { ...current };
+          for (const asset of pending) {
+            const authId = asset.previewAssetId ?? asset.assetId ?? "";
+            if (
+              visiblePreviewIdsRef.current.has(asset.id) &&
+              thumbnails[authId]
+            )
+              next[authId] = thumbnails[authId];
+            else delete next[authId];
+          }
+          return next;
+        });
+        setPreviewStates((current) => {
+          const next = { ...current };
+          for (const asset of pending) {
+            if (
+              previewRequestVersionsRef.current.get(asset.id) !==
+              versions.get(asset.id)
+            )
+              continue;
+            if (!visiblePreviewIdsRef.current.has(asset.id)) continue;
+            const resource =
+              previews[asset.previewAssetId ?? asset.assetId ?? ""];
+            previewResourcesRef.current.get(asset.id)?.release();
+            if (resource) {
+              previewResourcesRef.current.set(asset.id, resource);
+              previewRetryCountsRef.current.delete(asset.id);
+              next[asset.id] = {
+                status: "ready",
+                url: resource.url,
+                ...(resource.cached ? { cached: true } : {}),
+              };
+            } else {
+              next[asset.id] = { status: "error" };
+            }
+          }
+          return next;
+        });
+      } catch {
+        // 批量整体失败（超时/网络）：先在 finally 释放逐瓦片加载标记，
+        // 再退回单资产路径（loadPreview 会因加载标记早退，顺序不可颠倒）。
+        if (aliveRef.current && revision === cacheRevisionRef.current)
+          batchFailed = true;
+      } finally {
+        cacheControllersRef.current.delete(controller);
+        for (const asset of pending) {
+          if (
+            previewRequestVersionsRef.current.get(asset.id) ===
+            versions.get(asset.id)
+          )
+            previewLoadingIdsRef.current.delete(asset.id);
+        }
+        if (batchFailed) {
+          for (const asset of pending) void loadPreview(asset);
+        }
+      }
+    },
+    [loadPreview, user.id],
+  );
+
+  // MATERIAL-PERF-A（P0-4）：失败/过期预览有限次自动重签（1s/3s 退避），
+  // 不再要求用户点击瓦片或重进页面。
+  const retryPreview = (asset: StudioAsset) => {
+    const attempts = previewRetryCountsRef.current.get(asset.id) ?? 0;
+    if (attempts >= 2) return;
+    previewRetryCountsRef.current.set(asset.id, attempts + 1);
+    const timer = setTimeout(
+      () => {
+        previewRetryTimersRef.current.delete(timer);
+        if (!aliveRef.current) return;
+        if (!visiblePreviewIdsRef.current.has(asset.id)) return;
+        void loadPreview(asset);
+      },
+      attempts === 0 ? 1_000 : 3_000,
+    );
+    previewRetryTimersRef.current.add(timer);
+  };
+  retryPreviewRef.current = retryPreview;
 
   const warmPreview = async (asset: StudioAsset) => {
     if (
@@ -1968,7 +2138,8 @@ function MaterialsPageContent() {
   };
 
   const invalidatePreview = (asset: StudioAsset, failedUrl?: string) => {
-    if (previewStates[asset.id]?.url !== failedUrl) return;
+    const wasReady = previewStates[asset.id]?.url === failedUrl;
+    if (!wasReady) return;
     previewResourcesRef.current.get(asset.id)?.release();
     previewResourcesRef.current.delete(asset.id);
     if (failedUrl?.startsWith("blob:") && asset.assetId) {
@@ -1982,6 +2153,10 @@ function MaterialsPageContent() {
     setPreviewStates((current) =>
       failMaterialPreview(current, asset.id, failedUrl),
     );
+    // MATERIAL-PERF-A（P0-4）：签名过期/媒体加载失败的瓦片自动重签一次，
+    // 不再永久置灰等待用户点击或重进页面。
+    if (failedUrl && !failedUrl.startsWith("blob:"))
+      retryPreviewRef.current(asset);
   };
 
   const clearLocalCache = async () => {
@@ -2068,7 +2243,23 @@ function MaterialsPageContent() {
         Object.entries(current).filter(([id]) => visibleIds.has(id)),
       ),
     );
-    for (const asset of remoteAssets) void loadPreview(asset);
+    setThumbnailUrls((current) => {
+      const visibleAuthIds = new Set(
+        remoteAssets.map(
+          (asset) => asset.previewAssetId ?? asset.assetId ?? "",
+        ),
+      );
+      return Object.fromEntries(
+        Object.entries(current).filter(([id]) => visibleAuthIds.has(id)),
+      );
+    });
+    // 可见素材一次批量授权；仅 generationTaskId 素材走单资产回退。
+    void loadPreviewsBatch(remoteAssets);
+    for (const asset of remoteAssets) {
+      if (asset.url || asset.assetId || asset.previewAssetId) continue;
+      if (asset.allowedActions?.includes("preview") && asset.generationTaskId)
+        void loadPreview(asset);
+    }
     return () => {
       for (const id of visibleIds) {
         previewLoadingIdsRef.current.delete(id);
@@ -2078,7 +2269,14 @@ function MaterialsPageContent() {
         );
       }
     };
-  }, [loadPreview, page, remoteAssets, remotePage?.page, review]);
+  }, [
+    loadPreview,
+    loadPreviewsBatch,
+    page,
+    remoteAssets,
+    remotePage?.page,
+    review,
+  ]);
 
   useEffect(() => {
     if (selectedAssetIdRef.current === state.selectedAssetId) return;
@@ -2372,27 +2570,37 @@ function MaterialsPageContent() {
       <section className="content-material-layout">
         <div className="content-material-list">
           <div className="content-asset-grid">
-            {currentAssets.map((asset) => (
-              <AssetCard
-                key={asset.id}
-                asset={{
-                  ...asset,
-                  url: asset.url ?? previewStates[asset.id]?.url,
-                }}
-                selected={selected?.id === asset.id}
-                previewStatus={previewStates[asset.id]?.status}
-                onSelect={() => {
-                  if (previewStates[asset.id]?.status === "error")
-                    void loadPreview(asset);
-                  setSelectedAsset(asset);
-                  patchState({ selectedAssetId: asset.id });
-                }}
-                onPreviewError={(failedUrl) => {
-                  invalidatePreview(asset, failedUrl);
-                }}
-                onPlay={() => void warmPreview(asset)}
-              />
-            ))}
+            {currentAssets.map((asset) => {
+              const authId = asset.previewAssetId ?? asset.assetId ?? "";
+              // MATERIAL-THUMBS-B：带封面的视频瓦片用 img 展示缩略图（懒加载），
+              // 不再让浏览器经服务端代理流式拉原视频；点开详情仍加载可播放视频。
+              const thumbnailUrl =
+                asset.kind === "video" ? thumbnailUrls[authId] : undefined;
+              return (
+                <AssetCard
+                  key={asset.id}
+                  asset={{
+                    ...asset,
+                    url: thumbnailUrl
+                      ? undefined
+                      : (asset.url ?? previewStates[asset.id]?.url),
+                    poster: thumbnailUrl ?? asset.poster,
+                  }}
+                  selected={selected?.id === asset.id}
+                  previewStatus={previewStates[asset.id]?.status}
+                  onSelect={() => {
+                    if (previewStates[asset.id]?.status === "error")
+                      void loadPreview(asset);
+                    setSelectedAsset(asset);
+                    patchState({ selectedAssetId: asset.id });
+                  }}
+                  onPreviewError={(failedUrl) => {
+                    invalidatePreview(asset, failedUrl);
+                  }}
+                  onPlay={() => void warmPreview(asset)}
+                />
+              );
+            })}
           </div>
           {remoteLoading ? <Hint>正在读取云端素材…</Hint> : null}
           {remoteError ? <Hint>{remoteError}</Hint> : null}
@@ -2412,16 +2620,26 @@ function MaterialsPageContent() {
               >
                 ‹
               </Button>
-              {Array.from({ length: pages }, (_, index) => index + 1).map(
-                (pageNumber) => (
-                  <Button
-                    key={pageNumber}
-                    variant={page === pageNumber ? "primary" : "quiet"}
-                    onClick={() => setPage(pageNumber)}
-                  >
-                    {pageNumber}
-                  </Button>
-                ),
+              {visiblePageButtons(page, pages).flatMap(
+                (entry, entryIndex, all) =>
+                  entry === "…"
+                    ? [
+                        <span
+                          key={`gap-${all[entryIndex + 1]}`}
+                          className="content-page-gap"
+                        >
+                          …
+                        </span>,
+                      ]
+                    : [
+                        <Button
+                          key={entry}
+                          variant={page === entry ? "primary" : "quiet"}
+                          onClick={() => setPage(entry)}
+                        >
+                          {entry}
+                        </Button>,
+                      ],
               )}
               <Button
                 aria-label="下一页"
@@ -2453,6 +2671,12 @@ function MaterialsPageContent() {
                   asset={{
                     ...selected,
                     url: selected.url ?? previewStates[selected.id]?.url,
+                    poster:
+                      (selected.kind === "video"
+                        ? thumbnailUrls[
+                            selected.previewAssetId ?? selected.assetId ?? ""
+                          ]
+                        : undefined) ?? selected.poster,
                   }}
                   alt={selected.name}
                   onError={(failedUrl) => {
@@ -2665,7 +2889,8 @@ export function parsePublishDrafts(value: unknown): StudioPublishDraft[] {
       !["抖音", "视频号", "小红书"].includes(item.platform) ||
       !Array.isArray(item.tags) ||
       item.tags.some((tag: unknown) => typeof tag !== "string") ||
-      (item.coverId !== undefined && typeof item.coverId !== "string")
+      (item.coverId !== undefined && typeof item.coverId !== "string") ||
+      (item.scheduledAt !== undefined && typeof item.scheduledAt !== "string")
     )
       throw new Error("云端发布草稿内容不完整，请联系支持。");
     return {
@@ -2677,8 +2902,42 @@ export function parsePublishDrafts(value: unknown): StudioPublishDraft[] {
       title: item.title,
       description: item.description,
       tags: item.tags,
+      ...(item.scheduledAt ? { scheduledAt: item.scheduledAt } : {}),
     };
   });
+}
+
+/** `<input type="datetime-local">` value (local wall clock) → ISO instant, or null. */
+export function isoFromLocalDateTimeInput(value: string): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+/** ISO instant → `<input type="datetime-local">` value in the viewer's zone. */
+export function localDateTimeInputFromIso(value: string | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+const PUBLISH_SCHEDULE_MIN_LEAD_MS = 2 * 60 * 1000;
+const PUBLISH_SCHEDULE_MAX_LEAD_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function validatePublishSchedule(
+  iso: string | null,
+  now: Date = new Date(),
+): string | null {
+  if (iso === null) return null;
+  const at = new Date(iso).getTime();
+  if (Number.isNaN(at)) return "请填写有效的定时时间。";
+  if (at < now.getTime() + PUBLISH_SCHEDULE_MIN_LEAD_MS)
+    return "定时发布至少需要提前 2 分钟。";
+  if (at > now.getTime() + PUBLISH_SCHEDULE_MAX_LEAD_MS)
+    return "定时发布最多只能提前 30 天。";
+  return null;
 }
 
 function newPublishDraft(
@@ -2700,8 +2959,18 @@ function newPublishDraft(
 }
 
 export function PublishPage() {
-  const { data, navigate, patchState, review, state, user, updateData } =
-    useStudio();
+  const {
+    data,
+    navigate,
+    notify,
+    patchState,
+    review,
+    state,
+    user,
+    updateData,
+  } = useStudio();
+  const notifyRef = useRef(notify);
+  notifyRef.current = notify;
   const completedResultIds = new Set(
     data.tasks
       .filter((task) => task.status === "completed" && task.resultId)
@@ -2714,7 +2983,13 @@ export function PublishPage() {
   const [actionError, setActionError] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [accounts, setAccounts] = useState<LocalPublishAccount[]>([]);
+  // Delivery accounts live on the server (cloud QR logins + imported desktop logins);
+  // local WebView2 profiles only back the manual "前往官方发布" fallback on desktop.
+  const [accounts, setAccounts] = useState<CloudPublishAccount[]>([]);
+  const [localProfiles, setLocalProfiles] = useState<LocalPublishAccount[]>([]);
+  const [recordsToken, setRecordsToken] = useState(0);
+  const [scheduleMode, setScheduleMode] = useState<"now" | "later">("now");
+  const [scheduleInput, setScheduleInput] = useState("");
   const [cloudVideos, setCloudVideos] = useState<{
     requested: string[];
     available: string[];
@@ -2812,16 +3087,25 @@ export function PublishPage() {
     void reload;
     let active = true;
     setAccounts([]);
-    if (!review && canUseLocalPublishAccounts())
+    setLocalProfiles([]);
+    if (review) return;
+    void listCloudPublishAccounts()
+      .then((value) => {
+        if (active) setAccounts(value);
+      })
+      .catch((cause) => {
+        if (active)
+          setActionError(
+            cause instanceof Error ? cause.message : "读取发布账号失败",
+          );
+      });
+    if (canUseLocalPublishAccounts())
       void listLocalPublishAccounts(user.id)
         .then((value) => {
-          if (active) setAccounts(value);
+          if (active) setLocalProfiles(value);
         })
-        .catch((cause) => {
-          if (active)
-            setActionError(
-              cause instanceof Error ? cause.message : "读取本机账号失败",
-            );
+        .catch(() => {
+          // Manual fallback only; the server-side list is the delivery source.
         });
     return () => {
       active = false;
@@ -2864,12 +3148,26 @@ export function PublishPage() {
       account.id === form.account &&
       publishPlatformLabel(account.platform) === form.platform,
   );
+  const platformAccounts = accounts.filter(
+    (account) => publishPlatformLabel(account.platform) === form.platform,
+  );
+  const selectedLocalProfile = selectedAccount
+    ? localProfiles.find(
+        (profile) =>
+          profile.platform === selectedAccount.platform &&
+          profile.platform_user_id === selectedAccount.platform_user_id,
+      )
+    : undefined;
+  const platformDeliverable = form.platform !== "小红书";
   const selectedCover =
     coverCandidates.find((asset) => asset.id === form.coverId) ??
     coverCandidates[0];
 
   useEffect(() => {
-    setForm(savedDraftForAsset ?? newPublishDraft(selectedAsset, review));
+    const next = savedDraftForAsset ?? newPublishDraft(selectedAsset, review);
+    setForm(next);
+    setScheduleMode(next.scheduledAt ? "later" : "now");
+    setScheduleInput(localDateTimeInputFromIso(next.scheduledAt));
     setSaveNotice(false);
   }, [review, savedDraftForAsset, selectedAsset]);
 
@@ -2896,8 +3194,13 @@ export function PublishPage() {
   const savePublishDraft = async () => {
     if (!selectedAsset || mutationPending.current || cloudRevision === null)
       return;
+    const scheduledAt =
+      scheduleMode === "later"
+        ? (isoFromLocalDateTimeInput(scheduleInput) ?? undefined)
+        : undefined;
     const savedDraft = {
       ...form,
+      ...(scheduledAt ? { scheduledAt } : {}),
       id: savedDraftForAsset?.id ?? `publish-${selectedAsset.id}`,
       assetId: selectedAsset.id,
       coverId: selectedCover?.id,
@@ -2940,6 +3243,50 @@ export function PublishPage() {
       if (current === operation.current) setActionBusy(false);
     }
   };
+
+  async function submitPublish() {
+    if (!selectedAsset || !selectedAccount || mutationPending.current) return;
+    const scheduledAt =
+      scheduleMode === "later"
+        ? isoFromLocalDateTimeInput(scheduleInput)
+        : null;
+    if (scheduleMode === "later" && scheduledAt === null) {
+      setActionError("请填写定时发布时间。");
+      return;
+    }
+    const scheduleError = validatePublishSchedule(scheduledAt);
+    if (scheduleError) {
+      setActionError(scheduleError);
+      return;
+    }
+    if (!platformDeliverable) {
+      setActionError("小红书自动发布即将上线，请先前往官方页面发布。");
+      return;
+    }
+    await perform(async () => {
+      const record = await createPublishRecord({
+        account_id: selectedAccount.id,
+        video_material_id:
+          selectedAsset.materialId ??
+          `asset:${selectedAsset.assetId ?? selectedAsset.id}`,
+        cover_material_id:
+          selectedCover && selectedCover.kind === "image"
+            ? (selectedCover.materialId ??
+              `asset:${selectedCover.assetId ?? selectedCover.id}`)
+            : null,
+        title: form.title.trim(),
+        description: form.description.trim(),
+        tags: form.tags,
+        scheduled_at: scheduledAt,
+      });
+      setRecordsToken((value) => value + 1);
+      notifyRef.current(
+        record.scheduled_at
+          ? `已加入定时发布队列 · ${publishPlatformLabel(record.platform)}`
+          : `已提交发布 · ${publishPlatformLabel(record.platform)}`,
+      );
+    });
+  }
 
   async function uploadCover(file: File) {
     if (!file.type.startsWith("image/") || file.size > 20 * 1024 * 1024) {
@@ -3026,7 +3373,7 @@ export function PublishPage() {
       <header className="content-title">
         <div>
           <h1>发布管理</h1>
-          <p>云端保存发布草稿，在官方平台确认并完成发布</p>
+          <p>选择成片与账号，立即发布或定时发布；发布结果在下方记录中回收</p>
         </div>
       </header>
       <section className="content-publish-layout">
@@ -3035,7 +3382,7 @@ export function PublishPage() {
             <strong>
               发布草稿 <b>{draftCount}</b>
             </strong>
-            <span>正式发布结果请在官方平台查看</span>
+            <span>草稿保存在云端，可反复编辑</span>
           </div>
           {visibleDrafts.length ? (
             visibleDrafts.map((draft) => {
@@ -3085,11 +3432,23 @@ export function PublishPage() {
               }
             />
           )}
+          {!review && (
+            <div className="content-publish-records-section">
+              <div className="content-publish-draft-tabs">
+                <strong>发布记录</strong>
+                <span>排队 / 发布中会自动刷新</span>
+              </div>
+              <PublishRecordsPanel
+                refreshToken={recordsToken}
+                disabled={actionBusy || user.role === "auditor"}
+              />
+            </div>
+          )}
         </Panel>
         <Panel className="content-publish-editor">
           <header className="content-publish-editor-heading">
             <h2>编辑发布草稿</h2>
-            <Hint>发布文案独立于口播终稿；确认后才提交发布。</Hint>
+            <Hint>发布文案独立于口播终稿；点击发布后由服务端投递到平台。</Hint>
           </header>
           <div className="content-publish-media-grid">
             <section className="content-publish-preview">
@@ -3184,43 +3543,84 @@ export function PublishPage() {
                   </Button>
                   <span>审核示例账号</span>
                 </div>
-              ) : accounts.some(
-                  (account) =>
-                    publishPlatformLabel(account.platform) === form.platform,
-                ) ? (
+              ) : platformAccounts.length ? (
                 <select
                   disabled={actionBusy || cloudRevision === null}
-                  aria-label="选择本机发布账号"
+                  aria-label="选择发布账号"
                   value={selectedAccount?.id ?? ""}
                   onChange={(event) =>
                     updateForm({ account: event.target.value })
                   }
                 >
-                  <option value="">请选择本机账号</option>
-                  {accounts
-                    .filter(
-                      (account) =>
-                        publishPlatformLabel(account.platform) ===
-                        form.platform,
-                    )
-                    .map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.username} · {account.platform_user_id}
-                      </option>
-                    ))}
+                  <option value="">请选择发布账号</option>
+                  {platformAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.username} · {account.platform_user_id}
+                      {account.status === "invalid" ? "（登录态失效）" : ""}
+                    </option>
+                  ))}
                 </select>
               ) : (
                 <div className="content-publish-account-empty">
-                  <span>
-                    {canUseLocalPublishAccounts()
-                      ? "本机尚未连接该平台账号"
-                      : "请在 Windows 桌面客户端扫码连接账号"}
-                  </span>
+                  <span>尚未连接该平台账号，请先扫码连接</span>
                   <Button onClick={() => navigate("profile")} variant="quiet">
                     前往用户档案管理账号
                   </Button>
                 </div>
               )}
+              {selectedAccount?.status === "invalid" && (
+                <p role="alert">
+                  该账号登录态已失效，请在用户档案中重新扫码后再发布。
+                </p>
+              )}
+              {!platformDeliverable && (
+                <p role="status">
+                  小红书自动发布即将上线；现在可保存草稿、复制文案后前往官方页面发布。
+                </p>
+              )}
+            </Field>
+            <Field label="发布时间">
+              <div className="content-publish-schedule">
+                <Button
+                  disabled={actionBusy || cloudRevision === null}
+                  aria-pressed={scheduleMode === "now"}
+                  variant={scheduleMode === "now" ? "primary" : "outline"}
+                  onClick={() => {
+                    setScheduleMode("now");
+                    setSaveNotice(false);
+                  }}
+                >
+                  立即
+                </Button>
+                <Button
+                  disabled={actionBusy || cloudRevision === null}
+                  aria-pressed={scheduleMode === "later"}
+                  variant={scheduleMode === "later" ? "primary" : "outline"}
+                  onClick={() => {
+                    setScheduleMode("later");
+                    setSaveNotice(false);
+                  }}
+                >
+                  定时
+                </Button>
+                {scheduleMode === "later" && (
+                  <input
+                    type="datetime-local"
+                    aria-label="定时发布时间"
+                    disabled={actionBusy || cloudRevision === null}
+                    min={localDateTimeInputFromIso(
+                      new Date(
+                        Date.now() + PUBLISH_SCHEDULE_MIN_LEAD_MS,
+                      ).toISOString(),
+                    )}
+                    value={scheduleInput}
+                    onChange={(event) => {
+                      setScheduleInput(event.target.value);
+                      setSaveNotice(false);
+                    }}
+                  />
+                )}
+              </div>
             </Field>
             <Field label="发布标题">
               <input
@@ -3294,7 +3694,7 @@ export function PublishPage() {
             </Button>
           )}
           <p>
-            先保存视频和封面、复制发布文案，再前往所选账号的官方页面上传并确认发布。此处不会将打开页面记为发布成功。
+            点击「立即发布」或「定时发布」后，服务端会用所选账号的登录态自动上传并创建作品；桌面端仍可打开官方页面手动发布。
           </p>
           <div className="content-publish-actions">
             <Button
@@ -3373,21 +3773,39 @@ export function PublishPage() {
             <Button
               disabled={
                 !selectedAccount ||
+                selectedAccount.status === "invalid" ||
                 !selectedAsset ||
+                !platformDeliverable ||
                 review ||
                 actionBusy ||
+                cloudRevision === null ||
                 user.role === "auditor"
               }
               variant="primary"
-              onClick={() =>
-                selectedAccount &&
-                void perform(() =>
-                  openLocalPublishAccount(user.id, selectedAccount.id),
-                )
-              }
+              onClick={() => void submitPublish()}
             >
-              前往官方发布
+              {scheduleMode === "later" ? "定时发布" : "立即发布"}
             </Button>
+            {canUseLocalPublishAccounts() && (
+              <Button
+                disabled={
+                  !selectedLocalProfile ||
+                  !selectedAsset ||
+                  review ||
+                  actionBusy ||
+                  user.role === "auditor"
+                }
+                variant="outline"
+                onClick={() =>
+                  selectedLocalProfile &&
+                  void perform(() =>
+                    openLocalPublishAccount(user.id, selectedLocalProfile.id),
+                  )
+                }
+              >
+                前往官方发布
+              </Button>
+            )}
           </div>
         </Panel>
       </section>

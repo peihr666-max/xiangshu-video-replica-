@@ -35,6 +35,7 @@ vi.mock("./api", async (importOriginal) => {
     getLatestProjectSourceFrames: vi.fn(),
     getLatestScriptVersion: vi.fn(),
     getProjectFirstFrameHistory: vi.fn(),
+    getWorkspacePricing: vi.fn(),
     getProjectMainCharacter: vi.fn(),
     getAssetDownloadUrl: vi.fn(),
     listProjectCharacterVersions: vi.fn(),
@@ -252,6 +253,29 @@ const characterVersions = [
 describe("ProjectDetailFlow", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(api.getWorkspacePricing).mockResolvedValue({
+      prices: [{ subject: "first_frame", unit_credits: 2 }],
+    } as api.CustomerPricing);
+    vi.mocked(api.getLatestGenerationPrompt).mockResolvedValue({
+      stale: false,
+      stale_reasons: [],
+      version: {
+        ...analysisVersion,
+        id: "final-saved",
+        kind: "h3_prompt",
+        payload: {
+          final_composition: true,
+          confirmed_script_text: "乡下的房子真好。",
+          script_version_id: "script-saved",
+          shot_card_version_id: "shot-saved",
+          first_frame_asset_id: "first-frame-1",
+          output_duration_seconds: 15,
+          resolution: "768P",
+          ratio: "adaptive",
+          prompt_text: "已保存的最终稿",
+        },
+      },
+    });
     vi.mocked(api.getLatestProjectAnalysis).mockResolvedValue(analysisVersion);
     vi.mocked(api.getGenerationRuntimeLimits).mockResolvedValue({
       estimated_cost_per_task: 0.5,
@@ -324,6 +348,27 @@ describe("ProjectDetailFlow", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps old analysis prompts out of the final generation input", async () => {
+    vi.mocked(api.getLatestProjectAnalysis).mockResolvedValue({
+      ...analysisVersion,
+      payload: {
+        ...analysisVersion.payload,
+        generation_prompt: { status: "READY", prompt_text: "直接拆解 H3 正文" },
+      },
+    });
+    render(
+      <ProjectDetailFlow
+        project={project}
+        readOnly={false}
+        onBack={vi.fn()}
+        onBatchCreated={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("女子走向乡墅。")).toBeInTheDocument();
+    expect(screen.queryByText("直接拆解 H3 正文")).not.toBeInTheDocument();
+    expect(api.previewGenerationPrompt).not.toHaveBeenCalled();
+  });
+
   it("renders the five flow steps with editable custom copy", async () => {
     render(
       <ProjectDetailFlow
@@ -335,7 +380,7 @@ describe("ProjectDetailFlow", () => {
     );
 
     expect(
-      await screen.findByText("① 解析提示词", { selector: "legend" }),
+      await screen.findByText("① 原片拆解", { selector: "legend" }),
     ).toBeInTheDocument();
     expect(
       screen.getByText("② 源画面与人物", { selector: "legend" }),
@@ -350,16 +395,18 @@ describe("ProjectDetailFlow", () => {
       screen.getByText("⑤ 提交生成", { selector: "legend" }),
     ).toBeInTheDocument();
     // 第一段展示由拆解结果自动编译的提示词（Markdown 预览）。
-    expect(await screen.findByText("0.0-2.5s")).toBeInTheDocument();
+    expect(api.previewGenerationPrompt).not.toHaveBeenCalled();
     // 第四段带入原文，用户可直接修改，不再选择 AI 二创模式。
-    expect(await screen.findByLabelText("自定义文案")).toHaveValue(
-      "乡下的房子真好。",
+    await waitFor(() =>
+      expect(screen.getByLabelText("自定义文案")).toHaveValue(
+        "乡下的房子真好。",
+      ),
     );
-    expect(screen.getByText(/10 秒成片建议约 40–50 字/)).toBeInTheDocument();
+    expect(screen.getByText(/15 秒成片建议约 60–75 字/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("自定义文案"), {
       target: {
         value:
-          "这是一段明显超过十秒成片承载范围的口播文案，用来验证提交前会明确提示用户缩短内容，避免画面和口播节奏严重不一致。",
+          "这是一段明显超过十秒成片承载范围的口播文案，用来验证提交前会明确提示用户缩短内容，避免画面和口播节奏严重不一致。这里继续增加文案长度以验证十五秒成片的建议上限，而不是沿用旧的十秒上限。",
       },
     });
     expect(
@@ -368,14 +415,14 @@ describe("ProjectDetailFlow", () => {
     expect(screen.queryByRole("button", { name: "AI 二创改写" })).toBeNull();
     expect(screen.queryByRole("button", { name: "使用原文案" })).toBeNull();
     // 第二段保留角色入口，但源画面技术字段由后台自动处理并默认隐藏。
-    const roleSelect = await screen.findByLabelText("角色版本");
+    const roleSelect = await screen.findByLabelText("人物场景形象");
     expect(roleSelect).toHaveValue("cv-1");
     expect(
       screen.getByRole("option", {
         name: /林夏 · 场景：田园博主 · V1/,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("源画面自动处理")).toBeInTheDocument();
+    expect(screen.getByText("原视频画面")).toBeInTheDocument();
     expect(screen.getByText("已确认")).toBeInTheDocument();
     expect(screen.queryByLabelText("人物朝向")).toBeNull();
     expect(screen.queryByLabelText("人物景别")).toBeNull();
@@ -430,14 +477,7 @@ describe("ProjectDetailFlow", () => {
     expect(submit).toBeEnabled();
   });
 
-  it("saves an edited reverse prompt directly to my prompts before any generation", async () => {
-    vi.mocked(api.saveGenerationPrompt).mockResolvedValue({
-      ...analysisVersion,
-      id: "saved-prompt-1",
-      kind: "saved_prompt",
-      payload: { name: "反推提示词", prompt_text: "庭院日景，镜头缓慢推进。" },
-    });
-
+  it("does not offer a submittable prompt before frame confirmation", async () => {
     render(
       <ProjectDetailFlow
         onBack={vi.fn()}
@@ -446,21 +486,10 @@ describe("ProjectDetailFlow", () => {
         readOnly={false}
       />,
     );
-
-    fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
-    fireEvent.change(screen.getByLabelText("提示词源码"), {
-      target: { value: "庭院日景，镜头缓慢推进。" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
-
-    await waitFor(() =>
-      expect(api.saveGenerationPrompt).toHaveBeenCalledWith("project-1", {
-        name: expect.stringContaining("反推提示词"),
-        prompt_text: "庭院日景，镜头缓慢推进。",
-      }),
-    );
-    expect(api.getLatestGenerationPrompt).not.toHaveBeenCalled();
-    expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
+    await screen.findByText("① 原片拆解");
+    expect(screen.queryByLabelText("提示词源码")).toBeNull();
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.createGenerationBatch).not.toHaveBeenCalled();
   });
 
   it("clears an old price while a changed generation quote is pending", async () => {
@@ -539,14 +568,12 @@ describe("ProjectDetailFlow", () => {
       />,
     );
 
-    fireEvent.click(
-      await screen.findByRole("button", { name: "重新自动取帧" }),
-    );
+    fireEvent.click(await screen.findByRole("button", { name: "重新取帧" }));
     await waitFor(() =>
       expect(api.extractSourceFrames).toHaveBeenCalledWith(
         "project-1",
         "ref-1",
-        [6, 18, 30, 42, 54],
+        [0, 18, 30, 42, 54],
       ),
     );
     expect(screen.getByText(/15 秒成片建议约 60–75 字/)).toBeInTheDocument();
@@ -562,7 +589,7 @@ describe("ProjectDetailFlow", () => {
       />,
     );
 
-    const roleSelect = await screen.findByLabelText("角色版本");
+    const roleSelect = await screen.findByLabelText("人物场景形象");
     // 等版本列表加载完成且下拉可用后再交互（恢复/加载窗口内 select 禁用）。
     await waitFor(() =>
       expect(
@@ -790,20 +817,23 @@ describe("ProjectDetailFlow", () => {
         />,
       );
 
-      fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
-      fireEvent.change(screen.getByLabelText("提示词源码"), {
-        target: { value: "保存过但已过时的手工 Prompt" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "另存到我的提示词" }));
-      await waitFor(() =>
-        expect(api.saveGenerationPrompt).toHaveBeenCalledOnce(),
-      );
-
       fireEvent.change(await screen.findByLabelText("自定义文案"), {
         target: { value: "这栋乡下别墅真让人心动。" },
       });
-      expect(screen.getByText(/不会覆盖本次文案/)).toBeInTheDocument();
-
+      fireEvent.click(await screen.findByLabelText("采用这份文案"));
+      const composeButton = await screen.findByRole("button", {
+        name: "合成最终提示词",
+      });
+      await waitFor(() => expect(composeButton).toBeEnabled());
+      fireEvent.click(composeButton);
+      await waitFor(() =>
+        expect(api.compileGenerationPrompt).toHaveBeenCalledOnce(),
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("提示词")).toHaveValue(
+          "含新自定义文案的编译 Prompt",
+        ),
+      );
       const startButton = screen.getByRole("button", {
         name: "提交生成（1 条）",
       });
@@ -813,26 +843,17 @@ describe("ProjectDetailFlow", () => {
       expect(screen.getByLabelText("成片时长")).toBeDisabled();
       expect(screen.getByLabelText("生成数量")).toBeDisabled();
 
-      await waitFor(() =>
-        expect(api.createScriptVersion).toHaveBeenCalledWith(project.id, {
-          source: "custom",
-          text: "这栋乡下别墅真让人心动。",
-          shot_card_version_id: "shot-card-1",
+      await waitFor(() => expect(api.createGenerationBatch).toHaveBeenCalled());
+      expect(api.createGenerationBatch).toHaveBeenCalledWith(
+        project.id,
+        expect.objectContaining({
+          prompt_text: "含新自定义文案的编译 Prompt",
         }),
       );
-      expect(api.compileGenerationPrompt).toHaveBeenCalledWith(project.id, {
-        script_version_id: "script-custom-1",
-        shot_card_version_id: "shot-card-1",
-        first_frame_asset_id: "first-frame-1",
-        output_duration_seconds: 15,
-        resolution: "768P",
-        ratio: "adaptive",
-      });
+      expect(api.createScriptVersion).toHaveBeenCalledOnce();
+      expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
       expect(api.reviseGenerationPrompt).not.toHaveBeenCalled();
-      expect(api.lockGenerationPrompt).toHaveBeenCalledWith(
-        project.id,
-        "prompt-compiled-custom-1",
-      );
+      expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
       expect(
         await screen.findByText("提交结果未知，请安全重试。"),
       ).toBeInTheDocument();
@@ -845,7 +866,7 @@ describe("ProjectDetailFlow", () => {
       expect(firstIdempotencyKey).toBeTruthy();
       expect(secondIdempotencyKey).toBe(firstIdempotencyKey);
       expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-      expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
+      expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
       expect(vi.mocked(api.createGenerationBatch).mock.calls[1]?.[1]).toEqual(
         vi.mocked(api.createGenerationBatch).mock.calls[0]?.[1],
       );
@@ -947,9 +968,9 @@ describe("ProjectDetailFlow", () => {
     fireEvent.click(secondSubmit);
 
     await waitFor(() => expect(onBatchCreated).toHaveBeenCalledWith(batch));
-    expect(api.createScriptVersion).toHaveBeenCalledOnce();
-    expect(api.compileGenerationPrompt).toHaveBeenCalledOnce();
-    expect(api.lockGenerationPrompt).toHaveBeenCalledOnce();
+    expect(api.createScriptVersion).not.toHaveBeenCalled();
+    expect(api.compileGenerationPrompt).not.toHaveBeenCalled();
+    expect(api.lockGenerationPrompt).not.toHaveBeenCalled();
     expect(api.createGenerationBatch).toHaveBeenCalledTimes(2);
     expect(vi.mocked(api.createGenerationBatch).mock.calls[1]).toEqual(
       vi.mocked(api.createGenerationBatch).mock.calls[0],
@@ -975,7 +996,7 @@ describe("ProjectDetailFlow", () => {
     );
 
     const generateButton = await screen.findByRole("button", {
-      name: "生成人物置换首帧",
+      name: "生成1张首帧",
     });
     await waitFor(() => expect(generateButton).toBeEnabled());
     workspaceBusy.mockClear();
@@ -988,8 +1009,8 @@ describe("ProjectDetailFlow", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "返回项目列表" })).toBeEnabled();
     expect(workspaceBusy).not.toHaveBeenCalledWith(true);
-    expect(screen.getByLabelText("角色版本")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "重新自动取帧" })).toBeDisabled();
+    expect(screen.getByLabelText("人物场景形象")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重新取帧" })).toBeDisabled();
     expect(screen.getByText(/生成结束前暂不能更改/)).toBeInTheDocument();
 
     await act(async () => {

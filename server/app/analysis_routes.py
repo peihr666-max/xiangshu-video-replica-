@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -26,6 +27,7 @@ from app.analysis import (
     create_shot_card_version,
     enqueue_analysis_task,
     find_analysis_version_for_asset,
+    find_latest_analysis_task,
     get_version,
     validate_shot_cards,
 )
@@ -34,9 +36,11 @@ from app.auth import AuthenticatedUser, CurrentUser, Database, Role
 from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
 from app.db_portable import BusinessConnection
+from app.h3_prompts import GenerationContext
 from app.media import (
     DURATION_ROUNDING_TOLERANCE_SECONDS,
     MAX_DURATION_SECONDS,
+    MAX_UPLOAD_BYTES,
     is_reference_video_asset,
 )
 from app.media_routes import get_media_storage
@@ -47,15 +51,24 @@ from app.permissions import (
     require_project_access,
     write_audit,
 )
+from app.prompt_context import attach_context_media
 from app.settings import SettingsRepository, SettingsUnavailableError
+from app.source_frames import (
+    FFmpegSceneBoundaryDetector,
+    SceneBoundaryDetectionFailed,
+    SourceFrameExtractorUnavailable,
+)
 from app.storage import (
     StorageAdapter,
     StorageBackendUnavailable,
+    UploadedObjectSizeMismatch,
+    read_uploaded_object,
     require_storage_match,
     storage_object_ref_from_uri,
 )
 
 router = APIRouter(prefix="/api", tags=["analysis"])
+logger = logging.getLogger(__name__)
 
 # Must track the upload precheck: a video that passed upload at 15.05s has to stay
 # analysable instead of being rejected as an invalid request.
@@ -143,7 +156,8 @@ class CreateAnalysisRequest(BaseModel):
     # Reference videos are capped at 15s plus the upload rounding tolerance;
     # keep the analysis time axis bounded by the same contract.
     duration_seconds: float | None = Field(default=None, gt=0, le=MAX_ANALYSIS_DURATION_SECONDS)
-    reuse_existing: bool = False
+    reuse_existing: bool = True
+    generation_context: GenerationContext | None = None
 
 
 class UpdateShotCardsRequest(BaseModel):
@@ -201,6 +215,10 @@ class AnalysisTaskWork:
     provider: VideoAnalysisProvider
     video_uri: str
     asset_uri: str
+    generation_context: dict[str, Any] | None = None
+    generation_media: list[dict[str, Any]] | None = None
+    storage: StorageAdapter | None = None
+    source_size_bytes: int | None = None
 
 
 def require_async_analysis_route(project_id: str) -> None:
@@ -375,6 +393,12 @@ def create_project_analysis_task(
             project_id=project_id,
             request=request,
         )
+        if request.reuse_existing:
+            existing = find_latest_analysis_task(
+                conn, project_id=project_id, asset_id=request.asset_id
+            )
+            if existing is not None:
+                return analysis_task_response(existing)
         provider = get_video_analysis_provider(conn)
         if provider.requires_https_video_url and str(asset["storage_uri"]).startswith("local://"):
             raise HTTPException(
@@ -661,9 +685,7 @@ def acquire_analysis_task(
 ) -> AnalysisTaskLease | None:
     now = datetime.now(UTC)
     now_text = now.strftime("%Y-%m-%d %H:%M:%S")
-    # One analysis can use the primary 240-second request plus one 240-second
-    # structural repair request. Keep the lease longer than both attempts so a
-    # second worker cannot mark a still-running paid request as interrupted.
+    # One provider request; the lease also covers transfer and persistence.
     locked_until = (now + timedelta(minutes=ANALYSIS_TASK_LEASE_MINUTES)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
@@ -732,7 +754,7 @@ def prepare_analysis_task(
 ) -> AnalysisTaskWork:
     row = conn.execute(
         """
-        SELECT task.status, task.locked_by, asset.project_id,
+        SELECT task.status, task.locked_by, task.generation_context_json, asset.project_id,
                asset.storage_uri, asset.sha256, asset.size_bytes
         FROM analysis_tasks AS task
         JOIN assets AS asset ON asset.id = task.asset_id
@@ -761,24 +783,142 @@ def prepare_analysis_task(
     video_uri = asset_uri
     if resolved_provider.requires_https_video_url:
         video_uri = signed_video_url_for_provider(storage, asset_uri=asset_uri)
+    context = (
+        json.loads(str(row["generation_context_json"])) if row["generation_context_json"] else None
+    )
+    media: list[dict[str, Any]] = []
+    if (
+        context is not None
+        and context["generation_assets"]
+        and isinstance(resolved_provider, ApilioGemini)
+    ):
+        user = conn.execute(
+            "SELECT id, username, display_name, role FROM users WHERE id=%s",
+            (lease.created_by_user_id,),
+        ).fetchone()
+        if user is None:
+            raise HTTPException(404, detail={"code": "USER_NOT_FOUND"})
+        from app.auth import CurrentUser
+
+        actor = CurrentUser(
+            id=str(user["id"]),
+            username=str(user["username"]),
+            display_name=str(user["display_name"]),
+            role=cast(Role, str(user["role"])),
+        )
+        try:
+            media = attach_context_media(conn, actor=actor, context=context, storage=storage)
+        except HTTPException:
+            context["issues"].append(
+                {
+                    "code": "GENERATION_MEDIA_UNAVAILABLE",
+                    "message": "生成素材暂不可读；已保留源视频拆解，请重新选择素材。",
+                }
+            )
+            context["generation_assets"] = []
     conn.commit()
     return AnalysisTaskWork(
         lease=lease,
         provider=resolved_provider,
         video_uri=video_uri,
         asset_uri=asset_uri,
+        generation_context=context,
+        generation_media=media,
+        storage=storage,
+        source_size_bytes=int(row["size_bytes"]),
     )
 
 
 def perform_analysis_task(
     work: AnalysisTaskWork, *, on_provider_result: Callable[[], None] | None = None
 ) -> AnalysisResult:
+    duration = work.lease.duration_seconds
+    context = work.generation_context
+    if context is not None and isinstance(work.provider, ApilioGemini):
+        # Imported historical videos may only carry a provider-estimated duration.
+        # Probe the authorized signed source outside the DB transaction, before paying.
+        if len(context.get("media_info", {})) != 3:
+            from math import gcd
+
+            from app.media import FFprobeVideoProbe, VideoProbeFailed, VideoProbeUnavailable
+
+            try:
+                metadata = FFprobeVideoProbe().probe_file(work.video_uri)
+                if not metadata.width or not metadata.height or not metadata.fps:
+                    raise VideoProbeFailed("missing video stream metadata")
+            except (VideoProbeFailed, VideoProbeUnavailable) as exc:
+                raise AnalysisProviderFailed("视频元数据无法读取，请重新上传后拆解。") from exc
+            duration = metadata.duration_seconds
+            divisor = gcd(metadata.width, metadata.height)
+            context["media_info"] = {
+                "fps": metadata.fps,
+                "resolution": f"{metadata.width}x{metadata.height}",
+                "aspect_ratio": f"{metadata.width // divisor}:{metadata.height // divisor}",
+            }
+            context["issues"] = [
+                item for item in context["issues"] if item["code"] != "MEDIA_METADATA_REQUIRED"
+            ]
+    analysis_guidance = detect_scene_boundary_guidance(work, duration_seconds=duration)
     return analyze_video(
         video_uri=work.video_uri,
-        video_duration_seconds=work.lease.duration_seconds,
+        video_duration_seconds=duration,
         provider=work.provider,
         on_provider_result=on_provider_result,
+        generation_context=work.generation_context,
+        generation_media=work.generation_media,
+        analysis_guidance=analysis_guidance,
     )
+
+
+def detect_scene_boundary_guidance(
+    work: AnalysisTaskWork,
+    *,
+    duration_seconds: float,
+) -> dict[str, Any] | None:
+    """Provide bounded local cut candidates without turning them into facts."""
+
+    if not isinstance(work.provider, ApilioGemini) or work.storage is None:
+        return None
+    try:
+        reference = storage_object_ref_from_uri(work.asset_uri)
+        require_storage_match(work.storage, reference)
+        if work.source_size_bytes is None:
+            raise UploadedObjectSizeMismatch("source size is unavailable")
+        content = read_uploaded_object(
+            work.storage,
+            reference.key,
+            expected_size=work.source_size_bytes,
+            max_bytes=MAX_UPLOAD_BYTES,
+        )
+        candidates = FFmpegSceneBoundaryDetector().detect(
+            content,
+            filename=reference.key,
+            duration_seconds=duration_seconds,
+        )
+    except (
+        SceneBoundaryDetectionFailed,
+        SourceFrameExtractorUnavailable,
+        StorageBackendUnavailable,
+        UploadedObjectSizeMismatch,
+        ValueError,
+        OSError,
+    ) as exc:
+        logger.warning(
+            "Analysis scene-boundary guidance unavailable: project=%s asset=%s reason=%s",
+            work.lease.project_id,
+            work.lease.asset_id,
+            type(exc).__name__,
+        )
+        return {
+            "status": "UNAVAILABLE",
+            "candidate_cut_times_seconds": [],
+            "message": "本地切镜候选检测失败；请直接核对完整视频。",
+        }
+    return {
+        "status": "AVAILABLE",
+        "candidate_cut_times_seconds": list(candidates),
+        "message": ("这些时间只是 FFmpeg 候选线索，需核对完整视频后再判断是否真实切镜。"),
+    }
 
 
 def complete_analysis_task(
@@ -810,6 +950,16 @@ def complete_analysis_task(
         asset_uri=work.asset_uri,
         created_by_user_id=work.lease.created_by_user_id,
         result=result,
+        commit=False,
+    )
+    # Publish facts, initial editable shots and the task receipt atomically.
+    # The task lease lock serializes completion; an abandoned tab is irrelevant.
+    create_shot_card_version(
+        conn,
+        analysis_version=row,
+        created_by_user_id=work.lease.created_by_user_id,
+        shots=result.analysis.shots,
+        commit=False,
     )
     now_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
@@ -835,6 +985,7 @@ def complete_analysis_task(
             "asset_id": work.lease.asset_id,
             "version_id": str(row["id"]),
         },
+        commit=False,
     )
     from app.usage_billing import finish_source
 
@@ -863,6 +1014,7 @@ def fail_analysis_task(
         code = str(cause.detail.get("code") or code)
         message = str(cause.detail.get("message") or message)
         retryable = bool(cause.detail.get("retryable", True))
+        failure_phase = cause.detail.get("failure_phase")
     now_text = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
     updated = conn.execute(
         """

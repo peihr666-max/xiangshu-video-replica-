@@ -1,0 +1,74 @@
+[
+  {
+    "viewport": "1440",
+    "overflow": false,
+    "widths": {
+      "scroll": 1440,
+      "client": 1440
+    },
+    "layout": {
+      "left": 116,
+      "right": 1412,
+      "width": 1296
+    },
+    "editor": {
+      "left": 568.515625,
+      "right": 1412,
+      "width": 843.484375
+    },
+    "textarea": {
+      "left": 589.515625,
+      "right": 1391,
+      "width": 801.484375,
+      "height": 128
+    }
+  },
+  {
+    "viewport": "1024",
+    "overflow": false,
+    "widths": {
+      "scroll": 1024,
+      "client": 1024
+    },
+    "layout": {
+      "left": 246,
+      "right": 1002,
+      "width": 756
+    },
+    "editor": {
+      "left": 246,
+      "right": 1002,
+      "width": 756
+    },
+    "textarea": {
+      "left": 267,
+      "right": 981,
+      "width": 714,
+      "height": 128
+    }
+  },
+  {
+    "viewport": "390",
+    "overflow": false,
+    "widths": {
+      "scroll": 390,
+      "client": 390
+    },
+    "layout": {
+      "left": 18,
+      "right": 372,
+      "width": 354
+    },
+    "editor": {
+      "left": 18,
+      "right": 372,
+      "width": 354
+    },
+    "textarea": {
+      "left": 39,
+      "right": 351,
+      "width": 312,
+      "height": 128
+    }
+  }
+]

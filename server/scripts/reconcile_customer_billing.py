@@ -47,6 +47,9 @@ PG_ONLY_TABLES: frozenset[str] = frozenset(
         # remain divergent and must never be overwritten by archive import.
         "publish_browser_accounts",
         "publish_browser_logins",
+        # 20260917T1000_publish_records: delivery queue written by the publish
+        # worker from browser-login credentials; no SQLite lineage either.
+        "publish_records",
         "viral_script_cache",
         "h3_provider_accounts",
         "h3_provider_task_accounts",

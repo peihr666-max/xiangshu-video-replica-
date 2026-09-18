@@ -8,8 +8,10 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
+from fractions import Fraction
+from math import gcd
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -21,6 +23,7 @@ from app.analysis import (
 )
 from app.auth import CurrentUser
 from app.db_portable import BusinessConnection
+from app.material_thumbs import store_video_thumbnail
 from app.permissions import (
     require_asset_access,
     require_not_auditor,
@@ -47,6 +50,9 @@ FFPROBE_TIMEOUT_SECONDS = 5
 @dataclass(frozen=True)
 class VideoMetadata:
     duration_seconds: float
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,8 @@ class ProbedUploadCompletion:
     size_bytes: int
     content_type: str
     metadata: VideoMetadata
+    # MATERIAL-THUMBS-B：首帧缩略图对象键（探测期已落存储；失败为 None 不阻塞上传）。
+    thumbnail_key: str | None = None
 
 
 class VideoProbe(Protocol):
@@ -116,7 +124,7 @@ class FFprobeVideoProbe:
             source.write_bytes(content)
             return self.probe_file(source)
 
-    def probe_file(self, source: Path) -> VideoMetadata:
+    def probe_file(self, source: Path | str) -> VideoMetadata:
         ffprobe = shutil.which("ffprobe")
         if ffprobe is None:
             raise VideoProbeUnavailable("ffprobe is required for video precheck")
@@ -125,7 +133,7 @@ class FFprobeVideoProbe:
             "-v",
             "error",
             "-show_entries",
-            "format=duration",
+            "format=duration:stream=codec_type,width,height,avg_frame_rate",
             "-of",
             "json",
             str(source),
@@ -149,7 +157,18 @@ class FFprobeVideoProbe:
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise VideoProbeFailed("ffprobe returned invalid video metadata") from exc
 
-        return VideoMetadata(duration_seconds=duration)
+        stream: dict[str, Any] = next(
+            (item for item in payload.get("streams", []) if item.get("codec_type") == "video"), {}
+        )
+        width, height, fps = None, None, None
+        try:
+            width, height = int(stream["width"]), int(stream["height"])
+            fps = float(Fraction(stream["avg_frame_rate"]))
+            if width <= 0 or height <= 0 or fps <= 0:
+                raise ValueError("invalid stream metadata")
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
+            width, height, fps = None, None, None
+        return VideoMetadata(duration_seconds=duration, width=width, height=height, fps=fps)
 
 
 def create_upload_intent(
@@ -162,6 +181,7 @@ def create_upload_intent(
     content_type: str,
     size_bytes: int,
     sha256: str | None = None,
+    purpose: str = "replica",
 ) -> CreatedUploadIntent:
     require_not_auditor(
         conn,
@@ -228,6 +248,7 @@ def create_upload_intent(
                 json.dumps(
                     {
                         "upload_status": "PENDING",
+                        "upload_purpose": purpose,
                         "requested_size_bytes": size_bytes,
                         "requested_sha256": sha256,
                         "intent_expires_at": intent.expires_at.isoformat(),
@@ -468,6 +489,8 @@ def probe_upload_completion(
             content_type=content_type,
         )
     )
+    # MATERIAL-THUMBS-B：抽帧放在探测期（写事务之外）；失败只损失缩略图。
+    thumbnail_key = store_video_thumbnail(storage, verified.key, content)
     return ProbedUploadCompletion(
         prepared=prepared,
         storage_uri=verified.uri,
@@ -475,6 +498,7 @@ def probe_upload_completion(
         size_bytes=stored.size,
         content_type=content_type,
         metadata=metadata,
+        thumbnail_key=thumbnail_key,
     )
 
 
@@ -504,6 +528,19 @@ def persist_upload_completion(
     if row is None:
         raise media_error(409, "UPLOAD_STATE_CHANGED", "Upload was removed during verification.")
     metadata = json.loads(str(row["metadata_json"]))
+    if probed.thumbnail_key:
+        metadata["thumbnail_key"] = probed.thumbnail_key
+    if probed.metadata.width and probed.metadata.height and probed.metadata.fps:
+        width, height = probed.metadata.width, probed.metadata.height
+        divisor = gcd(width, height)
+        metadata.update(
+            {
+                "resolution": f"{width}x{height}",
+                "fps": probed.metadata.fps,
+                "aspect_ratio": f"{width // divisor}:{height // divisor}",
+            }
+        )
+
     if metadata.get("upload_status") == "EXPIRED":
         raise media_error(409, "UPLOAD_EXPIRED", "Upload expired during verification.")
     if (
@@ -560,6 +597,7 @@ def persist_upload_completion(
         )
         if (
             analysis_task is None
+            and metadata.get("upload_purpose", "replica") == "replica"
             and _automatic_analysis_input_ready(conn, probed.storage_uri)
             and find_analysis_version_for_asset(
                 conn,

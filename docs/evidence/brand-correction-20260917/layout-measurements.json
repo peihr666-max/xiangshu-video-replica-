@@ -1,0 +1,130 @@
+{
+  "centerDesktop": {
+    "direction": "row",
+    "font": "15.6px",
+    "logo": {
+      "bottom": 62.09375,
+      "height": 43.1953125,
+      "left": 51.1953125,
+      "right": 101.59375,
+      "top": 18.8984375,
+      "width": 50.3984375,
+      "x": 51.1953125,
+      "y": 18.8984375
+    },
+    "width": 1280
+  },
+  "centerMobile": {
+    "bodyScroll": 390,
+    "brand": {
+      "bottom": 59.1953125,
+      "height": 43.1953125,
+      "left": 20,
+      "right": 202.84375,
+      "top": 16,
+      "width": 182.84375,
+      "x": 20,
+      "y": 16
+    },
+    "font": "15.6px",
+    "width": 390
+  },
+  "mobileNavigation": {
+    "brand": {
+      "bottom": 119.1953125,
+      "height": 43.1953125,
+      "left": 38.578125,
+      "right": 221.421875,
+      "top": 76,
+      "width": 182.84375,
+      "x": 38.578125,
+      "y": 76
+    },
+    "sidebar": {
+      "bottom": 844,
+      "height": 844,
+      "left": 0,
+      "right": 265,
+      "top": 0,
+      "width": 265,
+      "x": 0,
+      "y": 0
+    }
+  },
+  "creationDesktop": [
+    {
+      "brand": {
+        "bottom": 64.1953125,
+        "height": 43.1953125,
+        "left": 16.296875,
+        "right": 66.6953125,
+        "top": 21,
+        "width": 50.3984375,
+        "x": 16.296875,
+        "y": 21
+      },
+      "logo": {
+        "bottom": 64.1953125,
+        "height": 43.1953125,
+        "left": 16.296875,
+        "right": 66.6953125,
+        "top": 21,
+        "width": 50.3984375,
+        "x": 16.296875,
+        "y": 21
+      },
+      "textDisplay": "none"
+    },
+    {
+      "brand": {
+        "bottom": 58.84375,
+        "height": 43.1953125,
+        "left": 112,
+        "right": 294.84375,
+        "top": 15.6484375,
+        "width": 182.84375,
+        "x": 112,
+        "y": 15.6484375
+      },
+      "logo": {
+        "bottom": 58.84375,
+        "height": 43.1953125,
+        "left": 112,
+        "right": 162.3984375,
+        "top": 15.6484375,
+        "width": 50.3984375,
+        "x": 112,
+        "y": 15.6484375
+      },
+      "textDisplay": "flex"
+    }
+  ],
+  "creation960": [
+    {
+      "brand": {
+        "bottom": 68.1953125,
+        "height": 43.1953125,
+        "left": 18.078125,
+        "right": 200.921875,
+        "top": 25,
+        "width": 182.84375,
+        "x": 18.078125,
+        "y": 25
+      },
+      "textDisplay": "flex"
+    },
+    {
+      "brand": {
+        "bottom": 58.84375,
+        "height": 43.1953125,
+        "left": 248,
+        "right": 430.84375,
+        "top": 15.6484375,
+        "width": 182.84375,
+        "x": 248,
+        "y": 15.6484375
+      },
+      "textDisplay": "flex"
+    }
+  ]
+}

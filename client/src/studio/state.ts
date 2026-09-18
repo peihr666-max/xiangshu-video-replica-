@@ -3,9 +3,20 @@ import type {
   StudioAsset,
   StudioDraft,
   StudioPage,
+  StudioScript,
   StudioState,
   StudioTask,
 } from "./types";
+
+export function hasCopyResult(script: StudioScript): boolean {
+  if (script.resultKind === "extracted") return false;
+  if (script.resultKind === "rewritten" || script.resultKind === "manual")
+    return true;
+  return (
+    script.confirmed ||
+    Boolean(script.text.trim() && script.text.trim() !== script.original.trim())
+  );
+}
 
 export const pageTitles: Record<StudioPage, string> = {
   workbench: "工作台",
@@ -17,7 +28,7 @@ export const pageTitles: Record<StudioPage, string> = {
   video: "视频生成 · 文/图生视频",
   reference: "视频生成 · 参考生视频",
   oral: "数字人口播",
-  "oral-audio": "数字人口播 · 用已有音频生成",
+  "oral-audio": "数字人口播",
   tasks: "任务中心",
   "task-detail": "任务详情与结果",
   people: "人物库",
@@ -67,6 +78,7 @@ export function studioRouteFromHash(hash: string): Pick<
     projects: "replica",
     characters: "people",
     wallet: "profile",
+    "oral-audio": "oral",
   };
   const params = new URLSearchParams(query);
   const result: ReturnType<typeof studioRouteFromHash> = {
@@ -165,7 +177,7 @@ export function createDraft(): StudioDraft {
     promptEdited: false,
     referenceIds: [],
     resolution: "768P",
-    ratio: "16:9",
+    ratio: "9:16",
     duration: 8,
     count: 1,
     frameConfirmed: false,
@@ -264,6 +276,33 @@ export function patchStudioDraft(
     id: draft.id,
     quoteRevision: draft.quoteRevision + 1,
   };
+  const bindingChanged =
+    firstFrameChanged ||
+    (Object.hasOwn(patch, "tailFrameId") &&
+      patch.tailFrameId !== draft.tailFrameId) ||
+    (patch.referenceIds !== undefined &&
+      JSON.stringify(patch.referenceIds) !==
+        JSON.stringify(draft.referenceIds));
+  if (bindingChanged && /<(Picture|Video|Audio)\s+\d+>|@\d+/.test(draft.prompt))
+    next.promptBindingsStale = true;
+  if (Object.hasOwn(patch, "prompt") && patch.promptBindingsStale === undefined)
+    next.promptBindingsStale = false;
+  if (
+    sourceChanged ||
+    projectChanged ||
+    (Object.hasOwn(patch, "ipId") && patch.ipId !== draft.ipId) ||
+    (
+      [
+        "rewriteMethod",
+        "rewriteInstructions",
+        "rewriteLength",
+        "rewriteWordCount",
+      ] as const
+    ).some((key) => Object.hasOwn(patch, key) && patch[key] !== draft[key])
+  ) {
+    next.pendingRewrite = undefined;
+    next.rewriteCandidate = undefined;
+  }
   if (sourceChanged) {
     if (!Object.hasOwn(patch, "projectId")) next.projectId = undefined;
     if (!Object.hasOwn(patch, "sourceAssetId")) next.sourceAssetId = undefined;
@@ -275,6 +314,12 @@ export function patchStudioDraft(
   }
   if (projectChanged || sourceChanged) {
     const blank = createDraft();
+    if (!Object.hasOwn(patch, "replicaSourcePrompt"))
+      next.replicaSourcePrompt = undefined;
+    if (!Object.hasOwn(patch, "replicaPromptBasis"))
+      next.replicaPromptBasis = undefined;
+    if (!Object.hasOwn(patch, "replicaPreparationPending"))
+      next.replicaPreparationPending = undefined;
     if (!Object.hasOwn(patch, "prompt")) next.prompt = "";
     if (!Object.hasOwn(patch, "promptEdited")) next.promptEdited = false;
     if (!patch.script) next.script = blank.script;
@@ -314,6 +359,14 @@ export function patchStudioDraft(
     patch.prompt !== draft.prompt
   )
     next.promptEdited = true;
+  if (
+    !Object.hasOwn(patch, "replicaPreparationPending") &&
+    next.replicaSourcePrompt !== undefined &&
+    ((Object.hasOwn(patch, "replicaSourcePrompt") &&
+      patch.replicaSourcePrompt !== draft.replicaSourcePrompt) ||
+      (patch.script && patch.script.text !== draft.script.text))
+  )
+    next.replicaPreparationPending = true;
   return next;
 }
 
@@ -549,9 +602,10 @@ export function validateReferences(
 export function resolveVideoMode(
   page: StudioPage,
   hasFirstFrame = false,
-): "t2v" | "i2v" | "r2v" {
+  hasLastFrame = false,
+): "t2v" | "i2v" | "l2v" | "r2v" {
   if (page === "reference") return "r2v";
-  return hasFirstFrame ? "i2v" : "t2v";
+  return hasFirstFrame ? "i2v" : hasLastFrame ? "l2v" : "t2v";
 }
 
 /** 把分镜卡拼成可读的反推提示词文本（可编辑、可另存为自定义提示词）。 */

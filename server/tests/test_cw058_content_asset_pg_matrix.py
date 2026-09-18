@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -83,6 +84,327 @@ from app.viral_store import (
 from app.viral_tikhub import ViralSourceClient, ViralVideo
 
 CW058_TEST_DB = "cw058_content_asset_test"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content_type", "safe_suffix"),
+    [
+        ("voice.mp3", "audio/mpeg", ".mp3"),
+        ("voice.wav", "audio/wav", ".wav"),
+        ("voice.m4a", "audio/mp4", ".m4a"),
+        ("voice.aac", "audio/aac", ".aac"),
+        ("voice.flac", "audio/flac", ".flac"),
+        ("voice.ogg", "audio/ogg", ".ogg"),
+        ("voice.opus", "audio/ogg", ".opus"),
+        ("voice.wma", "audio/x-ms-wma", ".wma"),
+        ("voice.aiff", "audio/aiff", ".aiff"),
+        ("voice.aif", "audio/aiff", ".aif"),
+        ("voice.amr", "audio/amr", ".amr"),
+        ("voice.wmv", "video/x-ms-wmv", ".wmv"),
+    ],
+)
+def test_voice_clone_upload_accepts_common_audio_containers(
+    filename: str, content_type: str, safe_suffix: str
+) -> None:
+    from app.materials import validate_upload_request
+
+    assert validate_upload_request(
+        filename=filename,
+        content_type=content_type,
+        size_bytes=1024,
+    ) == ("audio", safe_suffix)
+
+
+def test_only_voice_clone_may_defer_client_duration_probe() -> None:
+    from app.materials import validate_audio_contract
+
+    validate_audio_contract(media_type="audio", audio_purpose="voice_clone", duration_seconds=None)
+    for purpose in ("oral_audio", "reference"):
+        with pytest.raises(HTTPException) as raised:
+            validate_audio_contract(
+                media_type="audio",
+                audio_purpose=cast(Any, purpose),
+                duration_seconds=None,
+            )
+        assert raised.value.detail["code"] == "MATERIAL_AUDIO_DURATION_REQUIRED"
+
+
+def test_non_mp3_audio_formats_stay_scoped_to_voice_clone(bus: BusinessConnection) -> None:
+    from app.materials import MaterialUploadIntentRequest, create_material_upload_intent
+
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    with pytest.raises(HTTPException) as raised:
+        create_material_upload_intent(
+            bus,
+            actor=actor("employee_1", "employee"),
+            storage=storage,
+            request=MaterialUploadIntentRequest(
+                filename="narration.wav",
+                content_type="audio/wav",
+                size_bytes=1024,
+                audio_purpose="oral_audio",
+                duration_seconds=6,
+            ),
+        )
+    assert raised.value.detail["code"] == "MATERIAL_TYPE_UNSUPPORTED"
+
+
+def test_voice_clone_upload_intent_rejects_files_over_twenty_megabytes(
+    bus: BusinessConnection,
+) -> None:
+    from app.materials import MaterialUploadIntentRequest, create_material_upload_intent
+
+    with pytest.raises(HTTPException) as raised:
+        create_material_upload_intent(
+            bus,
+            actor=actor("employee_1", "employee"),
+            storage=FakeStorageAdapter(provider="fake", bucket="cw058-tests"),
+            request=MaterialUploadIntentRequest(
+                filename="voice.wav",
+                content_type="audio/wav",
+                size_bytes=20 * 1024 * 1024 + 1,
+                audio_purpose="voice_clone",
+            ),
+        )
+    assert raised.value.status_code == 413
+    assert raised.value.detail["code"] == "MATERIAL_TOO_LARGE"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "content_type", "audio_codec", "with_video"),
+    [
+        (".wav", "audio/wav", "pcm_s16le", False),
+        (".m4a", "audio/mp4", "aac", False),
+        (".wma", "audio/x-ms-wma", "wmav2", False),
+        (".wmv", "video/x-ms-wmv", "wmav2", True),
+    ],
+)
+def test_voice_clone_upload_probe_requires_decodable_audio_and_measures_server_duration(
+    tmp_path: Any,
+    suffix: str,
+    content_type: str,
+    audio_codec: str,
+    with_video: bool,
+) -> None:
+    from app.materials import PreparedMaterialUpload, probe_material_upload
+    from app.media_tools import resolve_media_binary
+
+    media_path = tmp_path / f"voice{suffix}"
+    command = [
+        resolve_media_binary("ffmpeg"),
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=16000",
+    ]
+    if with_video:
+        command.extend(["-f", "lavfi", "-i", "color=c=black:s=32x32:r=5"])
+    command.extend(["-t", "6", "-c:a", audio_codec])
+    if with_video:
+        command.extend(["-c:v", "msmpeg4v3"])
+    command.append(str(media_path))
+    subprocess.run(command, check=True, capture_output=True)
+    content = media_path.read_bytes()
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    key = f"uploads/voice{suffix}"
+    stored = storage.put_object(key, content, content_type=content_type)
+    prepared = PreparedMaterialUpload(
+        asset_id=f"voice-{suffix[1:]}",
+        owner_user_id="employee_1",
+        storage_uri=stored.uri,
+        storage_key=key,
+        media_type="audio",
+        content_type=content_type,
+        requested_size_bytes=len(content),
+        expected_sha256=None,
+        audio_purpose="voice_clone",
+        requested_duration_seconds=None,
+    )
+
+    probed = probe_material_upload(prepared, storage=storage)
+
+    assert probed.duration_seconds == pytest.approx(6, abs=0.2)
+
+
+def test_voice_clone_wmv_without_audio_track_is_rejected(tmp_path: Any) -> None:
+    from app.materials import PreparedMaterialUpload, probe_material_upload
+    from app.media_tools import resolve_media_binary
+
+    media_path = tmp_path / "silent.wmv"
+    subprocess.run(
+        [
+            resolve_media_binary("ffmpeg"),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=32x32:r=5",
+            "-t",
+            "6",
+            "-c:v",
+            "msmpeg4v3",
+            str(media_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    content = media_path.read_bytes()
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    stored = storage.put_object("uploads/silent.wmv", content, content_type="video/x-ms-wmv")
+    prepared = PreparedMaterialUpload(
+        asset_id="silent-wmv",
+        owner_user_id="employee_1",
+        storage_uri=stored.uri,
+        storage_key="uploads/silent.wmv",
+        media_type="audio",
+        content_type="video/x-ms-wmv",
+        requested_size_bytes=len(content),
+        expected_sha256=None,
+        audio_purpose="voice_clone",
+        requested_duration_seconds=None,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        probe_material_upload(prepared, storage=storage)
+
+    assert raised.value.detail["code"] == "MATERIAL_AUDIO_INVALID"
+
+
+def test_voice_clone_corrupt_audio_is_rejected() -> None:
+    from app.materials import PreparedMaterialUpload, probe_material_upload
+
+    content = b"not-a-decodable-wave-file"
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    stored = storage.put_object("uploads/corrupt.wav", content, content_type="audio/wav")
+    prepared = PreparedMaterialUpload(
+        asset_id="corrupt-wave",
+        owner_user_id="employee_1",
+        storage_uri=stored.uri,
+        storage_key="uploads/corrupt.wav",
+        media_type="audio",
+        content_type="audio/wav",
+        requested_size_bytes=len(content),
+        expected_sha256=None,
+        audio_purpose="voice_clone",
+        requested_duration_seconds=None,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        probe_material_upload(prepared, storage=storage)
+
+    assert raised.value.detail["code"] == "MATERIAL_CONTENT_INVALID"
+
+
+def test_voice_clone_playlist_is_rejected_before_media_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import materials
+
+    content = b"#EXTM3U\n#EXTINF:6,remote\nhttps://example.invalid/voice.mp3\n"
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    stored = storage.put_object("uploads/playlist.wav", content, content_type="audio/wav")
+    prepared = materials.PreparedMaterialUpload(
+        asset_id="playlist-wave",
+        owner_user_id="employee_1",
+        storage_uri=stored.uri,
+        storage_key="uploads/playlist.wav",
+        media_type="audio",
+        content_type="audio/wav",
+        requested_size_bytes=len(content),
+        expected_sha256=None,
+        audio_purpose="voice_clone",
+        requested_duration_seconds=None,
+    )
+    monkeypatch.setattr(
+        materials,
+        "inspect_media_bytes",
+        lambda *_args, **_kwargs: pytest.fail("playlist must be rejected before ffprobe"),
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        materials.probe_material_upload(prepared, storage=storage)
+
+    assert raised.value.detail["code"] == "MATERIAL_CONTENT_INVALID"
+
+
+def test_non_clone_audio_keeps_lightweight_duration_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import materials
+
+    content = b"ID3-legacy-audio"
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    stored = storage.put_object("uploads/oral.mp3", content, content_type="audio/mpeg")
+    prepared = materials.PreparedMaterialUpload(
+        asset_id="legacy-oral",
+        owner_user_id="employee_1",
+        storage_uri=stored.uri,
+        storage_key="uploads/oral.mp3",
+        media_type="audio",
+        content_type="audio/mpeg",
+        requested_size_bytes=len(content),
+        expected_sha256=None,
+        audio_purpose="oral_audio",
+        requested_duration_seconds=6,
+    )
+    monkeypatch.setattr(materials, "probe_audio_duration", lambda _content: 6.0)
+    monkeypatch.setattr(
+        materials,
+        "inspect_media_bytes",
+        lambda *_args, **_kwargs: pytest.fail("ordinary audio must keep the legacy probe path"),
+    )
+
+    probed = materials.probe_material_upload(prepared, storage=storage)
+
+    assert probed.duration_seconds == 6.0
+
+
+def test_voice_clone_server_probe_enforces_minimum_duration(tmp_path: Any) -> None:
+    from app.materials import PreparedMaterialUpload, probe_material_upload
+    from app.media_tools import resolve_media_binary
+
+    media_path = tmp_path / "too-short.wav"
+    subprocess.run(
+        [
+            resolve_media_binary("ffmpeg"),
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=16000",
+            "-t",
+            "4",
+            "-c:a",
+            "pcm_s16le",
+            str(media_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    content = media_path.read_bytes()
+    storage = FakeStorageAdapter(provider="fake", bucket="cw058-tests")
+    stored = storage.put_object("uploads/too-short.wav", content, content_type="audio/wav")
+    prepared = PreparedMaterialUpload(
+        asset_id="too-short-wave",
+        owner_user_id="employee_1",
+        storage_uri=stored.uri,
+        storage_key="uploads/too-short.wav",
+        media_type="audio",
+        content_type="audio/wav",
+        requested_size_bytes=len(content),
+        expected_sha256=None,
+        audio_purpose="voice_clone",
+        requested_duration_seconds=None,
+    )
+
+    with pytest.raises(HTTPException) as raised:
+        probe_material_upload(prepared, storage=storage)
+
+    assert raised.value.detail["code"] == "MATERIAL_AUDIO_INVALID"
 
 
 def test_prelaunch_publishing_draft_revision_rejects_stale_writer(bus: BusinessConnection) -> None:

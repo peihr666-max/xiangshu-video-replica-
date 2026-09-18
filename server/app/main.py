@@ -20,6 +20,7 @@ from app.admin_auth_routes import router as admin_auth_router
 from app.admin_customer_routes import router as admin_customer_router
 from app.admin_dashboard_routes import router as admin_dashboard_router
 from app.admin_device_routes import router as admin_device_router
+from app.admin_first_frame_routes import router as admin_first_frame_router
 from app.admin_profit_routes import router as admin_profit_router
 from app.admin_rate_routes import router as admin_rate_router
 from app.admin_runtime_routes import router as admin_runtime_router
@@ -61,7 +62,9 @@ from app.ops_metrics import (
 )
 from app.oral_routes import router as oral_router
 from app.payment_routes import router as payment_router
+from app.prompt_optimizer_routes import router as prompt_optimizer_router
 from app.publish_browser_routes import router as publish_browser_router
+from app.publish_record_routes import router as publish_record_router
 from app.publish_routes import router as publish_router
 from app.rbac_routes import router as rbac_router
 from app.recharge_routes import router as recharge_router
@@ -163,7 +166,7 @@ async def _business_http_exception_dispatch(request: Request, error: Exception) 
     return await business_http_exception_handler(request, error)
 
 
-app = VideoReplicaAPI(title="Video Replica API", version="2.0.0", lifespan=_lifespan)
+app = VideoReplicaAPI(title="Video Replica API", version="2.0.1", lifespan=_lifespan)
 app.add_exception_handler(HTTPException, _business_http_exception_dispatch)
 app.add_exception_handler(Exception, unhandled_exception_response)
 
@@ -359,6 +362,7 @@ app.include_router(studio_router)
 app.include_router(studio_draft_router)
 app.include_router(publish_router)
 app.include_router(publish_browser_router)
+app.include_router(publish_record_router)
 app.include_router(material_router)
 app.include_router(script_from_audio_router)
 app.include_router(oral_router)
@@ -370,6 +374,7 @@ app.include_router(admin_auth_router)
 app.include_router(admin_dashboard_router)
 app.include_router(admin_customer_router)
 app.include_router(admin_session_router)
+app.include_router(admin_first_frame_router)
 app.include_router(admin_profit_router)
 app.include_router(admin_rate_router)
 app.include_router(customer_pricing_router)
@@ -394,6 +399,7 @@ app.include_router(media_router)
 app.include_router(analysis_router)
 app.include_router(viral_router)
 app.include_router(viral_import_router)
+app.include_router(prompt_optimizer_router)
 app.include_router(character_router)
 app.include_router(character_identity_router)
 app.include_router(character_generation_router)
