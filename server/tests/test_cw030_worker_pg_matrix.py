@@ -64,6 +64,11 @@ from psycopg.rows import dict_row
 from app.character_image_generation import acquire_character_generation_task
 from app.db_pg import DATABASE_URL_ENV, close_pg_pool, pg_transaction
 from app.db_portable import BusinessConnection
+from app.first_frames import (
+    ImageProviderFailed,
+    RetryableImageProviderFailed,
+    first_frame_error,
+)
 from app.generation import (
     acquire_generation_task_lease,
     mark_expired_active_leases_needing_attention,
@@ -79,6 +84,8 @@ from app.image_tasks import (
     acquire_character_sheet_task,
     acquire_first_frame_task,
     fail_image_task,
+    record_image_task_provider,
+    save_first_frame_provider_submission,
 )
 from app.script_from_audio import (
     acquire_script_from_audio_task,
@@ -2934,3 +2941,354 @@ def test_ip_extended_profile_roundtrip_and_legacy_update_preserves_fields(pg_sta
                 factual_background="不能修改",
             )
     assert denied.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# G. FIRSTFRAME-RECONCILE — 确定性失败归类 / 任务级日志 / 管理端核对
+# ---------------------------------------------------------------------------
+
+
+def test_deterministic_provider_failure_lands_failed_not_uncertain(pg_state: str) -> None:
+    """供应商给出确定性答复（数量不符/JSON 不可读）后重跑同一任务结果必然
+    相同：这属于已知失败，用户重新生成即可，不应占用"待核对"终态卡死用户
+    （2026-09-17 事故类别的兜底归类）。"""
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-det")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        fail_image_task(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            cause=ImageProviderFailed("Apilio returned an unexpected number of image outputs"),
+            submission_started=True,
+        )
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable FROM first_frame_tasks WHERE id = 'ff-det'",
+    )[0]
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "IMAGE_TASK_PROVIDER_FAILED"
+    assert int(row["retryable"]) == 1
+
+
+def test_response_invalid_http_failure_lands_failed_not_uncertain(pg_state: str) -> None:
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-inv")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        fail_image_task(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            cause=first_frame_error(
+                502,
+                "FIRST_FRAME_PROVIDER_RESPONSE_INVALID",
+                "The image provider did not return the requested candidates.",
+            ),
+            submission_started=True,
+        )
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable FROM first_frame_tasks WHERE id = 'ff-inv'",
+    )[0]
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "FIRST_FRAME_PROVIDER_RESPONSE_INVALID"
+    assert int(row["retryable"]) == 1
+
+
+def test_retryable_transport_failure_stays_uncertain(pg_state: str) -> None:
+    """传输层超时/429/5xx 仍是"结果未知"：回执可续轮询，不能盲目判死。"""
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-trx")
+    with pg_transaction() as raw:
+        lease = acquire_first_frame_task(BusinessConnection.postgres(raw), worker_id="worker-a")
+    assert lease is not None
+    with pg_transaction() as raw:
+        fail_image_task(
+            BusinessConnection.postgres(raw),
+            table="first_frame_tasks",
+            lease=lease,
+            cause=RetryableImageProviderFailed("Apilio image request failed"),
+            submission_started=True,
+        )
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code FROM first_frame_tasks WHERE id = 'ff-trx'",
+    )[0]
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+    assert row["error_code"] == "IMAGE_TASK_SUBMISSION_UNCERTAIN"
+
+
+def test_worker_round_logs_task_scoped_failure(
+    pg_state: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """worker 任务级失败必须留下带任务标识的错误日志（2026-09-17 事故归因
+    当时全靠裸读代码）。"""
+    import logging as _logging
+
+    from cryptography.fernet import Fernet
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-log")
+    monkeypatch.setenv("VIDEO_REPLICA_SETTINGS_KEY", Fernet.generate_key().decode("ascii"))
+    storage = FakeStorageAdapter(provider="fake", bucket="sf-uploads")
+    monkeypatch.setattr(
+        "app.generation_worker.get_media_storage",
+        lambda _conn: storage,
+    )
+    with caplog.at_level(_logging.ERROR, logger="app.image_tasks"):
+        processed = run_pg_worker_round(worker_id="log-worker", max_tasks=1)
+    row = _rows(pg_state, "SELECT status FROM first_frame_tasks WHERE id = 'ff-log'")[0]
+    assert processed == 1
+    assert row["status"] == "FAILED"
+    assert any(
+        "ff-log" in record.getMessage() and "first_frame_tasks" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def _seed_uncertain_task_with_receipt(dsn: str, task_id: str = "ff-rec") -> None:
+    _seed_base(dsn)
+    _seed_image_task(dsn, table="first_frame_tasks", task_id=task_id)
+    # Production receipts are SHA256-bound; align request_hash with the
+    # receipt fingerprint check (the _seed_image_task placeholder is not hex).
+    _exec(
+        dsn,
+        "UPDATE first_frame_tasks SET request_hash=%s WHERE id=%s",
+        (_SHA_A, task_id),
+    )
+    receipt = {
+        "schema_version": 1,
+        "task_id": "vendor-rec-1",
+        "account_fingerprint": _SHA_A,
+        "model": "gpt-image-2",
+        "output_count": 1,
+    }
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        lease = acquire_first_frame_task(conn, worker_id="worker-a")
+        record_image_task_provider(
+            conn, table="first_frame_tasks", lease=lease, provider="apilio", model="gpt-image-2"
+        )
+        save_first_frame_provider_submission(
+            conn, lease=lease, submission=receipt, cost_record_id="cost-rec-1"
+        )
+    _exec(
+        dsn,
+        "UPDATE first_frame_tasks SET status='SUBMISSION_UNCERTAIN', locked_by=NULL,"
+        " locked_until=NULL WHERE id=%s",
+        (task_id,),
+    )
+
+
+class _StubReconcileProvider:
+    provider_name = "apilio"
+    account_fingerprint = _SHA_A
+
+    def __init__(self, outcome: str) -> None:
+        self.outcome = outcome
+        self.calls: list[tuple[str, int]] = []
+
+    def poll_edit(self, task_id: str, *, output_count: int) -> list[object] | None:
+        self.calls.append((task_id, output_count))
+        if self.outcome == "success":
+            return [object() for _ in range(output_count)]
+        if self.outcome == "running":
+            return None
+        if self.outcome == "failure":
+            raise first_frame_error(
+                422, "FIRST_FRAME_PROVIDER_REJECTED", "图像服务生成失败，请调整素材后重试。"
+            )
+        if self.outcome == "unreadable":
+            raise ImageProviderFailed("Apilio returned an unknown task status")
+        raise RetryableImageProviderFailed("Apilio image request failed")
+
+
+def test_first_frame_reconcile_resumes_when_provider_task_alive(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import (
+        apply_first_frame_reconcile,
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("success")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "RESUME"
+    assert detail_code is None
+    assert provider.calls == [("vendor-rec-1", 1)]
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        result = apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-rec",
+            decision=decision,
+            detail_code=detail_code,
+            actor=actor,
+        )
+    assert result == "RESUMED"
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable, completed_at FROM first_frame_tasks"
+        " WHERE id = 'ff-rec'",
+    )[0]
+    assert row["status"] == "PENDING"
+    assert row["error_code"] == "IMAGE_TASK_RECONCILE_RESUMED"
+    assert int(row["retryable"]) == 1
+    assert row["completed_at"] is None
+    audit = _rows(
+        pg_state,
+        "SELECT action FROM audit_logs WHERE entity_id = 'ff-rec'"
+        " AND action = 'first_frame_task.reconcile'",
+    )
+    assert len(audit) == 1
+
+
+def test_first_frame_reconcile_fails_when_provider_task_failed(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import (
+        apply_first_frame_reconcile,
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("failure")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "FAIL"
+    assert detail_code == "FIRST_FRAME_PROVIDER_REJECTED"
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        result = apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-rec",
+            decision=decision,
+            detail_code=detail_code,
+            actor=actor,
+        )
+    assert result == "FAILED"
+    row = _rows(
+        pg_state,
+        "SELECT status, error_code, retryable FROM first_frame_tasks WHERE id = 'ff-rec'",
+    )[0]
+    assert row["status"] == "FAILED"
+    assert row["error_code"] == "FIRST_FRAME_PROVIDER_REJECTED"
+
+
+def test_first_frame_reconcile_running_provider_task_resumes(pg_state: str) -> None:
+    from app.image_tasks import (
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("running")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "RESUME"
+    assert detail_code is None
+
+
+def test_first_frame_reconcile_without_receipt_fails_closed(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import (
+        apply_first_frame_reconcile,
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_base(pg_state)
+    _seed_image_task(
+        pg_state, table="first_frame_tasks", task_id="ff-norc", status="SUBMISSION_UNCERTAIN"
+    )
+    provider = _StubReconcileProvider("success")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-norc")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "FAIL"
+    assert detail_code == "IMAGE_TASK_RECONCILE_NO_RECEIPT"
+    assert provider.calls == []
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        result = apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-norc",
+            decision=decision,
+            detail_code=detail_code,
+            actor=actor,
+        )
+    assert result == "FAILED"
+    row = _rows(pg_state, "SELECT status FROM first_frame_tasks WHERE id = 'ff-norc'")[0]
+    assert row["status"] == "FAILED"
+
+
+def test_first_frame_reconcile_unreadable_provider_stays_put(pg_state: str) -> None:
+    from app.image_tasks import (
+        first_frame_reconcile_decision,
+        prepare_first_frame_reconcile,
+    )
+
+    _seed_uncertain_task_with_receipt(pg_state)
+    provider = _StubReconcileProvider("unreadable")
+    with pg_transaction() as raw:
+        plan = prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-rec")
+    decision, detail_code = first_frame_reconcile_decision(plan, provider)
+    assert decision == "RETRY"
+    assert detail_code == "IMAGE_TASK_RECONCILE_PROVIDER_INCONCLUSIVE"
+    row = _rows(pg_state, "SELECT status FROM first_frame_tasks WHERE id = 'ff-rec'")[0]
+    assert row["status"] == "SUBMISSION_UNCERTAIN"
+
+
+def test_first_frame_reconcile_apply_fences_concurrent_change(pg_state: str) -> None:
+    from types import SimpleNamespace
+
+    from app.image_tasks import apply_first_frame_reconcile
+
+    _seed_base(pg_state)
+    _seed_image_task(
+        pg_state, table="first_frame_tasks", task_id="ff-fence", status="SUBMISSION_UNCERTAIN"
+    )
+    actor = SimpleNamespace(id="u1", username="u1", display_name="User One", role="employee")
+    with pg_transaction() as raw:
+        apply_first_frame_reconcile(
+            BusinessConnection.postgres(raw),
+            task_id="ff-fence",
+            decision="FAIL",
+            detail_code="IMAGE_TASK_RECONCILE_NO_RECEIPT",
+            actor=actor,
+        )
+    with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            apply_first_frame_reconcile(
+                BusinessConnection.postgres(raw),
+                task_id="ff-fence",
+                decision="FAIL",
+                detail_code="IMAGE_TASK_RECONCILE_NO_RECEIPT",
+                actor=actor,
+            )
+    assert conflict.value.status_code == 409
+
+
+def test_first_frame_reconcile_rejects_non_uncertain_task(pg_state: str) -> None:
+    from app.image_tasks import prepare_first_frame_reconcile
+
+    _seed_base(pg_state)
+    _seed_image_task(pg_state, table="first_frame_tasks", task_id="ff-ok", status="PENDING")
+    with pg_transaction() as raw:
+        with pytest.raises(HTTPException) as conflict:
+            prepare_first_frame_reconcile(BusinessConnection.postgres(raw), task_id="ff-ok")
+    assert conflict.value.status_code == 409
