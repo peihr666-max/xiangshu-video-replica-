@@ -43,7 +43,9 @@ def test_replica_final_prompt_uses_confirmed_script_frame_and_real_cuts() -> Non
     )
     assert dialogue(text) == "今天带你看庭院"
     assert "欢迎看房" not in text and "红衣" not in text
-    assert "目标成片时长：4 秒" in text
+    # 时长由 API 的 duration 参数承载，写进正文是冗余；见 docs/prompt-spec
+    # 《视频复刻参考生视频方案与提示词修改意见》诊断列「分辨率/时长写进正文是冗余」。
+    assert "目标成片时长" not in text
     assert "生成数量" not in text and "生成 1 条" not in text
     assert text.startswith(
         "For the target video, at 0.00 seconds into the target video, "
@@ -168,9 +170,57 @@ def test_longer_target_automatically_scales_timeline_to_full_duration() -> None:
     )
 
     assert "[Shot 2] At 00:07.500" in text
-    assert "阶段 7.500–15.000 秒" in text
+    # 官方格式只有切镜时间戳；逐镜头起止时间不进正文。
+    assert "阶段" not in text
+    # 放慢是节奏指令，API 参数表达不了，必须留在正文；但不再复述目标时长。
     assert "人物动作、镜头运动和口播间隔等比放慢" in text
+    assert "目标时长" not in text
     assert "pace: 快节奏" not in text
+
+
+def test_customer_duration_options_match_what_the_provider_accepts() -> None:
+    """档位曾被收窄成 {4, 15}，导致 12 秒的源视频被拉成 15 秒或压成 4 秒（见
+    docs/prompt-spec 方案文档问题 3）。provider 与报价端点都支持 4–15 的每一秒，
+    客户档位不应再自行收窄；把两者绑在一起，防止日后又被改回去。"""
+    from app.generation import CUSTOMER_DURATION_OPTIONS, validate_h3_request
+
+    assert set(CUSTOMER_DURATION_OPTIONS) == set(range(4, 16))
+    for seconds in sorted(CUSTOMER_DURATION_OPTIONS):
+        validate_h3_request(
+            {
+                "model": "MiniMax-H3",
+                "content": [{"type": "text", "text": "正文"}],
+                "resolution": "768P",
+                "duration": seconds,
+                "ratio": "9:16",
+            }
+        )
+
+
+def test_final_prompt_keeps_duration_out_of_the_body() -> None:
+    """时长是 API 参数；正文只保留 H3 规范要求的镜头时间轴。"""
+    from app.h3_prompts import compile_replica_final_text
+
+    text = compile_replica_final_text(
+        shot_payload={
+            "shots": [
+                {"start_time": 0, "end_time": 5, "segment_kind": "ACTION_BEAT"},
+                {"start_time": 5, "end_time": 10, "segment_kind": "SHOT_CUT"},
+            ]
+        },
+        script_text="",
+        duration=10,
+        source_duration=10,
+        timeline_policy="preserve",
+        source_frame_time=0,
+    )
+
+    assert "目标成片时长" not in text
+    assert "所有动作与运镜在此时长内完成" not in text
+    # H3 规范要求的镜头编号与切镜时间戳不受影响；逐镜头起止时间不进正文。
+    assert "[Shot 2] At 00:05.000" in text
+    assert "阶段" not in text
+    assert not prompt_issues(text, mode="I2VA", duration=10, labels=["<Picture 1>"])
 
 
 @pytest.mark.parametrize("source_time", [7, -1])

@@ -2530,6 +2530,71 @@ describe("generation workflow API", () => {
       message: "上游内容已变化，请重新确认后再试",
     });
   });
+
+  // 合成最终提示词的 409 各自对应一个不同的自救动作（补开场衔接、勾压缩、改文案、
+  // 重存分镜）。统一兜底成"上游内容已变化"会把服务端已经给出的可行动原因丢掉，
+  // 用户既不知道哪一步出错，也找不到修正入口。
+  it.each([
+    ["FIRST_FRAME_ALIGNMENT_REQUIRED", /开场衔接/],
+    ["TIMELINE_CONFIRMATION_REQUIRED", /压缩/],
+    ["SCRIPT_DURATION_CONFLICT", /文案/],
+    ["SCRIPT_TAG_INVALID", /纯文本/],
+    ["DIALOGUE_MISMATCH", /台词/],
+    ["SCRIPT_STALE", /文案/],
+    ["SHOT_CARD_STALE", /分镜/],
+    ["SCRIPT_SHOT_CARD_MISMATCH", /分镜/],
+    ["FIRST_FRAME_CONFIRMATION_REQUIRED", /首帧/],
+    ["SHOT_CARD_TIMELINE_INVALID", /拆解/],
+  ])(
+    "explains compile conflict %s instead of the generic 409 copy",
+    async (code, pattern) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 409,
+          json: async () => ({ detail: { code, message: "server detail" } }),
+        }),
+      );
+
+      const error = await compileGenerationPrompt("project-1", {
+        script_version_id: "script-1",
+        shot_card_version_id: "shot-1",
+        first_frame_asset_id: "frame-1",
+        output_duration_seconds: 15,
+        resolution: "768P",
+        ratio: "adaptive",
+      }).catch((requestError: unknown) => requestError);
+
+      expect(error).toMatchObject({ status: 409, code });
+      expect((error as Error).message).toMatch(pattern);
+      expect((error as Error).message).not.toBe(
+        "上游内容已变化，请重新确认后再试",
+      );
+    },
+  );
+
+  it("keeps the generic 409 copy when the server sends no known code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({}),
+      }),
+    );
+
+    const error = await compileGenerationPrompt("project-1", {
+      script_version_id: "script-1",
+      shot_card_version_id: "shot-1",
+      first_frame_asset_id: "frame-1",
+      output_duration_seconds: 15,
+      resolution: "768P",
+      ratio: "adaptive",
+    }).catch((requestError: unknown) => requestError);
+
+    expect((error as Error).message).toBe("上游内容已变化，请重新确认后再试");
+  });
 });
 
 describe("character reference and first-frame binding", () => {
