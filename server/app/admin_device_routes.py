@@ -33,7 +33,7 @@ import logging
 from datetime import datetime
 
 import psycopg
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Request, Response
 
 from app.admin_auth_routes import AdminReader, AdminWriter
 from app.admin_write_contract import (
@@ -43,6 +43,7 @@ from app.admin_write_contract import (
 from app.admin_write_contract import (
     write_with_idempotency as _write_with_idempotency,
 )
+from app.api_errors import http_error as _http
 from app.customer_device_service import (
     ADMIN_APPROVE_FIRST_DEVICE_AVAILABLE,
     APPROVE_ALREADY_CONSUMED,
@@ -72,10 +73,6 @@ router = APIRouter(prefix="/api/control", tags=["admin-devices"])
 
 class ReplaceDeviceContract(AdminWriteContract):
     replace_device_id: str
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 def _transaction_now(conn: psycopg.Connection) -> datetime:

@@ -49,7 +49,8 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
 )
-from app.viral_media import ViralMediaError, _pinned_connection
+from app.viral_media import ViralMediaError
+from app.viral_media import pinned_connection as _pinned_connection
 
 logger = logging.getLogger(__name__)
 

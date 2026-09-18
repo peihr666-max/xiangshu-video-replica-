@@ -63,6 +63,7 @@ from app.activation_code_service import (
     mask_activation_code,
     normalize_activation_code,
 )
+from app.api_errors import http_error as _http
 from app.customer_idempotency import (
     EnvelopeRecord,
     IdempotencyKeyError,
@@ -84,7 +85,6 @@ from app.customer_session_service import LOGIN_CONFLICT, SESSION_LEASE_SECONDS, 
 from app.db_pg import get_pg_pool, pg_transaction
 from app.ops_metrics import (
     get_or_create_request_id,
-    set_current_result_code,
     set_current_trace_fields,
 )
 from app.security_rate_limit import (
@@ -138,11 +138,6 @@ ACTIVATION_CODE_UNIQUE_CONSTRAINTS = frozenset(
 ACTIVATE_OPERATION = "activate"
 
 router = APIRouter(prefix="/api/customer", tags=["customer-activation"])
-
-
-def _http(status: int, code: str, message: str) -> HTTPException:
-    set_current_result_code(code)
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
 def _unavailable() -> HTTPException:

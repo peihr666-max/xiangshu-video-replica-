@@ -711,7 +711,8 @@ export function WorkbenchPage() {
           </p>
         )}
         <p className="studio-start-helper">
-          支持抖音、小红书视频链接；其他平台请上传 MP4/MOV 文件。
+          支持抖音、小红书的 App
+          分享链接、网页链接与主页视频链接；其他平台请上传 MP4/MOV 文件。
         </p>
         {linkState.status === "error" && (
           <p className="viral-media-status is-error" role="alert">
