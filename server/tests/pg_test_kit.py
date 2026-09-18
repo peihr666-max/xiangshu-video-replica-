@@ -93,6 +93,8 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "t16_customer_devices_test",
         "t19_customer_sessions_test",
         "cw027_admin_matrix_test",
+        # FIRSTFRAME-RECONCILE admin endpoint suite (dedicated migrated DB).
+        "admin_ff_reconcile_test",
         "cw007_kit_alpha_test",
         "cw007_kit_beta_test",
         # CW-010 per-category recovery baselines: each owns a dedicated migrated
