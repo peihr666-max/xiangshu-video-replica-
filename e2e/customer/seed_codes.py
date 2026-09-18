@@ -102,6 +102,12 @@ def main() -> None:
             """,
             (encrypted_config,),
         )
+        # 客户 E2E 没有 COS 凭据，素材/资产上传会 503 STORAGE_PROVIDER_FORBIDDEN。
+        # 改用本地持久盘（配套 VIDEO_REPLICA_STORAGE_ROOT，见 setup-backend.mjs），
+        # 让上传、归档等触达存储的链路在隔离环境里可跑。
+        conn.execute(
+            "UPDATE runtime_settings SET active_storage_provider = 'local' WHERE id = 1"
+        )
 
     print(f"SEEDED admin_e2e + {len(E2E_CODES)} codes into {dsn.split('@')[-1]}")
     # The runner captures this to set VIDEO_REPLICA_SETTINGS_KEY on the API.
