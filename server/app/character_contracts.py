@@ -22,17 +22,18 @@ RequiredCharacterViewType = Literal[
     "FRONT_HALF",
     "FRONT_FULL",
     "LEFT_45",
-    "RIGHT_45",
     "LEFT_SIDE",
-    "RIGHT_SIDE",
 ]
+# CharacterAssetViewType 描述「库里能存在什么」：RIGHT_45/RIGHT_SIDE 是存量七资产
+# 人物的历史行（镜像派生，已停止生成与发布），保留枚举值以兼容旧数据读取；
+# 新人物只产生 RequiredCharacterViewType 的五个真视图。
 CharacterAssetViewType = Literal[
     "FRONT_FACE",
     "FRONT_HALF",
     "FRONT_FULL",
     "LEFT_45",
-    "RIGHT_45",
     "LEFT_SIDE",
+    "RIGHT_45",
     "RIGHT_SIDE",
     "IMPORTED_REFERENCE",
 ]

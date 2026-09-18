@@ -5137,7 +5137,7 @@ export interface paths {
     };
     /**
      * Read Simple Library
-     * @description List characters with their contact sheet and seven-view asset ids.
+     * @description List characters with their contact sheet and five-view asset ids.
      */
     get: operations["read_simple_library_api_simple_characters_library_get"];
     put?: never;
@@ -5949,8 +5949,8 @@ export interface components {
         | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
         | "LEFT_SIDE"
+        | "RIGHT_45"
         | "RIGHT_SIDE"
         | "IMPORTED_REFERENCE";
       /** Candidate Number */
@@ -6036,9 +6036,7 @@ export interface components {
             | "FRONT_HALF"
             | "FRONT_FULL"
             | "LEFT_45"
-            | "RIGHT_45"
             | "LEFT_SIDE"
-            | "RIGHT_SIDE"
           )[]
         | null;
       /**
@@ -6062,9 +6060,7 @@ export interface components {
         | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
-        | "LEFT_SIDE"
-        | "RIGHT_SIDE";
+        | "LEFT_SIDE";
       /** Provider */
       provider: string;
       /** Model */
@@ -6377,9 +6373,7 @@ export interface components {
         | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
         | "LEFT_SIDE"
-        | "RIGHT_SIDE"
       )[];
       /** Published By */
       published_by: string | null;
@@ -8347,9 +8341,7 @@ export interface components {
         | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
-        | "LEFT_SIDE"
-        | "RIGHT_SIDE";
+        | "LEFT_SIDE";
     };
     /** ProjectCharacterVersionOption */
     ProjectCharacterVersionOption: {
@@ -9293,9 +9285,7 @@ export interface components {
         | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
-        | "LEFT_SIDE"
-        | "RIGHT_SIDE";
+        | "LEFT_SIDE";
       /** Asset Id */
       asset_id: string;
     };

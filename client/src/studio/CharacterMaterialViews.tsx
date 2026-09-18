@@ -8,9 +8,7 @@ const labels: Record<string, string> = {
   FRONT_HALF: "正面半身",
   FRONT_FACE: "正面近景",
   LEFT_45: "左侧 45°",
-  RIGHT_45: "右侧 45°",
   LEFT_SIDE: "左侧面",
-  RIGHT_SIDE: "右侧面",
 };
 
 /** One material set, with explicit single-image selection for downstream creation. */

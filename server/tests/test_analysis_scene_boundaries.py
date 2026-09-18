@@ -147,6 +147,35 @@ def test_legacy_analysis_instruction_has_no_fixed_segment_count() -> None:
     assert "段数服从实际内容" in instruction
 
 
+def test_generation_context_target_duration_does_not_enter_analysis_prompt() -> None:
+    """拆解只描述源视频事实；目标生成时长由生成阶段 H3 API duration 参数承载，
+    注入提示词前必须剥离，防止模型把目标时长当源时长或按目标时长凑段。"""
+    captured: dict[str, object] = {}
+
+    class Transport:
+        def post(self, url, *, headers, body):
+            captured["request"] = json.loads(body)
+            return json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode(), {}
+
+    ApilioGemini(api_key="test", transport=Transport()).analyze_with_context(
+        video_uri="https://example.test/source.mp4",
+        duration_seconds=12.0,
+        context={
+            "mode": "I2VA",
+            "duration_seconds": 15,
+            "generation_assets": [],
+            "issues": [],
+            "media_info": {"fps": 30},
+        },
+        media=[],
+    )
+
+    prompt = captured["request"]["messages"][0]["content"]
+    # 源视频时长（媒体信息）保留；目标生成时长（生成上下文）不得出现。
+    assert '"duration_seconds": 12.0' in prompt
+    assert '"duration_seconds": 15' not in prompt
+
+
 @pytest.mark.parametrize("source_size_bytes", [None, 50 * 1024 * 1024 + 1])
 def test_unbounded_source_is_not_downloaded_and_degrades_to_video_review(
     caplog: pytest.LogCaptureFixture,

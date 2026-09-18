@@ -808,6 +808,27 @@ describe("批量素材预览授权", () => {
     expect(again.thumbnails).toEqual({});
   });
 
+  // 服务端两条授权通道都签发站内相对路径（rbac_routes 的 signed-objects）。
+  // 桌面端页面 origin 是 tauri://，与 API origin 必然不同，相对地址会打到
+  // 应用自身而不是后端——素材本体与视频缩略图都会退化成空预览框。
+  it("批量授权的本体与缩略图地址按 API 地址绝对化", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
+    await batchFixture({
+      url: "/api/assets/signed-objects/a.png?expires=1&sig=1",
+      thumbnail_url:
+        "/api/assets/signed-objects/a.mp4.thumb.jpg?expires=1&sig=2",
+    });
+    const { previews, thumbnails } = await getMaterialBatchPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(previews["batch-a"]).toMatchObject({
+      url: "https://studio.example.com/backend/api/assets/signed-objects/a.png?expires=1&sig=1",
+    });
+    expect(thumbnails["batch-a"]).toBe(
+      "https://studio.example.com/backend/api/assets/signed-objects/a.mp4.thumb.jpg?expires=1&sig=2",
+    );
+  });
+
   it("中止信号取消批量请求", async () => {
     const f = await batchFixture();
     const controller = new AbortController();
@@ -1146,7 +1167,13 @@ describe("素材库 API", () => {
     expect(click).toHaveBeenCalledOnce();
     click.mockRestore();
   });
-  it.each([getAssetDownloadUrl, getCachedCharacterAssetUrl])(
+  it.each([
+    getAssetDownloadUrl,
+    getCachedCharacterAssetUrl,
+    // 成片下载/播放走同一个 download-url 端点，绝对化口径必须一致：
+    // 生成记录详情页的播放器 src 直接吃这个返回值。
+    getGenerationResultDownloadUrl,
+  ])(
     "resolves signed media through the configured API proxy",
     async (readUrl) => {
       vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
@@ -1164,6 +1191,22 @@ describe("素材库 API", () => {
       );
     },
   );
+
+  it("成片在线播放地址按 API 地址绝对化", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          url: "/api/assets/signed-objects/result.mp4?expires=1&sig=test",
+        }),
+      }),
+    );
+    expect(await createGenerationResultPreviewUrl("asset-1")).toBe(
+      "https://studio.example.com/backend/api/assets/signed-objects/result.mp4?expires=1&sig=test",
+    );
+  });
 
   it("按扩展名规范化上传类型并完成素材上传", async () => {
     const fetchMock = vi
@@ -2529,6 +2572,71 @@ describe("generation workflow API", () => {
       code: "PROMPT_STALE",
       message: "上游内容已变化，请重新确认后再试",
     });
+  });
+
+  // 合成最终提示词的 409 各自对应一个不同的自救动作（补开场衔接、勾压缩、改文案、
+  // 重存分镜）。统一兜底成"上游内容已变化"会把服务端已经给出的可行动原因丢掉，
+  // 用户既不知道哪一步出错，也找不到修正入口。
+  it.each([
+    ["FIRST_FRAME_ALIGNMENT_REQUIRED", /开场衔接/],
+    ["TIMELINE_CONFIRMATION_REQUIRED", /压缩/],
+    ["SCRIPT_DURATION_CONFLICT", /文案/],
+    ["SCRIPT_TAG_INVALID", /纯文本/],
+    ["DIALOGUE_MISMATCH", /台词/],
+    ["SCRIPT_STALE", /文案/],
+    ["SHOT_CARD_STALE", /分镜/],
+    ["SCRIPT_SHOT_CARD_MISMATCH", /分镜/],
+    ["FIRST_FRAME_CONFIRMATION_REQUIRED", /首帧/],
+    ["SHOT_CARD_TIMELINE_INVALID", /拆解/],
+  ])(
+    "explains compile conflict %s instead of the generic 409 copy",
+    async (code, pattern) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 409,
+          json: async () => ({ detail: { code, message: "server detail" } }),
+        }),
+      );
+
+      const error = await compileGenerationPrompt("project-1", {
+        script_version_id: "script-1",
+        shot_card_version_id: "shot-1",
+        first_frame_asset_id: "frame-1",
+        output_duration_seconds: 15,
+        resolution: "768P",
+        ratio: "adaptive",
+      }).catch((requestError: unknown) => requestError);
+
+      expect(error).toMatchObject({ status: 409, code });
+      expect((error as Error).message).toMatch(pattern);
+      expect((error as Error).message).not.toBe(
+        "上游内容已变化，请重新确认后再试",
+      );
+    },
+  );
+
+  it("keeps the generic 409 copy when the server sends no known code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({}),
+      }),
+    );
+
+    const error = await compileGenerationPrompt("project-1", {
+      script_version_id: "script-1",
+      shot_card_version_id: "shot-1",
+      first_frame_asset_id: "frame-1",
+      output_duration_seconds: 15,
+      resolution: "768P",
+      ratio: "adaptive",
+    }).catch((requestError: unknown) => requestError);
+
+    expect((error as Error).message).toBe("上游内容已变化，请重新确认后再试");
   });
 });
 
