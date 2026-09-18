@@ -22,6 +22,7 @@ from app.auth import AuthenticatedUser, CurrentUser, Database, authenticate_user
 from app.customer_fence import BusinessDbDep, BusinessReadConn
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
+from app.material_thumbs import THUMBNAIL_SUFFIX, THUMBNAIL_URL_EXPIRES_IN
 from app.media import (
     MAX_UPLOAD_BYTES,
     FFprobeVideoProbe,
@@ -529,6 +530,7 @@ def _read_stored_object(
     *,
     object_key: str,
     range_header: str | None = None,
+    cache_control: str | None = None,
 ) -> Response:
     try:
         stored = storage.head_object(object_key)
@@ -549,7 +551,7 @@ def _read_stored_object(
         "Content-Disposition": f"attachment; filename*=UTF-8''{filename}",
         "Accept-Ranges": "bytes",
         "Content-Length": str(length),
-        "Cache-Control": "private, no-store",
+        "Cache-Control": cache_control or "private, no-store",
     }
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end}/{stored.size}"
@@ -821,5 +823,24 @@ def get_signed_object(
     """Proxy a revocable signed grant for local or private cloud storage."""
     storage = _prepare_signed_object_read(object_key=object_key, request=request)
     return _read_stored_object(
-        storage, object_key=object_key, range_header=request.headers.get("range")
+        storage,
+        object_key=object_key,
+        range_header=request.headers.get("range"),
+        cache_control=_signed_object_cache_control(object_key),
     )
+
+
+def _signed_object_cache_control(object_key: str) -> str | None:
+    """缩略图允许浏览器缓存到签名过期为止；其余对象维持 no-store。
+
+    缩略图键由原对象内容确定性派生（``<object_key>.thumb.jpg``），内容不会原地
+    变化，重新生成必然换键，因此可以 ``immutable``。素材库一页 24 张瓦片，
+    ``no-store`` 意味着每次翻页/重渲染都全量重拉，穿透应用服务器直到对象存储。
+
+    缓存窗口与签名有效期一致：地址过期后浏览器必须回来重新授权，缓存不会延长
+    任何一条授权的实际寿命。
+    """
+    if not object_key.endswith(THUMBNAIL_SUFFIX):
+        return None
+    max_age = int(THUMBNAIL_URL_EXPIRES_IN.total_seconds())
+    return f"private, max-age={max_age}, immutable"

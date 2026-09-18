@@ -239,6 +239,58 @@ def batch_client(app, pg: psycopg.Connection, user_id: str = "employee_1") -> Te
     return TestClient(app)
 
 
+@pytest.fixture()
+def cos_storage(monkeypatch: pytest.MonkeyPatch) -> FakeStorageAdapter:
+    """云端后端替身：provider="cos" 触发缩略图直连分支."""
+    storage = FakeStorageAdapter(provider="cos", bucket="matthumbs-cos")
+    monkeypatch.setattr("app.rbac_routes.storage_for_asset", lambda _conn, _uri: storage)
+    return storage
+
+
+def test_cloud_thumbnail_is_served_straight_from_object_storage(
+    lane_env: str, pg: psycopg.Connection, cos_storage: FakeStorageAdapter
+) -> None:
+    """云端缩略图直连对象存储：派生小图不再经应用服务器逐字节转发。
+
+    素材库一页 24 张瓦片，走代理等于 24 次穿透 worker 且响应是 ``no-store``，
+    翻页/重渲染会全量重拉。直连把字节搬运交给对象存储，应用服务器只签名。
+    """
+    from app.main import app
+
+    cos_storage.put_object(
+        "perf/cloud_video.mp4.thumb.jpg", b"\xff\xd8thumb", content_type="image/jpeg"
+    )
+    seed_video_asset(
+        pg, "cloud_video", "employee_1", thumbnail_key="perf/cloud_video.mp4.thumb.jpg"
+    )
+    client = batch_client(app, pg)
+    response = client.post("/api/assets/download-urls", json={"asset_ids": ["cloud_video"]})
+    assert response.status_code == 200
+    thumb_url = response.json()["items"][0]["thumbnail_url"]
+    assert thumb_url is not None
+    # 直连地址由存储后端签发，不再落在应用的代理路由上。
+    assert "/api/assets/signed-objects/" not in thumb_url
+    assert thumb_url.startswith("cos://matthumbs-cos/")
+    app.dependency_overrides.clear()
+
+
+def test_local_thumbnail_still_uses_the_application_proxy(
+    lane_env: str, pg: psycopg.Connection, fake_storage: FakeStorageAdapter
+) -> None:
+    """本地存储签出的是 ``local://`` 伪协议，浏览器加载不了，必须继续走代理."""
+    from app.main import app
+
+    seed_video_asset(
+        pg, "local_video", "employee_1", thumbnail_key="perf/local_video.mp4.thumb.jpg"
+    )
+    client = batch_client(app, pg)
+    response = client.post("/api/assets/download-urls", json={"asset_ids": ["local_video"]})
+    thumb_url = response.json()["items"][0]["thumbnail_url"]
+    assert thumb_url is not None
+    assert "/api/assets/signed-objects/" in thumb_url
+    app.dependency_overrides.clear()
+
+
 def test_batch_signs_seven_day_thumbnail_url_for_videos_with_thumb(
     lane_env: str, pg: psycopg.Connection, fake_storage: FakeStorageAdapter
 ) -> None:

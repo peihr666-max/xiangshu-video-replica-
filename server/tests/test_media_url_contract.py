@@ -30,12 +30,28 @@ BARE_RELATIVE_API_URL = re.compile(r'f?"/api/')
 def test_rbac_routes_never_hands_out_relative_media_urls() -> None:
     """签发通道一律下发绝对地址，客户端零拼接。"""
     source = (APP_ROOT / "rbac_routes.py").read_text(encoding="utf-8")
-    offenders = [
-        line.strip()
-        for line in source.splitlines()
-        if BARE_RELATIVE_API_URL.search(line)
-    ]
+    offenders = [line.strip() for line in source.splitlines() if BARE_RELATIVE_API_URL.search(line)]
     assert offenders == [], (
         "签发地址必须经 api_base_url() 拼成绝对地址，否则桌面端只会显示空预览框：\n"
         + "\n".join(offenders)
     )
+
+
+def test_thumbnail_objects_are_cacheable_until_the_grant_expires() -> None:
+    """代理下发的缩略图必须可缓存，其余对象保持 no-store。
+
+    素材库一页 24 张瓦片，``no-store`` 意味着每次翻页/重渲染都全量重拉、逐张
+    穿透应用服务器。缩略图键由内容确定性派生（``<object_key>.thumb.jpg``），
+    重新生成必然换键，因此可以 ``immutable``；缓存窗口与签名有效期一致，不会
+    让任何一条授权活得比签名更久。
+    """
+    from app.material_thumbs import THUMBNAIL_SUFFIX, THUMBNAIL_URL_EXPIRES_IN
+    from app.media_routes import _signed_object_cache_control
+
+    thumb = _signed_object_cache_control(f"projects/a/clip.mp4{THUMBNAIL_SUFFIX}")
+    assert thumb is not None
+    assert "immutable" in thumb
+    assert f"max-age={int(THUMBNAIL_URL_EXPIRES_IN.total_seconds())}" in thumb
+    # 原视频/人物图等仍然不进缓存（授权可被会话吊销，缓存会架空吊销）。
+    assert _signed_object_cache_control("projects/a/clip.mp4") is None
+    assert _signed_object_cache_control("users/u1/identities/face.png") is None

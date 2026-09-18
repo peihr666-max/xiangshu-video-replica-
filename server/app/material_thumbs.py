@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from app.media_tools import resolve_media_binary
@@ -23,6 +24,10 @@ if TYPE_CHECKING:
     from app.storage import StorageAdapter
 
 THUMBNAIL_SUFFIX = ".thumb.jpg"
+# 缩略图是原对象的派生小图，签名可放宽到 7 天，让浏览器跨页/跨会话命中缓存
+# （瓦片不再每次进素材库重新签名）。授权签发与代理响应的缓存窗口共用此值，
+# 缓存因此永远不会比签名活得更久。
+THUMBNAIL_URL_EXPIRES_IN = timedelta(days=7)
 _THUMBNAIL_MAX_HEIGHT = 480
 
 

@@ -32,6 +32,7 @@ from app.bootstrap import is_customer_production
 from app.customer_fence import BusinessDbDep
 from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
+from app.material_thumbs import THUMBNAIL_URL_EXPIRES_IN
 from app.media import storage_key_from_uri
 from app.media_routes import (
     api_base_url,
@@ -60,9 +61,6 @@ from app.storage import (
 
 router = APIRouter(prefix="/api", tags=["rbac"])
 DOWNLOAD_URL_EXPIRES_IN = timedelta(minutes=15)
-# MATERIAL-THUMBS-B：缩略图是原对象的派生小图，签名可放宽到 7 天，
-# 让浏览器跨页/跨会话命中本地缓存（瓦片不再每次进素材库重新签名）。
-THUMBNAIL_URL_EXPIRES_IN = timedelta(days=7)
 CHARACTER_CACHE_KINDS = frozenset(
     {
         "character_contact_sheet",
@@ -1117,7 +1115,18 @@ def _signed_thumbnail_url(
     if not isinstance(thumbnail_key, str) or not thumbnail_key:
         return None
     try:
-        storage_for_asset(conn, str(row["storage_uri"]))
+        storage = storage_for_asset(conn, str(row["storage_uri"]))
+        if storage.provider == "cos":
+            # 缩略图直连对象存储：派生小图不再经应用服务器逐字节转发（网格一页
+            # 24 张瓦片过去就是 24 次穿透 worker，且代理响应是 no-store，翻页
+            # 必然全量重拉）。字节搬运交给对象存储，应用只负责签名。
+            #
+            # 代价：这条地址不受 session_epoch 即时吊销约束，在
+            # THUMBNAIL_URL_EXPIRES_IN 内持续有效。缩略图是 480px 首帧派生物，
+            # 按低敏感度接受该窗口；原视频与人物图仍走可吊销的代理通道。
+            return storage.create_download_intent(
+                thumbnail_key, expires_in=THUMBNAIL_URL_EXPIRES_IN, can_read=True
+            ).url
         secret = settings_encryption_key()
         expires_at = str(int(time.time()) + int(THUMBNAIL_URL_EXPIRES_IN.total_seconds()))
         session_epoch = signed_asset_session_epoch(conn, actor)
