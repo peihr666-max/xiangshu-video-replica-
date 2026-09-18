@@ -121,11 +121,13 @@ def compile_replica_final_text(
         "<Picture 1> (from [Shot 1]) is fully referenced.",
         "",
         "integrated_multimodal_description: [Shot 1]",
-        f"目标成片时长：{duration} 秒，所有动作与运镜在此时长内完成。",
+        # 时长由 API 的 duration 参数承载，复述进正文是冗余；它在这里只作为时间轴的
+        # 缩放依据，仍体现在下方的镜头时间戳里。
         "全片人物身份、服装和配饰以首帧为准，后续不得恢复源人物外观。",
     ]
     if source_duration < duration:
-        lines.append("人物动作、镜头运动和口播间隔等比放慢，覆盖完整目标时长，不新增动作。")
+        # 放慢是节奏指令，API 参数表达不了，必须留在正文；措辞不复述目标时长。
+        lines.append("人物动作、镜头运动和口播间隔等比放慢，铺满整条成片，不新增动作。")
     if replace_scene:
         lines.append("全片场景以已确认首帧为准，不得恢复源视频的环境、陈设或光照。")
         lines.append(
@@ -149,14 +151,14 @@ def compile_replica_final_text(
         if shot_payload.get(key):
             lines.append(f"{key}: {shot_payload[key]}")
     shot_number = 1
+    # 官方格式（docs/reference/minimax-h3-prompt-guide）只有真实切镜的
+    # [Shot N] At MM:SS.mmm 标记（[Shot 1] 不带时间）；逐镜头起止时间、
+    # 总时长等一律不进正文，成片时长由 H3 请求的 duration 参数承载。
     for index, shot in enumerate(shot_payload["shots"]):
         if index > 0 and shot.get("segment_kind") == "SHOT_CUT":
             shot_number += 1
             start = float(shot["start_time"]) * scale
             lines.append(f"[Shot {shot_number}] At {int(start // 60):02d}:{start % 60:06.3f}")
-        lines.append(
-            f"阶段 {float(shot['start_time']) * scale:.3f}–{float(shot['end_time']) * scale:.3f} 秒"
-        )
         shot_keys = (
             (
                 "shot_type",
