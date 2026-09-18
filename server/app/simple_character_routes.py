@@ -401,7 +401,7 @@ def read_simple_library(
     cursor: Annotated[str | None, Query(min_length=1, max_length=512)] = None,
     query: Annotated[str, Query(max_length=100)] = "",
 ) -> SimpleLibraryPageResponse:
-    """List characters with their contact sheet and seven-view asset ids."""
+    """List characters with their contact sheet and five-view asset ids."""
     page = list_simple_library_page(
         conn,
         actor=actor,
@@ -842,10 +842,10 @@ async def generate_simple_character(
     persona_name: Annotated[str, Form()] = "",
 ) -> SimpleCharacterResponse:
     with db.write() as (conn, actor):
-        """Upload one authorization image and publish a seven-view character.
+        """Upload one authorization image and publish a five-view character.
 
         The image is stored as both the authorization proof and the source asset,
-        a single seven-view contact sheet plus the seven standard views are
+        a single five-view contact sheet plus the five standard views are
         generated, auto-approved, and the resulting character version is
         published so it immediately appears in the project's available character
         version list.

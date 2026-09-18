@@ -18,6 +18,7 @@ from app.character_contracts import (
     RequiredCharacterViewType,
 )
 from app.character_identity import (
+    LEGACY_PUBLISHED_CHARACTER_VIEW_TYPES,
     REQUIRED_CHARACTER_VIEW_TYPES,
     decode_object,
     encode_json,
@@ -88,11 +89,22 @@ class ReferenceSelectionInputs:
 
 
 def recommended_body_view(features: SourceFrameFeatures) -> RequiredCharacterViewType:
-    if features.orientation == "FRONT":
-        if features.shot_size == "FULL_BODY" or features.body_completeness == "FULL_BODY":
-            return "FRONT_FULL"
-        return "FRONT_HALF"
-    return cast(RequiredCharacterViewType, features.orientation)
+    """Map the source frame's features onto the five real published views.
+
+    右向源帧（RIGHT_45/RIGHT_SIDE）没有镜像参考可给：身份锚定交给左侧视图，
+    朝向差异由生成模型从源帧本身读取。
+    """
+    close_up = features.shot_size == "CLOSE_UP" or features.body_completeness in (
+        "FACE_ONLY",
+        "UPPER_BODY",
+    )
+    if features.orientation in ("LEFT_45", "RIGHT_45"):
+        return "LEFT_45_FACE" if close_up else "LEFT_45"
+    if features.orientation == "LEFT_SIDE":
+        return "LEFT_SIDE"
+    if features.shot_size == "FULL_BODY" or features.body_completeness == "FULL_BODY":
+        return "FRONT_FULL"
+    return "FRONT_FACE"
 
 
 def create_character_reference_selection(
@@ -334,17 +346,22 @@ def load_reference_selection_inputs(
         version_id=character_version_id,
         publication_snapshot=publication_snapshot,
     )
-    candidate_asset_ids = [assets_by_view[view].asset_id for view in REQUIRED_CHARACTER_VIEW_TYPES]
+    # 旧契约人物没有 LEFT_45_FACE 资产：候选与推荐按实际已发布视图求交集，
+    # 旧人物以四个真实视图参与选材，不要求补齐第五视图。
+    available_views = [view for view in REQUIRED_CHARACTER_VIEW_TYPES if view in assets_by_view]
+    candidate_asset_ids = [assets_by_view[view].asset_id for view in available_views]
     candidate_assets = [
         ProjectCharacterAssetOption(
             character_asset_id=assets_by_view[view].character_asset_id,
             asset_id=assets_by_view[view].asset_id,
             view_type=view,
         )
-        for view in REQUIRED_CHARACTER_VIEW_TYPES
+        for view in available_views
     ]
     body_view = recommended_body_view(source_features)
-    recommended_views: list[RequiredCharacterViewType] = [body_view, "FRONT_FACE"]
+    recommended_views = [
+        view for view in dict.fromkeys((body_view, "FRONT_FACE")) if view in assets_by_view
+    ]
     recommended_asset_ids = unique_ids(
         [assets_by_view[view].asset_id for view in recommended_views]
     )
@@ -357,7 +374,7 @@ def load_reference_selection_inputs(
         raise reference_error(
             422,
             "CHARACTER_REFERENCE_ASSET_INVALID",
-            "只能选择当前已发布七视图中的人物参考图。",
+            "只能选择当前已发布视角中的人物参考图。",
         )
 
     source_frame_version_id = str(source_selection["id"])
@@ -507,11 +524,16 @@ def validated_publication(version: sqlite3.Row) -> tuple[dict[str, object], str]
     snapshot = decode_object(snapshot_value)
     publication_hash = str(publication_hash_value)
     expected_hash = hashlib.sha256(encode_json(snapshot).encode()).hexdigest()
+    stored_required = snapshot.get("required_view_types")
     if (
         publication_hash != expected_hash
         or snapshot.get("schema_version") != "character-publication.v1"
         or snapshot.get("character_version_id") != str(version["id"])
-        or snapshot.get("required_view_types") != list(REQUIRED_CHARACTER_VIEW_TYPES)
+        or stored_required
+        not in (
+            list(REQUIRED_CHARACTER_VIEW_TYPES),
+            list(LEGACY_PUBLISHED_CHARACTER_VIEW_TYPES),
+        )
         or not isinstance(snapshot.get("assets_by_view"), dict)
     ):
         raise invalid_publication()
@@ -556,7 +578,10 @@ def load_published_reference_assets(
         raise invalid_publication()
     for row in rows:
         view = str(row["view_type"])
-        if view not in REQUIRED_CHARACTER_VIEW_TYPES or str(row["review_status"]) != "APPROVED":
+        if (
+            view not in REQUIRED_CHARACTER_VIEW_TYPES
+            and view not in LEGACY_PUBLISHED_CHARACTER_VIEW_TYPES
+        ) or str(row["review_status"]) != "APPROVED":
             raise invalid_publication()
         typed_view = view
         try:
@@ -585,7 +610,11 @@ def load_published_reference_assets(
         if not publication_asset_matches(asset, snapshot_asset):
             raise invalid_publication()
         assets_by_view[typed_view] = asset
-    if set(assets_by_view) != set(REQUIRED_CHARACTER_VIEW_TYPES):
+    published_view_set = set(assets_by_view)
+    if published_view_set not in (
+        set(REQUIRED_CHARACTER_VIEW_TYPES),
+        set(LEGACY_PUBLISHED_CHARACTER_VIEW_TYPES),
+    ):
         raise invalid_publication()
     return assets_by_view
 

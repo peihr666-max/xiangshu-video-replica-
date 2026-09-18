@@ -5137,7 +5137,7 @@ export interface paths {
     };
     /**
      * Read Simple Library
-     * @description List characters with their contact sheet and seven-view asset ids.
+     * @description List characters with their contact sheet and five-view asset ids.
      */
     get: operations["read_simple_library_api_simple_characters_library_get"];
     put?: never;
@@ -5949,6 +5949,7 @@ export interface components {
         | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
+        | "LEFT_45_FACE"
         | "RIGHT_45"
         | "LEFT_SIDE"
         | "RIGHT_SIDE"
@@ -6032,13 +6033,11 @@ export interface components {
       /** View Types */
       view_types?:
         | (
-            | "FRONT_FACE"
-            | "FRONT_HALF"
             | "FRONT_FULL"
             | "LEFT_45"
-            | "RIGHT_45"
             | "LEFT_SIDE"
-            | "RIGHT_SIDE"
+            | "FRONT_FACE"
+            | "LEFT_45_FACE"
           )[]
         | null;
       /**
@@ -6058,13 +6057,11 @@ export interface components {
        * @enum {string}
        */
       view_type:
-        | "FRONT_FACE"
-        | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
         | "LEFT_SIDE"
-        | "RIGHT_SIDE";
+        | "FRONT_FACE"
+        | "LEFT_45_FACE";
       /** Provider */
       provider: string;
       /** Model */
@@ -6373,13 +6370,11 @@ export interface components {
       template_hash: string | null;
       /** Required View Types Json */
       required_view_types_json: (
-        | "FRONT_FACE"
-        | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
         | "LEFT_SIDE"
-        | "RIGHT_SIDE"
+        | "FRONT_FACE"
+        | "LEFT_45_FACE"
       )[];
       /** Published By */
       published_by: string | null;
@@ -8343,13 +8338,11 @@ export interface components {
        * @enum {string}
        */
       view_type:
-        | "FRONT_FACE"
-        | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
         | "LEFT_SIDE"
-        | "RIGHT_SIDE";
+        | "FRONT_FACE"
+        | "LEFT_45_FACE";
     };
     /** ProjectCharacterVersionOption */
     ProjectCharacterVersionOption: {
@@ -9289,13 +9282,11 @@ export interface components {
        * @enum {string}
        */
       view_type:
-        | "FRONT_FACE"
-        | "FRONT_HALF"
         | "FRONT_FULL"
         | "LEFT_45"
-        | "RIGHT_45"
         | "LEFT_SIDE"
-        | "RIGHT_SIDE";
+        | "FRONT_FACE"
+        | "LEFT_45_FACE";
       /** Asset Id */
       asset_id: string;
     };

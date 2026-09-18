@@ -8,6 +8,7 @@ const labels: Record<string, string> = {
   FRONT_HALF: "正面半身",
   FRONT_FACE: "正面近景",
   LEFT_45: "左侧 45°",
+  LEFT_45_FACE: "左侧 45° 近景",
   RIGHT_45: "右侧 45°",
   LEFT_SIDE: "左侧面",
   RIGHT_SIDE: "右侧面",

@@ -31,13 +31,11 @@ vi.mock("./api", async (importOriginal) => {
 });
 
 const VIEW_TYPES: api.CharacterViewType[] = [
-  "FRONT_FACE",
-  "FRONT_HALF",
   "FRONT_FULL",
   "LEFT_45",
-  "RIGHT_45",
   "LEFT_SIDE",
-  "RIGHT_SIDE",
+  "FRONT_FACE",
+  "LEFT_45_FACE",
 ];
 
 function viewsFor(prefix: string): api.SimpleCharacterView[] {
@@ -511,9 +509,9 @@ describe("CharacterLibrary", () => {
     expect(
       await screen.findByRole("dialog", { name: "人物预览 林夏" }),
     ).toBeInTheDocument();
-    expect(screen.getByAltText("林夏 右侧面")).toBeInTheDocument();
+    expect(screen.getByAltText("林夏 左 45° 近景")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "下载全部（7 张）" }),
+      screen.getByRole("button", { name: "下载全部（5 张）" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "关闭人物预览" }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -720,7 +718,9 @@ describe("CharacterLibrary", () => {
 
   it("shows a retry action instead of leaving a failed preview loading forever", async () => {
     vi.mocked(api.listSimpleCharacterLibrary).mockResolvedValue([entry]);
-    const coverId = entry.views[0].asset_id;
+    const coverId = entry.views.find(
+      (view) => view.view_type === "FRONT_FACE",
+    )?.asset_id;
     let coverAttempts = 0;
     vi.mocked(api.getCachedCharacterAssetUrl).mockImplementation(
       async (assetId) => {
@@ -774,14 +774,14 @@ describe("CharacterLibrary", () => {
     await waitFor(() =>
       expect(api.downloadCharacterAsset).toHaveBeenCalledWith(
         entry.views[0].asset_id,
-        "林夏-正脸近景.png",
+        "林夏-正面全身.png",
       ),
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "下载全部（7 张）" }));
+    fireEvent.click(screen.getByRole("button", { name: "下载全部（5 张）" }));
 
     await waitFor(() =>
-      expect(api.downloadCharacterAsset).toHaveBeenCalledTimes(8),
+      expect(api.downloadCharacterAsset).toHaveBeenCalledTimes(6),
     );
   });
 
@@ -917,9 +917,9 @@ describe("CharacterLibrary", () => {
     expect(
       await screen.findByRole("dialog", { name: "人物预览 林夏" }),
     ).toBeInTheDocument();
-    expect(screen.getByAltText("林夏 右侧面")).toBeInTheDocument();
+    expect(screen.getByAltText("林夏 左 45° 近景")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "下载全部（7 张）" }),
+      screen.queryByRole("button", { name: "下载全部（5 张）" }),
     ).toBeNull();
     expect(screen.queryAllByRole("button", { name: "下载" })).toHaveLength(0);
   });

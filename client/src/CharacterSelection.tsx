@@ -13,14 +13,16 @@ import {
 import { SimpleCharacterUpload } from "./SimpleCharacterUpload";
 
 const VIEW_LABELS: Record<ProjectCharacterAssetOption["view_type"], string> = {
-  FRONT_FACE: "正脸近景",
-  FRONT_HALF: "正面半身",
   FRONT_FULL: "正面全身",
   LEFT_45: "左 45°",
-  RIGHT_45: "右 45°",
   LEFT_SIDE: "左侧面",
-  RIGHT_SIDE: "右侧面",
+  FRONT_FACE: "正脸近景",
+  LEFT_45_FACE: "左 45° 近景",
 };
+
+// 完整已发布资产集合：新契约五个真实视图；旧契约七资产（含已停用的
+// 镜像/半身派生视图）继续可用，与后端发布校验的两种合法集合保持一致。
+const COMPLETE_PUBLISHED_ASSET_COUNTS = new Set([5, 7]);
 
 export function CharacterSelection({
   banded = false,
@@ -42,7 +44,7 @@ export function CharacterSelection({
   onVersionChange?: (selection: ProjectMainCharacter | null) => void;
   projectId: string;
   readOnly?: boolean;
-  // inline：详情页第二段区头的内联下拉形态（选择即落库，仅完整七类
+  // inline：详情页第二段区头的内联下拉形态（选择即落库，仅完整视角
   // 资产的版本可选）；full：旧工作台的面板形态（radio 列表 + 确认）。
   variant?: "full" | "inline";
   sceneOnly?: boolean;
@@ -419,7 +421,7 @@ export function CharacterSelection({
   if (variant === "inline") {
     const inlineVersions = versions.filter(
       (version) =>
-        version.assets.length === 7 &&
+        COMPLETE_PUBLISHED_ASSET_COUNTS.has(version.assets.length) &&
         (!sceneOnly || isSceneAppearance(version)),
     );
     const hasCurrentOption = inlineVersions.some(
@@ -656,7 +658,7 @@ export function CharacterSelection({
           {error ? <p className="settings-error">{error}</p> : null}
           {!isLoading && !error && !versions.length ? (
             <p className="status-note">
-              当前没有具备有效授权与完整七类资产的已发布角色版本。
+              当前没有具备有效授权与完整已发布资产的已发布角色版本。
             </p>
           ) : null}
           {!isLoading && !error && versions.length ? (
@@ -716,7 +718,7 @@ export function CharacterSelection({
                     </span>
                     {isSelected ? (
                       <ul
-                        aria-label="七类已发布资产"
+                        aria-label="五类已发布资产"
                         className="published-view-list"
                       >
                         {version.assets.map((asset) => (
@@ -732,9 +734,10 @@ export function CharacterSelection({
               })}
             </fieldset>
           ) : null}
-          {selectedOption && selectedOption.assets.length !== 7 ? (
+          {selectedOption &&
+          !COMPLETE_PUBLISHED_ASSET_COUNTS.has(selectedOption.assets.length) ? (
             <p className="settings-error">
-              当前版本缺少完整七类已发布资产，不能选择。
+              当前版本缺少完整的已发布视角资产，不能选择。
             </p>
           ) : null}
           {message ? <p className="setup-success">{message}</p> : null}
@@ -747,7 +750,10 @@ export function CharacterSelection({
                 isSaving ||
                 isAutoSelecting ||
                 !selectedVersionId ||
-                selectedOption?.assets.length !== 7
+                selectedOption == null ||
+                !COMPLETE_PUBLISHED_ASSET_COUNTS.has(
+                  selectedOption.assets.length,
+                )
               }
               onClick={saveSelection}
               type="button"

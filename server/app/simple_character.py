@@ -1,6 +1,6 @@
 """Simple character upload flow (方案 A: 极简人物库).
 
-Uploads a single authorization image, derives the seven standard views from a
+Uploads a single authorization image and derives the five standard views from a
 deterministic local generator, records approval reviews, and publishes the
 character version in one transaction so it immediately shows up in the
 project's available character version list.
@@ -201,7 +201,7 @@ class SimpleCharacterCreationResult:
 
 @dataclass(frozen=True)
 class SimpleLibraryEntry:
-    """One character in the simplified library with its published seven views."""
+    """One character in the simplified library with its published five views."""
 
     identity_id: str
     persona_id: str | None
@@ -463,7 +463,7 @@ def create_simple_character(
     The uploaded image acts as both the authorization proof and the source
     asset (self-authorization). A single five-view contact sheet is rendered
     from the photo (image provider when configured, explicit local placeholder
-    otherwise), the seven per-view assets are cropped from that sheet, every
+    otherwise), the five per-view assets are cropped from that sheet, every
     view is auto-approved, and the version is published in the same
     transaction.
 
@@ -830,7 +830,7 @@ def _load_simple_library_entries(
     actor: CurrentUser,
     identity_ids: list[str],
 ) -> list[SimpleLibraryEntry]:
-    """List characters with the published seven-view assets for previews.
+    """List characters with the published five-view assets for previews.
 
     Customer-workspace roles only see identities they own.  Administrators and
     auditors retain the cross-account control-plane view.  For each identity
@@ -954,7 +954,7 @@ def _snapshot_contact_sheet_asset_id(row: sqlite3.Row | None) -> str | None:
     """Read ``contact_sheet_asset_id`` from a publication snapshot.
 
     Versions published before the contact sheet feature have no such field,
-    so ``None`` (and the seven-grid fallback in the UI) is a valid result.
+    so ``None`` (and the five-grid fallback in the UI) is a valid result.
     """
     if row is None or row["snapshot_json"] is None:
         return None
@@ -2553,7 +2553,6 @@ class _ApprovedView:
 # "three tall columns + two stacked close-ups separated by thin white
 # dividers" layout, and the white strips are detected per column/row.
 CONTACT_SHEET_WHITE_THRESHOLD = 240
-CONTACT_SHEET_FRONT_HALF_HEIGHT_RATIO = 0.62
 CONTACT_SHEET_MIN_PANEL_SIZE = 16
 
 
@@ -2565,12 +2564,20 @@ class _ContactSheetPanels:
     left_45: tuple[int, int, int, int]
     left_side: tuple[int, int, int, int]
     front_face: tuple[int, int, int, int]
+    left_45_face: tuple[int, int, int, int]
 
 
 def crop_contact_sheet_views(
     contact_content: bytes, contact_content_type: str
 ) -> dict[str, bytes] | None:
-    """Crop the seven standard views out of the five-panel contact sheet.
+    """Crop the five standard views out of the five-panel contact sheet.
+
+    Each published view is a 1:1 crop of one real panel the image model drew
+    (three full-body columns plus the two stacked close-ups). Derived views —
+    the half-body re-crop and the mirrored right-side views — were retired
+    with the seven-asset contract: they are not real renders, and the
+    mirrored ones misstate left/right details (hair parting, watch hand,
+    jacket placket).
 
     Returns ``{view_type: png_bytes}`` or ``None`` when the sheet cannot be
     decoded (non-PNG provider output, other bit depths, interlacing). Sheets
@@ -2587,21 +2594,13 @@ def crop_contact_sheet_views(
     if panels is None:
         return None
 
-    x0, y0, x1, y1 = panels.front_full
-    half_bottom = y0 + round((y1 - y0) * CONTACT_SHEET_FRONT_HALF_HEIGHT_RATIO)
-    # RIGHT_* views mirror the LEFT_* panels: the sheet has no dedicated
-    # right-side renderings, and a horizontal flip of one view of the same
-    # person is the standard way to derive the opposite-side reference.
-    crops: dict[str, bytes] = {
+    return {
         "FRONT_FULL": _encode_rgb_panel_png(rows, panels.front_full),
-        "FRONT_HALF": _encode_rgb_panel_png(rows, (x0, y0, x1, half_bottom)),
-        "FRONT_FACE": _encode_rgb_panel_png(rows, panels.front_face),
         "LEFT_45": _encode_rgb_panel_png(rows, panels.left_45),
-        "RIGHT_45": _encode_rgb_panel_png(rows, panels.left_45, mirror=True),
         "LEFT_SIDE": _encode_rgb_panel_png(rows, panels.left_side),
-        "RIGHT_SIDE": _encode_rgb_panel_png(rows, panels.left_side, mirror=True),
+        "FRONT_FACE": _encode_rgb_panel_png(rows, panels.front_face),
+        "LEFT_45_FACE": _encode_rgb_panel_png(rows, panels.left_45_face),
     }
-    return crops
 
 
 def _require_contact_sheet_views(
@@ -2805,7 +2804,13 @@ def _contact_sheet_panels_from_pixels(
         panels = _panels_from_dividers(width, height, rows, left_edge, right_edge, internal_columns)
     else:
         panels = _nominal_contact_sheet_panels(width, height)
-    for rect in (panels.front_full, panels.left_45, panels.left_side, panels.front_face):
+    for rect in (
+        panels.front_full,
+        panels.left_45,
+        panels.left_side,
+        panels.front_face,
+        panels.left_45_face,
+    ):
         if (
             rect[2] - rect[0] < CONTACT_SHEET_MIN_PANEL_SIZE
             or rect[3] - rect[1] < CONTACT_SHEET_MIN_PANEL_SIZE
@@ -2858,6 +2863,7 @@ def _panels_from_dividers(
         left_45=(col1_end + 1, top_edge, col2_start, bottom_edge),
         left_side=(col2_end + 1, top_edge, col3_start, bottom_edge),
         front_face=(right_x0, top_edge, right_edge, divider[0]),
+        left_45_face=(right_x0, divider[1] + 1, right_edge, bottom_edge),
     )
 
 
@@ -2886,6 +2892,7 @@ def _nominal_contact_sheet_panels(width: int, height: int) -> _ContactSheetPanel
             height - border,
         ),
         front_face=(right_x0, border, width - border, middle - half_gap),
+        left_45_face=(right_x0, middle + half_gap + 1, width - border, height - border),
     )
 
 
@@ -2940,25 +2947,13 @@ def _white_runs(flags: list[bool]) -> list[tuple[int, int]]:
     return runs
 
 
-def _encode_rgb_panel_png(
-    rows: list[bytes], rect: tuple[int, int, int, int], *, mirror: bool = False
-) -> bytes:
+def _encode_rgb_panel_png(rows: list[bytes], rect: tuple[int, int, int, int]) -> bytes:
     """Encode one panel rect as a standalone 8-bit RGB PNG (filter 0)."""
     x0, y0, x1, y1 = rect
     scanlines = bytearray()
     for y in range(y0, y1):
-        row = rows[y][x0 * 3 : x1 * 3]
-        if mirror:
-            reversed_row = row[::-1]
-            flipped = bytearray(len(reversed_row))
-            # Byte-reversing swaps both the pixel order and the channel order;
-            # re-interleave the channel planes to restore RGB per pixel.
-            flipped[0::3] = reversed_row[2::3]
-            flipped[1::3] = reversed_row[1::3]
-            flipped[2::3] = reversed_row[0::3]
-            row = bytes(flipped)
         scanlines += b"\x00"
-        scanlines += row
+        scanlines += rows[y][x0 * 3 : x1 * 3]
     header = struct.pack(">IIBBBBB", x1 - x0, y1 - y0, 8, 2, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"

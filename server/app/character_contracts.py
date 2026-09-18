@@ -17,20 +17,24 @@ CharacterVersionStatus = Literal[
     "FAILED",
     "ARCHIVED",
 ]
+# 产品口径五视图（docs/人物IP与数字人口播落地方案 §2）：联系张五个面板逐格
+# 对应，全部是真实生成的图像；不再包含镜像/二次裁剪的派生视图。
 RequiredCharacterViewType = Literal[
-    "FRONT_FACE",
-    "FRONT_HALF",
     "FRONT_FULL",
     "LEFT_45",
-    "RIGHT_45",
     "LEFT_SIDE",
-    "RIGHT_SIDE",
+    "FRONT_FACE",
+    "LEFT_45_FACE",
 ]
+# 存储枚举保留旧契约的派生视图（FRONT_HALF/RIGHT_45/RIGHT_SIDE）：旧版本
+# 已发布人物的资产行仍是这些值，读取路径必须能加载；新生成与发布只产生
+# RequiredCharacterViewType 里的五个视图。
 CharacterAssetViewType = Literal[
     "FRONT_FACE",
     "FRONT_HALF",
     "FRONT_FULL",
     "LEFT_45",
+    "LEFT_45_FACE",
     "RIGHT_45",
     "LEFT_SIDE",
     "RIGHT_SIDE",

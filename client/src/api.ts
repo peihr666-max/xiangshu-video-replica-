@@ -3222,6 +3222,7 @@ export type CharacterViewType =
   | "FRONT_HALF"
   | "FRONT_FULL"
   | "LEFT_45"
+  | "LEFT_45_FACE"
   | "RIGHT_45"
   | "LEFT_SIDE"
   | "RIGHT_SIDE";

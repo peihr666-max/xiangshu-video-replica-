@@ -1197,7 +1197,7 @@ def normalize_generation_views(
         raise character_error(
             409,
             "CHARACTER_VERSION_HAS_NO_STANDARD_VIEWS",
-            "历史导入角色版本没有标准七视角生成契约。",
+            "历史导入角色版本没有标准视角生成契约。",
         )
     requested_set = required_set if requested is None else {str(value) for value in requested}
     if not requested_set or not requested_set <= required_set:
@@ -1206,7 +1206,9 @@ def normalize_generation_views(
             "CHARACTER_VIEW_TYPE_INVALID",
             "请求的视角不在当前角色版本的必需视角集中。",
         )
-    return [view_type for view_type in REQUIRED_CHARACTER_VIEW_TYPES if view_type in requested_set]
+    # 按版本自身记录的视角契约排序：新版本是五视图契约，旧版本保留旧契约的
+    # 全集（含已停用的派生视图），保证存量人物仍可整集重建。
+    return [view_type for view_type in required if view_type in requested_set]
 
 
 def require_version_generatable(

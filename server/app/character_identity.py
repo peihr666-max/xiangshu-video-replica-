@@ -55,6 +55,15 @@ IdentityAssetPurpose = Literal["authorization", "source"]
 CharacterAssetPurpose = Literal["generated", "approved"]
 
 REQUIRED_CHARACTER_VIEW_TYPES: tuple[RequiredCharacterViewType, ...] = (
+    "FRONT_FULL",
+    "LEFT_45",
+    "LEFT_SIDE",
+    "FRONT_FACE",
+    "LEFT_45_FACE",
+)
+# 旧契约（联系张裁剪 + 镜像派生，2026-09 前）发布过的视图集合：仅用于读取
+# 和匹配存量人物；新生成与发布不再产生这些派生视图。
+LEGACY_PUBLISHED_CHARACTER_VIEW_TYPES: tuple[str, ...] = (
     "FRONT_FACE",
     "FRONT_HALF",
     "FRONT_FULL",
@@ -63,7 +72,7 @@ REQUIRED_CHARACTER_VIEW_TYPES: tuple[RequiredCharacterViewType, ...] = (
     "LEFT_SIDE",
     "RIGHT_SIDE",
 )
-CHARACTER_TEMPLATE_VERSION = "character-assets-v1"
+CHARACTER_TEMPLATE_VERSION = "character-assets-v2"
 CHARACTER_TEMPLATE = (
     "Keep the authorized person's identity stable while applying the frozen persona, "
     "costume, background and requested view type. Return one realistic reference image."
