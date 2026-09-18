@@ -808,6 +808,27 @@ describe("批量素材预览授权", () => {
     expect(again.thumbnails).toEqual({});
   });
 
+  // 服务端两条授权通道都签发站内相对路径（rbac_routes 的 signed-objects）。
+  // 桌面端页面 origin 是 tauri://，与 API origin 必然不同，相对地址会打到
+  // 应用自身而不是后端——素材本体与视频缩略图都会退化成空预览框。
+  it("批量授权的本体与缩略图地址按 API 地址绝对化", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
+    await batchFixture({
+      url: "/api/assets/signed-objects/a.png?expires=1&sig=1",
+      thumbnail_url:
+        "/api/assets/signed-objects/a.mp4.thumb.jpg?expires=1&sig=2",
+    });
+    const { previews, thumbnails } = await getMaterialBatchPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(previews["batch-a"]).toMatchObject({
+      url: "https://studio.example.com/backend/api/assets/signed-objects/a.png?expires=1&sig=1",
+    });
+    expect(thumbnails["batch-a"]).toBe(
+      "https://studio.example.com/backend/api/assets/signed-objects/a.mp4.thumb.jpg?expires=1&sig=2",
+    );
+  });
+
   it("中止信号取消批量请求", async () => {
     const f = await batchFixture();
     const controller = new AbortController();
@@ -1146,7 +1167,13 @@ describe("素材库 API", () => {
     expect(click).toHaveBeenCalledOnce();
     click.mockRestore();
   });
-  it.each([getAssetDownloadUrl, getCachedCharacterAssetUrl])(
+  it.each([
+    getAssetDownloadUrl,
+    getCachedCharacterAssetUrl,
+    // 成片下载/播放走同一个 download-url 端点，绝对化口径必须一致：
+    // 生成记录详情页的播放器 src 直接吃这个返回值。
+    getGenerationResultDownloadUrl,
+  ])(
     "resolves signed media through the configured API proxy",
     async (readUrl) => {
       vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
@@ -1164,6 +1191,22 @@ describe("素材库 API", () => {
       );
     },
   );
+
+  it("成片在线播放地址按 API 地址绝对化", async () => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://studio.example.com/backend");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          url: "/api/assets/signed-objects/result.mp4?expires=1&sig=test",
+        }),
+      }),
+    );
+    expect(await createGenerationResultPreviewUrl("asset-1")).toBe(
+      "https://studio.example.com/backend/api/assets/signed-objects/result.mp4?expires=1&sig=test",
+    );
+  });
 
   it("按扩展名规范化上传类型并完成素材上传", async () => {
     const fetchMock = vi

@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { apiBaseUrl, resolveManagedMediaUrl } from "./apiBase";
 import type { components } from "./generated/api";
 
 // MATERIAL-PERF-C（P0-6）：启动扇出约 20–40 个请求，5 秒硬超时会让任何一片
@@ -33,41 +34,8 @@ export function clearAdminCsrfToken(): void {
   adminCsrfToken = null;
 }
 
-type ApiRuntimeLocation = Pick<Location, "origin" | "protocol">;
-
-export function resolveApiBaseUrl(
-  configuredUrl: string | undefined,
-  isProduction: boolean,
-  runtimeLocation: ApiRuntimeLocation,
-): string {
-  const normalizedUrl = configuredUrl?.trim().replace(/\/+$/, "");
-  if (normalizedUrl) {
-    return normalizedUrl;
-  }
-  if (isProduction && runtimeLocation.protocol === "https:") {
-    return runtimeLocation.origin;
-  }
-  // CW-015: the customer cloud build has a single address source
-  // (VITE_API_BASE_URL, validated as a routable non-loopback HTTPS origin at
-  // build time by scripts/require_customer_api_base.mjs). A missing address is
-  // a configuration error, so fail closed rather than silently falling back to
-  // a loopback origin that would point a deployed customer client at localhost.
-  throw new Error("API base URL is required (VITE_API_BASE_URL)");
-}
-
-function apiBaseUrl(): string {
-  return resolveApiBaseUrl(
-    import.meta.env.VITE_API_BASE_URL,
-    import.meta.env.PROD,
-    window.location,
-  );
-}
-
-function resolveManagedMediaUrl(url: string): string {
-  return url.startsWith("/") && !url.startsWith("//")
-    ? `${apiBaseUrl()}${url}`
-    : url;
-}
+// 地址解析与站内媒体地址绝对化见 ./apiBase；此处 re-export 保持既有导入路径。
+export { resolveApiBaseUrl, resolveManagedMediaUrl } from "./apiBase";
 
 type HealthResponse = components["schemas"]["HealthResponse"];
 export type UserRole = "employee" | "admin" | "auditor" | "customer";
@@ -2011,12 +1979,17 @@ export async function confirmGenerationTaskNotCharged(
 export async function getGenerationResultDownloadUrl(
   assetId: string,
 ): Promise<DownloadUrl> {
-  return requestGenerationJson<DownloadUrl>(
+  const result = await requestGenerationJson<DownloadUrl>(
     `/api/assets/${encodeURIComponent(assetId)}/download-url`,
     "获取生成结果下载地址失败",
     { method: "POST" },
     CLOUD_OP_TIMEOUT_MS,
   );
+  // 与 getAssetDownloadUrl 同口径：服务端签发的是站内相对路径，桌面端页面
+  // origin 不是 API origin，不绝对化则播放器与下载都拿不到字节。地址缺失是
+  // 契约异常，原样返回交由调用方抛出可读错误。
+  if (!result.url) return result;
+  return { ...result, url: resolveManagedMediaUrl(result.url) };
 }
 
 // 在线播放：直接复用后端签发的预签名 URL 作为 video src（COS 与本地
@@ -4702,7 +4675,10 @@ export async function getMaterialBatchPreviews(
   for (const item of authorized.items) {
     const context = contexts.get(item.asset_id);
     if (!context || !item.url) continue;
-    if (item.thumbnail_url) thumbnails[item.asset_id] = item.thumbnail_url;
+    // 服务端签发的是站内相对路径；桌面端（tauri:// origin）与前后端分域名
+    // 部署都不能直接喂给 img/video，必须与单资产通道同口径绝对化。
+    if (item.thumbnail_url)
+      thumbnails[item.asset_id] = resolveManagedMediaUrl(item.thumbnail_url);
     const metadata: MaterialAssetMetadata = {
       id: item.asset_id,
       project_id: null,
@@ -4714,7 +4690,7 @@ export async function getMaterialBatchPreviews(
     results[item.asset_id] = await materialPreviewAfterAuthorization(
       context,
       item.asset_id,
-      item.url,
+      resolveManagedMediaUrl(item.url),
       metadata,
       generations.get(item.asset_id) ?? null,
       populateById.get(item.asset_id) ?? false,

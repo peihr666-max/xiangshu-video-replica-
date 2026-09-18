@@ -181,7 +181,7 @@ def test_batch_grants_each_owned_asset_with_metadata_and_per_asset_audit(
     assert [item["asset_id"] for item in items] == ["mat_a1", "mat_a2"]
     for item in items:
         assert item["error_code"] is None
-        assert item["url"].startswith("/api/assets/signed-objects/")
+        assert urlsplit(item["url"]).path.startswith("/api/assets/signed-objects/")
         # 签名参数齐全：expires/user_id/asset_id/sig（与单资产端点同一签名通道）。
         query = parse_qs(urlsplit(item["url"]).query)
         assert {"expires", "user_id", "asset_id", "sig"} <= set(query)
@@ -199,6 +199,42 @@ def test_batch_grants_each_owned_asset_with_metadata_and_per_asset_audit(
     app.dependency_overrides.clear()
 
 
+def test_grants_are_absolute_so_cross_origin_clients_can_load_them(
+    lane_env: str, pg: psycopg.Connection, fake_storage: FakeStorageAdapter
+) -> None:
+    """授权地址必须是绝对地址：桌面端页面 origin 是 ``tauri://``，客户云版前端
+    可与 API 分域名部署，站内相对地址会打到客户端自身而不是后端，``img``/
+    ``video`` 只剩空预览框。地址由服务端签全，客户端零拼接——已发布的旧客户端
+    无需升级即可恢复预览。"""
+    from app.main import app
+
+    seed_asset(pg, "mat_abs", "employee_1", kind="material_video", content_type="video/mp4")
+    client = batch_client(app, pg)
+    response = post_batch(client, ["mat_abs"])
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    # 未配 PUBLIC_BASE_URL 时 api_base_url() 回退到桌面端本机地址。
+    assert item["url"].startswith("http://127.0.0.1:8000/api/assets/signed-objects/")
+    app.dependency_overrides.clear()
+
+
+def test_public_base_url_drives_the_signed_origin(
+    lane_env: str,
+    pg: psycopg.Connection,
+    fake_storage: FakeStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """部署后对外地址来自 PUBLIC_BASE_URL（与自有封面路由共用同一处配置）."""
+    from app.main import app
+
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://studio.example.com")
+    seed_asset(pg, "mat_cfg", "employee_1")
+    client = batch_client(app, pg)
+    item = post_batch(client, ["mat_cfg"]).json()["items"][0]
+    assert item["url"].startswith("https://studio.example.com/api/assets/signed-objects/")
+    app.dependency_overrides.clear()
+
+
 def test_batch_masks_foreign_and_missing_assets_per_item(
     lane_env: str, pg: psycopg.Connection, fake_storage: FakeStorageAdapter
 ) -> None:
@@ -212,7 +248,7 @@ def test_batch_masks_foreign_and_missing_assets_per_item(
     assert response.status_code == 200
     items = {item["asset_id"]: item for item in response.json()["items"]}
     assert items["mine"]["error_code"] is None
-    assert items["mine"]["url"].startswith("/api/assets/signed-objects/")
+    assert urlsplit(items["mine"]["url"]).path.startswith("/api/assets/signed-objects/")
     assert items["foreign"]["url"] is None
     assert items["foreign"]["error_code"] == "ASSET_NOT_FOUND"
     assert items["missing"]["url"] is None
@@ -288,5 +324,5 @@ def test_batch_incomplete_upload_reports_per_item_not_found_code(
     assert response.status_code == 200
     items = {item["asset_id"]: item for item in response.json()["items"]}
     assert items["pending"]["error_code"] == "ASSET_UPLOAD_NOT_COMPLETE"
-    assert items["ready"]["url"].startswith("/api/assets/signed-objects/")
+    assert urlsplit(items["ready"]["url"]).path.startswith("/api/assets/signed-objects/")
     app.dependency_overrides.clear()

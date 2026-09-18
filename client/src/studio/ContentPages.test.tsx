@@ -3896,6 +3896,113 @@ describe("V1.4 内容与运营页面", () => {
     );
   });
 
+  it("缩略图地址失效时自动重新授权，不把瓦片永久置灰", async () => {
+    // 客户版签名绑定 session_epoch：会话一换，页面 state 里缓存的缩略图地址
+    // 立即 403。既有自动重签的判据是 previewStates.url === failedUrl，而缩略图
+    // 失败报上来的是 poster，匹配不上就直接 return——表现为「用着用着图没了，
+    // 刷新一下又好」。
+    listMaterials.mockResolvedValue({
+      items: [
+        material("stale-thumb", {
+          title: "stale-thumb.mp4",
+          media_type: "video",
+          content_type: "video/mp4",
+        }),
+      ],
+      page: 1,
+      page_size: 24,
+      total: 1,
+    });
+    getMaterialBatchPreviews
+      .mockResolvedValueOnce({
+        previews: {
+          "stale-thumb": {
+            url: "https://storage.test/video",
+            cached: false,
+            release: vi.fn(),
+          },
+        },
+        thumbnails: { "stale-thumb": "https://media.test/stale.jpg" },
+      })
+      .mockResolvedValue({
+        previews: {
+          "stale-thumb": {
+            url: "https://storage.test/video",
+            cached: false,
+            release: vi.fn(),
+          },
+        },
+        thumbnails: { "stale-thumb": "https://media.test/fresh.jpg" },
+      });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 stale-thumb.mp4",
+    });
+    const stale = await waitFor(() => {
+      const element = card.querySelector("img");
+      expect(element).toHaveAttribute("src", "https://media.test/stale.jpg");
+      return element as HTMLElement;
+    });
+
+    fireEvent.error(stale);
+
+    await waitFor(() =>
+      expect(card.querySelector("img")).toHaveAttribute(
+        "src",
+        "https://media.test/fresh.jpg",
+      ),
+    );
+  });
+
+  it("缩略图反复失效时有限次重签后停手，不陷入死循环", async () => {
+    // 抽帧确实失败的视频，每次重新授权都会签出一条新地址却依旧 404。没有上限
+    // 就是「重签 → 404 → 重签」的无限请求。
+    listMaterials.mockResolvedValue({
+      items: [
+        material("broken-thumb", {
+          title: "broken-thumb.mp4",
+          media_type: "video",
+          content_type: "video/mp4",
+        }),
+      ],
+      page: 1,
+      page_size: 24,
+      total: 1,
+    });
+    let issued = 0;
+    getMaterialBatchPreviews.mockImplementation(async () => {
+      issued += 1;
+      return {
+        previews: {
+          "broken-thumb": {
+            url: "https://storage.test/video",
+            cached: false,
+            release: vi.fn(),
+          },
+        },
+        thumbnails: {
+          "broken-thumb": `https://media.test/broken-${issued}.jpg`,
+        },
+      };
+    });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 broken-thumb.mp4",
+    });
+    for (let round = 0; round < 6; round += 1) {
+      const image = card.querySelector("img");
+      if (!image) break;
+      fireEvent.error(image);
+      await waitFor(() => expect(getMaterialBatchPreviews).toHaveBeenCalled());
+    }
+    // 首次授权 + 至多两次重签。
+    expect(issued).toBeLessThanOrEqual(3);
+  });
+
   it("无封面的历史视频瓦片保持原视频预览行为", async () => {
     listMaterials.mockResolvedValue({
       items: [

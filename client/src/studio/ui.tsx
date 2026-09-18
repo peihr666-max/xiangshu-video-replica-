@@ -359,7 +359,11 @@ export function Media({
           onError?.(asset.kind === "image" ? asset.url : asset.poster)
         }
         overlay={
-          asset.kind === "video" && !asset.url ? (
+          // 判据是「有没有封面」而不是「有没有播放地址」：视频有地址却没有封面
+          // 时，浏览器靠 preload=metadata 碰运气出首帧，出不来就是一整块深色
+          // 空框、不着一字。服务端已改成按需派生首帧，这里兜住抽帧确实失败的
+          // 那些，让瓦片至少有可见状态。
+          asset.kind === "video" && !asset.poster ? (
             <span className="studio-media-duration">
               <Icon name="play" size={14} />
               {asset.duration || "视频预览图"}
