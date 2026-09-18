@@ -331,6 +331,10 @@ class ApilioGemini:
                 "Analysis requires HTTPS video", failure_phase=REQUEST_FAILURE_PHASE
             )
         instruction = (RULES / "analysis.txt").read_text(encoding="utf-8")
+        # 目标生成时长不得进入拆解提示词：拆解只描述源视频事实，成片时长由生成
+        # 阶段的 H3 API duration 参数承载；注入前剥离，防止模型把目标时长当源
+        # 时长或按目标时长凑段。
+        prompt_context = {key: value for key, value in context.items() if key != "duration_seconds"}
         instruction = instruction.replace(
             "{MEDIA_INFO_JSON}",
             json.dumps(
@@ -340,7 +344,7 @@ class ApilioGemini:
                 },
                 ensure_ascii=False,
             ),
-        ).replace("{GENERATION_CONTEXT_JSON}", json.dumps(context, ensure_ascii=False))
+        ).replace("{GENERATION_CONTEXT_JSON}", json.dumps(prompt_context, ensure_ascii=False))
         instruction = instruction.replace(
             "{SCENE_BOUNDARY_GUIDANCE_JSON}",
             json.dumps(analysis_guidance or {}, ensure_ascii=False),

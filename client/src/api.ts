@@ -4685,7 +4685,7 @@ export async function getMaterialBatchPreviews(
       kind: "material_image",
       sha256: item.sha256 ?? "",
       size_bytes: item.size_bytes ?? 0,
-      content_type: item.content_type,
+      content_type: item.content_type ?? null,
     };
     results[item.asset_id] = await materialPreviewAfterAuthorization(
       context,
@@ -5289,8 +5289,37 @@ async function requestGenerationJson<T>(
   }
 }
 
+// 合成最终提示词链路的 409：每个 code 对应一个不同的自救动作（补开场衔接、勾压缩、
+// 改文案、重存分镜）。通用兜底文案（"上游内容已变化"）描述的是版本级联过期，套到
+// 这些 code 上会丢掉服务端已经给出的可行动原因，用户看不出该补哪一步。
+const GENERATION_CONFLICT_MESSAGES: Readonly<Record<string, string>> = {
+  FIRST_FRAME_ALIGNMENT_REQUIRED:
+    "首帧不是视频开头，请在「开场衔接」里写明如何从这张画面开始，再合成。",
+  TIMELINE_CONFIRMATION_REQUIRED:
+    "源视频长于目标时长，请勾选压缩确认或调整目标时长，再合成。",
+  SCRIPT_DURATION_CONFLICT:
+    "确认文案预计超过目标时长，请缩短文案或改用更长的目标时长。",
+  SCRIPT_TAG_INVALID: "确认文案需为纯文本，请删除其中的提示词标签后重试。",
+  DIALOGUE_MISMATCH: "最终稿台词与确认文案不一致，请核对文案和分镜后重新合成。",
+  SCRIPT_STALE: "文案不是基于当前分镜保存的，请重新保存文案后再合成。",
+  SHOT_CARD_STALE: "分镜不是基于当前拆解保存的，请重新保存分镜后再合成。",
+  SCRIPT_SHOT_CARD_MISMATCH:
+    "文案与当前分镜版本不匹配，请重新保存文案后再合成。",
+  FIRST_FRAME_CONFIRMATION_REQUIRED:
+    "请先在「首帧置换」里确认一张首帧，再合成。",
+  SHOT_CARD_TIMELINE_INVALID: "拆解结果缺少有效时间轴，请重新拆解视频。",
+};
+
 function generationRequestError(error: unknown, errorPrefix: string): Error {
   const { status, code } = error as RequestError;
+  const conflictMessage =
+    status === 409 && code ? GENERATION_CONFLICT_MESSAGES[code] : undefined;
+  if (conflictMessage) {
+    const mapped = new Error(conflictMessage) as RequestError;
+    mapped.status = status;
+    mapped.code = code;
+    return mapped;
+  }
   const archiveMessage =
     status === 409 && code === "RESULT_ARCHIVE_IN_PROGRESS"
       ? "成片正在保存，请稍后刷新任务核对；不会重新生成或扣费。"

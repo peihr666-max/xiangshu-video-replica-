@@ -74,7 +74,7 @@ function FinalHarness({
   frame = "frame",
   duration = 4,
   sourceDuration = 4,
-  sourceFrameTimestamp = 0,
+  sourceFrameTimestamp,
   restoreEnabled = true,
 }: {
   script?: string;
@@ -210,7 +210,9 @@ describe("最终提示词后置", () => {
     expect(screen.getByLabelText("最终正文")).toHaveValue("迟到新稿");
   });
   it("只在时长压缩时要求确认，中段帧才直接显示开场衔接", () => {
-    const view = render(<FinalHarness sourceDuration={8} />);
+    const view = render(
+      <FinalHarness sourceDuration={8} sourceFrameTimestamp={0} />,
+    );
     fireEvent.click(screen.getByLabelText("采用这份文案"));
     expect(
       screen.getByLabelText("将 8.0 秒内容压缩到 4 秒"),
@@ -225,6 +227,54 @@ describe("最终提示词后置", () => {
     );
     expect(screen.queryByLabelText(/压缩/)).toBeNull();
     expect(screen.getByLabelText("开场衔接")).toBeInTheDocument();
+  });
+
+  // 服务端把「未知时间戳」(-1) 与「中段帧」(>0.25) 一起判为必须填开场衔接。前端曾把
+  // 未知当成 0（视频开头），于是该必填时输入框折叠进高级设置，用户点合成必然撞 409
+  // 却看不到修正入口。草稿里的时间戳没有恢复路径，未知是常态而非边缘情况。
+  it("时间戳未知时按服务端口径要求开场衔接，不折叠进高级设置", () => {
+    render(<FinalHarness />);
+    expect(screen.getByLabelText("开场衔接")).toBeInTheDocument();
+  });
+
+  it("服务端判定缺开场衔接时，把输入框显示出来而不是只报错", async () => {
+    api.compile.mockRejectedValue(
+      Object.assign(new Error("首帧不是视频开头，请在「开场衔接」里写明。"), {
+        status: 409,
+        code: "FIRST_FRAME_ALIGNMENT_REQUIRED",
+      }),
+    );
+    render(<FinalHarness sourceFrameTimestamp={0} />);
+    expect(screen.queryByLabelText("开场衔接")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("采用这份文案"));
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("开场衔接")).toBeInTheDocument(),
+    );
+    // 服务端给的具体原因要原样透出，不能被通用 409 文案盖掉。
+    expect(screen.getByRole("status")).toHaveTextContent("首帧不是视频开头");
+  });
+
+  // 前端按分镜算源时长（未加载时为 0），服务端优先用拆解记录的 duration_seconds。
+  // 两者分叉时压缩勾选框整个不渲染，用户既撞 409 又无处勾选。
+  it("服务端判定需要压缩确认时，把勾选框显示出来", async () => {
+    api.compile.mockRejectedValue(
+      Object.assign(new Error("源视频长于目标时长，请勾选压缩确认。"), {
+        status: 409,
+        code: "TIMELINE_CONFIRMATION_REQUIRED",
+      }),
+    );
+    render(<FinalHarness sourceDuration={0} sourceFrameTimestamp={0} />);
+    fireEvent.click(screen.getByLabelText("采用这份文案"));
+    expect(screen.queryByLabelText(/压缩/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText(/压缩/)).toBeInTheDocument(),
+    );
   });
 });
 

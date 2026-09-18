@@ -36,7 +36,7 @@ export function replicaInputKey(input: {
 export function ReplicaFinalPromptControls({
   input,
   sourceDuration = 0,
-  sourceFrameTimestamp = 0,
+  sourceFrameTimestamp,
   showScriptPreview = true,
   value,
   onChange,
@@ -76,11 +76,23 @@ export function ReplicaFinalPromptControls({
       mounted.current = false;
     };
   }, []);
+  // 服务端是门禁的唯一裁判。它拒绝后把对应的补救控件显示出来，否则前端算出的源时长
+  // 或时间戳与服务端一分叉，用户就只能看到一句报错、找不到修正入口。判定记在当时的
+  // inputKey 上，换首帧或时长后自动失效，与 confirmedKey / snapshot 的口径一致。
+  const [alignmentConflictKey, setAlignmentConflictKey] = useState("");
+  const [compressionConflictKey, setCompressionConflictKey] = useState("");
   const ready = snapshot?.inputKey === key;
-  const requiresCompression = sourceDuration > input.duration + 0.25;
+  const requiresCompression =
+    compressionConflictKey === key || sourceDuration > input.duration + 0.25;
   const extendsEnding =
     sourceDuration > 0 && sourceDuration < input.duration - 0.25;
-  const requiresOpeningAction = sourceFrameTimestamp > 0.25;
+  // 服务端把「未知时间戳」(-1) 与「中段帧」(>0.25) 一起判为必须填开场衔接。草稿里的
+  // 时间戳没有恢复路径，未知是常态；把未知当成 0（视频开头）会在该必填时藏起输入框。
+  const requiresOpeningAction =
+    alignmentConflictKey === key ||
+    sourceFrameTimestamp === undefined ||
+    sourceFrameTimestamp < 0 ||
+    sourceFrameTimestamp > 0.25;
   const preparedCallback = useRef(onPrepared);
   preparedCallback.current = onPrepared;
   useEffect(() => {
@@ -199,8 +211,14 @@ export function ReplicaFinalPromptControls({
         setMessage("最终提示词已合成，请核对正文、首帧和费用后提交。");
       }
     } catch (error) {
-      if (mounted.current)
+      if (mounted.current) {
+        const code = (error as { code?: string } | null)?.code;
+        if (code === "FIRST_FRAME_ALIGNMENT_REQUIRED")
+          setAlignmentConflictKey(start.key);
+        if (code === "TIMELINE_CONFIRMATION_REQUIRED")
+          setCompressionConflictKey(start.key);
         setMessage(error instanceof Error ? error.message : "最终合成失败");
+      }
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -236,7 +254,10 @@ export function ReplicaFinalPromptControls({
               onPrepared(null);
             }}
           />
-          将 {sourceDuration.toFixed(1)} 秒内容压缩到 {input.duration} 秒
+          {/* 服务端判定需要压缩、而前端算不出源时长时，不能显示「将 0.0 秒压缩到」。 */}
+          {sourceDuration > input.duration
+            ? `将 ${sourceDuration.toFixed(1)} 秒内容压缩到 ${input.duration} 秒`
+            : `确认将源视频内容压缩到 ${input.duration} 秒`}
         </label>
       ) : null}
       {extendsEnding ? <p>按目标时长放慢节奏。</p> : null}
