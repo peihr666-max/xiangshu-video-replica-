@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import aclosing
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.auth import AuthenticatedUser, Database
-from app.customer_fence import BusinessDbDep
+from app.customer_fence import BusinessDbDep, BusinessReadConn
 from app.db_pg import pg_transaction
+from app.media_routes import get_media_storage
 from app.permissions import require_not_auditor
 from app.publish_browser import (
     BrowserAccount,
@@ -29,8 +31,28 @@ from app.publish_browser import (
 )
 from app.publish_browser_engine import login_events
 from app.settings import fernet_from_environment
+from app.storage import StorageAdapter
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/studio/publish/browser")
+
+
+def optional_media_storage(conn: BusinessReadConn) -> StorageAdapter | None:
+    """Storage for avatar re-hosting only.
+
+    Connecting an account must not depend on object storage being configured, so
+    an unavailable backend degrades to an account without a picture instead of
+    failing the import.
+    """
+    try:
+        return get_media_storage(conn)
+    except HTTPException as exc:
+        logger.warning("publish avatar storage unavailable: detail=%s", exc.detail)
+        return None
+
+
+AvatarStorage = Annotated[StorageAdapter | None, Depends(optional_media_storage)]
 
 
 def release_login(owner: str, login_id: str) -> None:
@@ -47,11 +69,17 @@ def accounts(conn: Database, actor: AuthenticatedUser, response: Response) -> li
 
 
 @router.post("/accounts/import", response_model=BrowserAccount)
-def import_account(request: BrowserAccountImportRequest, db: BusinessDbDep) -> BrowserAccount:
+def import_account(
+    request: BrowserAccountImportRequest,
+    db: BusinessDbDep,
+    storage: AvatarStorage,
+) -> BrowserAccount:
     """Persist a desktop WebView2 login exported once at connect time.
 
     The desktop client keeps its own WebView2 profile for manual publishing;
-    this copy lets the server-side worker deliver on the account's behalf.
+    this copy lets the server-side worker deliver on the account's behalf. The
+    account's avatar is copied into our own storage here so the studio never
+    hotlinks a platform CDN.
     """
     fernet = fernet_from_environment()
     with db.write() as (conn, actor):
@@ -62,7 +90,7 @@ def import_account(request: BrowserAccountImportRequest, db: BusinessDbDep) -> B
             entity_type="publish_account",
             entity_id="import",
         )
-        return import_browser_account(conn, actor.id, request, fernet)
+        return import_browser_account(conn, actor.id, request, fernet, storage)
 
 
 @router.delete("/accounts/{account_id}")

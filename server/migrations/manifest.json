@@ -5,7 +5,7 @@
       "001_core"
     ],
     "heads": [
-      "20260917T1000_publish_records"
+      "20260918T1200_publish_account_avatar"
     ],
     "parents": {
       "001_core": null,
@@ -110,9 +110,10 @@
       "20260915T1600_viral_copy_cache": "20260914T0000_local_joint_merge",
       "20260916T1400_content_objects": "20260915T1200_browser_accounts",
       "20260916T2000_prompt_optimization_receipts": "20260916T1400_content_objects",
-      "20260917T1000_publish_records": "20260916T2000_prompt_optimization_receipts"
+      "20260917T1000_publish_records": "20260916T2000_prompt_optimization_receipts",
+      "20260918T1200_publish_account_avatar": "20260917T1000_publish_records"
     },
-    "revision_count": 100
+    "revision_count": 101
   },
   "manifest_schema_version": 1,
   "naming_policy": {
@@ -526,6 +527,10 @@
     "20260917T1000_publish_records": {
       "file": "versions/20260917T1000_publish_records.py",
       "sha256": "f6ca32e0cd0c01b83495b193ca735490e4371ce3ad7eae387ed049e19cdabb32"
+    },
+    "20260918T1200_publish_account_avatar": {
+      "file": "versions/20260918T1200_publish_account_avatar.py",
+      "sha256": "611889e506e11161b6ca0489b4b94400987b3f1c58f59dfd25f9895a934b6787"
     }
   },
   "task": "MIGRATION-GUARD-20260912"

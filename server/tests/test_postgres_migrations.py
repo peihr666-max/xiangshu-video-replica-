@@ -35,7 +35,7 @@ DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # HEAD_REVISION 取本分支链尾：PUBLISH-DELIVERY-20260917 追加
 # 20260917T1000_publish_records 在 prompt_optimization_receipts 之后。
 # 迁移后 alembic 版本头即该值，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "20260917T1000_publish_records"
+HEAD_REVISION = "20260918T1200_publish_account_avatar"
 
 
 def test_viral_script_cache_migration_preserves_results_without_task_foreign_keys(

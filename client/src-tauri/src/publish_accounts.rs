@@ -48,12 +48,26 @@ pub struct LocalAccount {
     platform_user_id: String,
     username: String,
     verified_at: u64,
+    /// Public avatar CDN link; absent on records written before avatars shipped.
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Identity {
     platform_user_id: String,
     username: String,
+    #[serde(default)]
+    avatar_url: Option<String>,
+}
+
+/// Keep only a bounded https link, matching the official page's own guard.
+fn valid_avatar_url(value: &str) -> bool {
+    let trimmed = value.trim();
+    !trimmed.is_empty()
+        && trimmed.len() <= 1024
+        && trimmed.starts_with("https://")
+        && !trimmed.contains(char::is_whitespace)
 }
 
 #[derive(Deserialize)]
@@ -710,6 +724,10 @@ pub async fn check_local_publish_login(
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_secs(),
+        avatar_url: identity
+            .avatar_url
+            .filter(|value| valid_avatar_url(value))
+            .map(|value| value.trim().to_string()),
     };
     let bytes = serde_json::to_vec(&account).map_err(|e| e.to_string())?;
     super::customer_credentials::write_file_atomically(&account_path(&dir, &login_id)?, &bytes)
@@ -1060,6 +1078,41 @@ mod tests {
         assert_eq!(persistent["path"], "/x");
     }
     #[test]
+    fn avatar_url_accepts_only_bounded_https_links() {
+        assert!(valid_avatar_url("https://p26.douyinpic.com/a.jpeg"));
+        assert!(valid_avatar_url("https://wx.qlogo.cn/finderhead/abc/0"));
+        for invalid in [
+            "",
+            "   ",
+            "http://p26.douyinpic.com/a.jpeg",
+            "data:image/png;base64,iVBORw0KGgo=",
+            "javascript:alert(1)",
+            "https://example.test/a b.jpeg",
+        ] {
+            assert!(!valid_avatar_url(invalid), "should reject {invalid:?}");
+        }
+        assert!(!valid_avatar_url(&format!(
+            "https://p26.douyinpic.com/{}.jpeg",
+            "a".repeat(1024)
+        )));
+    }
+
+    #[test]
+    fn accounts_saved_before_avatars_still_load() {
+        // Records written by earlier builds carry no avatar_url key.
+        let legacy = serde_json::json!({
+            "id": Uuid::new_v4().to_string(),
+            "platform": "douyin",
+            "platform_user_id": "synthetic-uid",
+            "username": "旧记录",
+            "verified_at": 1,
+        });
+        let account: LocalAccount = serde_json::from_value(legacy).unwrap();
+        assert_eq!(account.username, "旧记录");
+        assert!(account.avatar_url.is_none());
+    }
+
+    #[test]
     fn index_never_contains_credentials_and_is_isolated_per_owner() {
         let root = std::env::temp_dir().join(format!("publish-test-{}", Uuid::new_v4()));
         let a = root.join("alice");
@@ -1070,6 +1123,7 @@ mod tests {
             platform_user_id: "synthetic-uid".into(),
             username: "测试昵称".into(),
             verified_at: 1,
+            avatar_url: Some("https://p26.douyinpic.com/synthetic.jpeg".into()),
         };
         let bytes = serde_json::to_vec(&account).unwrap();
         super::super::customer_credentials::write_file_atomically(

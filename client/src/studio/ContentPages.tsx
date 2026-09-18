@@ -49,7 +49,7 @@ import {
   listLocalPublishAccounts,
   openLocalPublishAccount,
 } from "./localPublishAccounts";
-import { PlatformLogo } from "./PlatformLogo";
+import { AccountAvatar, PlatformLogo } from "./PlatformLogo";
 import { PublishRecordsPanel } from "./PublishRecordsPanel";
 import type {
   StudioAsset,
@@ -3544,22 +3544,29 @@ export function PublishPage() {
                   <span>审核示例账号</span>
                 </div>
               ) : platformAccounts.length ? (
-                <select
-                  disabled={actionBusy || cloudRevision === null}
-                  aria-label="选择发布账号"
-                  value={selectedAccount?.id ?? ""}
-                  onChange={(event) =>
-                    updateForm({ account: event.target.value })
-                  }
-                >
-                  <option value="">请选择发布账号</option>
-                  {platformAccounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.username} · {account.platform_user_id}
-                      {account.status === "invalid" ? "（登录态失效）" : ""}
-                    </option>
-                  ))}
-                </select>
+                <div className="content-publish-account">
+                  {/* A select cannot render pictures, so the chosen account's
+                      avatar sits beside it to confirm the target at a glance. */}
+                  {selectedAccount && (
+                    <AccountAvatar account={selectedAccount} size={28} />
+                  )}
+                  <select
+                    disabled={actionBusy || cloudRevision === null}
+                    aria-label="选择发布账号"
+                    value={selectedAccount?.id ?? ""}
+                    onChange={(event) =>
+                      updateForm({ account: event.target.value })
+                    }
+                  >
+                    <option value="">请选择发布账号</option>
+                    {platformAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.username} · {account.platform_user_id}
+                        {account.status === "invalid" ? "（登录态失效）" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               ) : (
                 <div className="content-publish-account-empty">
                   <span>尚未连接该平台账号，请先扫码连接</span>

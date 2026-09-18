@@ -8,6 +8,13 @@ export type LocalPublishAccount = {
   platform_user_id: string;
   username: string;
   verified_at: number;
+  /** Desktop: the platform CDN link. Cloud: our re-hosted copy. Absent on older records. */
+  avatar_url?: string | null;
+};
+export type PublishIdentity = {
+  platform_user_id: string;
+  username: string;
+  avatar_url?: string | null;
 };
 export type CloudPublishAccount = LocalPublishAccount & {
   status: "connected" | "invalid";
@@ -98,7 +105,7 @@ export const exportLocalPublishAccountState = (
   accountId: string,
 ) =>
   command<{
-    identity: { platform_user_id: string; username: string };
+    identity: PublishIdentity;
     storage_state: PublishStorageState;
   }>("export_local_publish_account_state", { owner, accountId });
 
@@ -107,7 +114,7 @@ export const listCloudPublishAccounts = (): Promise<CloudPublishAccount[]> =>
   cloudAccounts() as Promise<CloudPublishAccount[]>;
 export async function importCloudPublishAccount(
   platform: PublishPlatform,
-  identity: { platform_user_id: string; username: string },
+  identity: PublishIdentity,
   storageState: PublishStorageState,
 ): Promise<CloudPublishAccount> {
   const response = await publishBrowserRequest(`${cloudBase}/accounts/import`, {
