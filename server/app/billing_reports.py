@@ -10,6 +10,22 @@ from fastapi import HTTPException
 
 from app.db_portable import BusinessConnection
 
+# A delivered request that took the customer's credits always ran a provider call.
+# Recording none is missing evidence, not proof the call was free: pricing the
+# absence at zero publishes full-margin profit for any subject whose metering was
+# never wired, and does it silently.
+#
+# Excluded, because each legitimately reaches a terminal state with no attempt:
+# failed and free requests never reach a paid provider, and a shared-collection
+# charge carries its cost on the platform request it was split from, which is why
+# its profit is withheld separately as ``shared_cost_unallocated``.
+#
+# ``{calls}`` is the aggregated attempt count of the surrounding query.
+UNMETERED_DELIVERED_CHARGE = (
+    "(o.state='SUCCEEDED' AND o.charged_credits>0 AND COALESCE({calls},0)=0"
+    " AND o.collection_batch_id IS NULL)"
+)
+
 
 def date_bounds(start: date, end: date) -> tuple[datetime, datetime]:
     if end.year > 9998:
@@ -37,13 +53,16 @@ def operation_rows(
 ) -> list[dict[str, Any]]:
     lower, upper = date_bounds(start, end)
     # Aggregate provider attempts before joining the single revenue fact.
+    unmetered = UNMETERED_DELIVERED_CHARGE.format(calls="c.attempt_count")
     rows = conn.execute(
-        """
+        f"""
         SELECT o.*, COALESCE(u.username,'平台后台') AS username, COALESCE(c.attempt_count,0) AS
           attempt_count,
           COALESCE(c.known_cost_fen,0) AS known_cost_fen,
-          COALESCE(c.unknown_cost_count,0) AS unknown_cost_count,
+          COALESCE(c.unknown_cost_count,0)+CASE WHEN {unmetered} THEN 1 ELSE 0 END AS
+            unknown_cost_count,
           CASE WHEN COALESCE(c.unknown_cost_count,0)=0 AND o.state<>'PENDING'
+            AND NOT {unmetered}
             THEN COALESCE(c.known_cost_fen,0) ELSE NULL END AS cost_fen,
           count(*) OVER() AS total_count
         FROM billing_operations o LEFT JOIN users u ON u.id=o.user_id
@@ -110,15 +129,16 @@ def statistics(
     if grain not in {"day", "week", "month", "year"}:
         raise HTTPException(422, detail="不支持的统计周期")
     lower, upper = date_bounds(start, end)
+    unmetered = UNMETERED_DELIVERED_CHARGE.format(calls="c.calls")
     rows = conn.execute(
-        """
+        f"""
         WITH costs AS (
           SELECT operation_id,count(*) AS calls,sum(effective_cost_fen) AS known_cost,
             count(*) FILTER(WHERE effective_cost_fen IS NULL) AS unknown_cost
           FROM billing_effective_attempts GROUP BY operation_id
         ), facts AS (
           SELECT o.*,COALESCE(c.calls,0) AS calls,COALESCE(c.known_cost,0) AS known_cost,
-            COALESCE(c.unknown_cost,0) AS unknown_cost
+            COALESCE(c.unknown_cost,0)+CASE WHEN {unmetered} THEN 1 ELSE 0 END AS unknown_cost
           FROM billing_operations o LEFT JOIN costs c ON c.operation_id=o.id
           WHERE COALESCE(o.completed_at,o.created_at)>=%s AND COALESCE(o.completed_at,
             o.created_at)<%s
@@ -231,5 +251,6 @@ def statistics(
         "periods": [metrics[key] for key in sorted(key for key in metrics if key is not None)],
         "legacy_scope": "date_and_customer",
         "basis": "请求结算归属周期；未结算请求按受理时间列示。成本或收入证据未齐时利润待核对。"
-        "共享采集成本只记在平台请求，筛选单个客户时公共成本未分摊，请以采集批次核算利润。",
+        "共享采集成本只记在平台请求，筛选单个客户时公共成本未分摊，请以采集批次核算利润。"
+        "成本口径为上游接口调用，不含云存储与支付通道费用，此处利润为毛利而非净利。",
     }

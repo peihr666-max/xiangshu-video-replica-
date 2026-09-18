@@ -1,15 +1,14 @@
 """Shared CSV / spreadsheet export helpers.
 
 Consolidates the spreadsheet-injection guard that was previously duplicated
-across the four CSV export lanes (``control_routes`` / ``admin_customer_routes``
-/ ``billing_routes`` / ``admin_profit_routes``), each with a different level of
-coverage.
+across the CSV export lanes (``control_routes`` / ``admin_customer_routes`` /
+``billing_routes``), each with a different level of coverage.
 
 Finding C15: ``admin_customer_routes`` wrote user-controlled cells (``username``)
 with *no* escaping at all, and ``billing_routes`` escaped only ``= + - @``
 (missing the ``\\t`` / ``\\r`` formula-injection vectors). Every lane now routes
 through this single six-prefix guard, matching the most complete
-``control_routes`` implementation so the four exports behave identically.
+``control_routes`` implementation so the exports behave identically.
 """
 
 from __future__ import annotations

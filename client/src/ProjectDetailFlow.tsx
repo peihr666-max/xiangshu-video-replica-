@@ -21,6 +21,7 @@ import {
 } from "./api";
 import { CharacterSelection } from "./CharacterSelection";
 import { FirstFrameSelection } from "./FirstFrameSelection";
+import { isInsufficientCredits } from "./insufficientCredits";
 import { SourceFrameSelection } from "./SourceFrameSelection";
 import {
   type FinalReplicaSnapshot,
@@ -528,7 +529,7 @@ export function ProjectDetailFlow({
       if (submissionOperationRef.current === operation) {
         setGenerationPhase("idle");
         setInsufficientBalance(
-          (error as { code?: string })?.code === "INSUFFICIENT_CREDITS"
+          isInsufficientCredits(error)
             ? {
                 neededCredits: priceQuote?.estimated_credits ?? null,
                 balanceCredits: null,

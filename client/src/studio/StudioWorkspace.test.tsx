@@ -2456,6 +2456,63 @@ describe("数字人口播提交", () => {
       firstRequest.idempotencyKey,
     );
   });
+
+  it("积分不足时打开钱包侧栏，不让用户自己找充值入口", async () => {
+    const state = createReviewState("oral");
+    state.draft.style = "standard";
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    livePanel.props.mockClear();
+    api.createOralTask.mockRejectedValueOnce(
+      Object.assign(new Error("积分不足，本次需要 14 积分。"), {
+        code: "INSUFFICIENT_CREDITS",
+      }),
+    );
+
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "生成口播视频" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
+
+    // 服务端文案原样透传，用户看得到还差多少。
+    await screen.findByText("积分不足，本次需要 14 积分。");
+    await waitFor(() =>
+      expect(livePanel.props).toHaveBeenCalledWith(
+        expect.objectContaining({ panel: "wallet" }),
+      ),
+    );
+  });
+
+  it("其他提交失败不打开钱包侧栏", async () => {
+    const state = createReviewState("oral");
+    state.draft.style = "standard";
+    live.loadStudioData.mockResolvedValue({
+      ...createReviewData(),
+      loading: false,
+    });
+    livePanel.props.mockClear();
+    api.createOralTask.mockRejectedValueOnce(new Error("网络连接中断"));
+
+    render(<StudioWorkspace currentUser={reviewUser} initialState={state} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "生成口播视频" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "生成口播视频" }));
+    fireEvent.click(await findEnabledButton("确认费用并提交"));
+
+    await screen.findByText("网络连接中断");
+    expect(livePanel.props).not.toHaveBeenCalledWith(
+      expect.objectContaining({ panel: "wallet" }),
+    );
+  });
 });
 
 describe("视频生成（C2 独立创作）", () => {

@@ -27,6 +27,7 @@ import {
 } from "../api";
 import { BrandIdentity } from "../BrandIdentity";
 import { CustomerCenterPage } from "../customer/CustomerCenterPage";
+import { isInsufficientCredits } from "../insufficientCredits";
 import { SettingsPanel } from "../SettingsPanel";
 import type { WorkspaceShellProps } from "../workspace-shell";
 import { AnalyticsPage } from "./AnalyticsPage";
@@ -925,6 +926,8 @@ export function StudioWorkspace({
         notify(
           customerVisibleErrorMessage(cause, "口播任务提交失败，请稍后重试。"),
         );
+        // 服务端已给出需要多少积分；把钱包侧栏一并打开，省掉用户自己找入口。
+        if (isInsufficientCredits(cause)) openLive("wallet");
       }
     } finally {
       if (oralSubmitAttemptRef.current === attempt) {

@@ -3044,6 +3044,39 @@ describe("视频复刻（模块①）", () => {
     expect(value.patchDraft).not.toHaveBeenCalled();
   });
 
+  it("拆解遇到积分不足时打开钱包侧栏，不让用户自己找充值入口", async () => {
+    const value = replicaStudio();
+    replicaApi.startVideoAnalysis.mockRejectedValueOnce(
+      Object.assign(new Error("积分不足，本次需要 5 积分。"), {
+        code: "INSUFFICIENT_CREDITS",
+      }),
+    );
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
+
+    // 服务端文案原样透传，用户看得到还差多少。
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith("积分不足，本次需要 5 积分。"),
+    );
+    expect(value.openLive).toHaveBeenCalledWith("wallet");
+  });
+
+  it("拆解的其他失败不打开钱包侧栏", async () => {
+    const value = replicaStudio();
+    replicaApi.startVideoAnalysis.mockRejectedValueOnce(
+      new Error("来源视频已失效，请重新上传"),
+    );
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
+
+    await waitFor(() =>
+      expect(value.notify).toHaveBeenCalledWith("来源视频已失效，请重新上传"),
+    );
+    expect(value.openLive).not.toHaveBeenCalled();
+  });
+
   it("首帧置换前显示短提示，选定首帧后在同页展示最终合成", async () => {
     const value = replicaStudio();
     value.state.draft.firstFrameId = undefined;
