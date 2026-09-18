@@ -265,7 +265,7 @@ def test_batch_signs_seven_day_thumbnail_url_for_videos_with_thumb(
     assert query["asset_id"][0] == "thumb_video"
     expires = int(query["expires"][0])
     assert 6 * DAY <= expires - int(time.time()) <= 8 * DAY
-    assert items["thumb_video"]["url"].startswith("/api/assets/signed-objects/")
+    assert urlsplit(items["thumb_video"]["url"]).path.startswith("/api/assets/signed-objects/")
     # 历史无缩略图视频：主 URL 照常，缩略图 URL 为 None（前端降级占位）。
     assert items["legacy_video"]["url"] is not None
     assert items["legacy_video"]["thumbnail_url"] is None

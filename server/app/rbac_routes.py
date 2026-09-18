@@ -34,6 +34,7 @@ from app.db_pg import DATABASE_URL_ENV, pg_transaction
 from app.db_portable import BusinessConnection
 from app.media import storage_key_from_uri
 from app.media_routes import (
+    api_base_url,
     signed_asset_session_epoch,
     storage_for_asset,
     validate_signed_asset_grant,
@@ -1004,7 +1005,13 @@ def _grant_download_for_asset(
             secret=secret,
         )
         query["sig"] = signature
-        url = f"/api/assets/signed-objects/{quote(object_key, safe='/')}?{urlencode(query)}"
+        # 下发绝对地址：桌面端页面 origin 是 tauri://，客户云版前端可与 API 分域名
+        # 部署，站内相对地址会打到客户端自身而不是后端，img/video 只剩空预览框。
+        # 与 viral_routes 的自有封面路由同口径，客户端零拼接。
+        url = (
+            f"{api_base_url()}/api/assets/signed-objects/"
+            f"{quote(object_key, safe='/')}?{urlencode(query)}"
+        )
     except StorageBackendUnavailable as exc:
         raise HTTPException(
             status_code=503,
@@ -1131,7 +1138,9 @@ def _signed_thumbnail_url(
                 "sig": signature,
             }
         )
-        return f"/api/assets/signed-objects/{quote(thumbnail_key, safe='/')}?{query}"
+        return (
+            f"{api_base_url()}/api/assets/signed-objects/{quote(thumbnail_key, safe='/')}?{query}"
+        )
     except StorageBackendUnavailable:
         return None
 
@@ -1200,7 +1209,9 @@ def create_cached_character_url(
             "sig": signature,
         }
     )
-    return DownloadUrlResponse(url=f"/api/assets/character-cache/{cache_name}?{query}")
+    return DownloadUrlResponse(
+        url=f"{api_base_url()}/api/assets/character-cache/{cache_name}?{query}"
+    )
 
 
 @router.get("/assets/character-cache/{cache_name}")
