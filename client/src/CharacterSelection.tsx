@@ -40,7 +40,7 @@ export function CharacterSelection({
   onVersionChange?: (selection: ProjectMainCharacter | null) => void;
   projectId: string;
   readOnly?: boolean;
-  // inline：详情页第二段区头的内联下拉形态（选择即落库，仅完整七类
+  // inline：详情页第二段区头的内联下拉形态（选择即落库，仅完整五类
   // 资产的版本可选）；full：旧工作台的面板形态（radio 列表 + 确认）。
   variant?: "full" | "inline";
   sceneOnly?: boolean;
@@ -746,7 +746,8 @@ export function CharacterSelection({
                 isSaving ||
                 isAutoSelecting ||
                 !selectedVersionId ||
-                selectedOption?.assets.length !== Object.keys(VIEW_LABELS).length
+                selectedOption?.assets.length !==
+                  Object.keys(VIEW_LABELS).length
               }
               onClick={saveSelection}
               type="button"
