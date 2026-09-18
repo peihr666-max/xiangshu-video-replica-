@@ -2,7 +2,7 @@
 // @vitest-environment node
 
 import { createHash } from "node:crypto";
-import { copyFileSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import viteConfig from "../vite.config";
 
@@ -223,13 +223,20 @@ describe("CW-019 customer entry contract (source-level)", () => {
     expect(source).toMatch(/id=["']root["']/);
   });
 
-  it("客户入口不引用内部壳 ./App（内部入口域排除由源码层承担）", () => {
-    // 产物层的 FORBIDDEN_CONTENT_INTERNAL 三条在压缩产物里恒不命中：
-    // getDevelopmentUserId 已于 CW-015 从活代码删除、X-Dev-User-Id 只存在于
-    // 类型声明与注释、internalAccessToken 是被 mangle 的模块级变量。内部壳
-    // client/src/App.tsx 也只被测试引用、不进任何生产制品，因此产物层拿不到
-    // 阳性对照样本。这条不变量改由源码层守：一旦客户入口 import 内部壳，
-    // 内部访问令牌界面就重新变成客户可达路径（CW-013 红线）。
+  it("泳道 A 内部壳 App.tsx 已删除，客户入口不得重新引入", () => {
+    // 死代码清理：内部壳 client/src/App.tsx 及其配套的 AnalysisWorkspace /
+    // ProjectDetailFlow / CharacterReferenceSelection / GenerationComposer /
+    // GenerationLauncher / ScriptEditor / WorkspaceTabs 已整体删除——CW-019 后
+    // 它们已不可达（main.tsx 只挂载 RootApp）。
+    //
+    // 原断言「客户入口不引用 ./App」在文件删除后恒真、失去检测力，故改为直接
+    // 断言文件不存在：一旦有人把内部访问令牌界面加回来（CW-013 红线），
+    // 本断言立刻失败。
+    expect(
+      existsSync(new URL("./App.tsx", import.meta.url)),
+      "内部壳 App.tsx 不得复活",
+    ).toBe(false);
+    // 双保险：客户入口仍不得以任何形式引用内部壳。
     // INTERNAL_SHELL_JSX 是形状类正则，故读剔注释版本（RootApp.tsx 的 docblock
     // 正当地叙述了 `<App/>` fallback 已删除这一历史）。
     for (const entry of ["./main.tsx", "./RootApp.tsx"]) {

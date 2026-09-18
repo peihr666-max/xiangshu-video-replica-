@@ -1,12 +1,18 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { App } from "./App";
+import { StudioWorkspace } from "./studio/StudioWorkspace";
 
-// P0-05-01 核查结论：本套件只覆盖任务记录页「粘贴 Batch ID 查询」的
-// Fake provider 契约，不经过工作区动线，无步骤门禁断言需要迁移；
-// 新动线断言（就绪徽章/主按钮/缺失模态/一键流水线）由
-// AnalysisWorkspace.test.tsx 覆盖，本文件保持基线不动。
+// 本套件只覆盖任务记录页「粘贴 Batch ID 查询」的 Fake provider 契约，
+// 不经过工作区动线。原经内部壳 App.tsx 挂载；该壳已随泳道 A 死代码清理删除，
+// 现直挂 studio 泳道（生产唯一入口），断言不变。
+
+const testUser = {
+  id: "employee_1",
+  username: "employee_1",
+  display_name: "林夏",
+  role: "employee" as const,
+};
 
 const healthResponse = { status: "ok", service: "video-replica-api" };
 
@@ -93,7 +99,7 @@ describe("Fake provider E2E contract", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<App />);
+    render(<StudioWorkspace currentUser={testUser} />);
     // 任务中心先展示本地任务概览，再由真实 LiveWorkspacePanel 打开记录。
     fireEvent.click(await screen.findByRole("button", { name: "任务中心" }));
     fireEvent.click(
