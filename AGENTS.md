@@ -46,7 +46,7 @@
 6. 一个 PR 只承载一个任务；评审评论逐条实质修复后 resolve，不得当作流程噪音跳过。
 7. 需人工授权的动作（真实 ZPay / 付费 Provider / 生产 COS 变更 / 对外发码 / 灰度扩大 / 公网发布）必须先取得用户明确授权。
 8. 多任务并行时，公共账本由集成人在对应 PR 内集中回填，各任务提供独立证据；冲突按真实状态逐项核对，不取 `[x]` 并集。每个 worktree 隔离运行端口和 PG 资源，未隔离的共享 PG 全量测试保持串行。
-9. 合并后按排班清单 §6 核验 PR merged、squash SHA 已进入 origin/main、该 main 门禁、全部文件归档和无在用进程。满足条件后由**合并的那个会话**立即从 worktree 外执行 `git worktree remove`，并**一并删除本地分支（squash 合并须 `-D`）和远程分支（`git push origin --delete`）**；PR 页面与 `refs/pull/<N>/head` 永久保留 head，回滚不依赖分支存在。禁止 `--force`、递归删除或以分支存在/PR closed 代替合并证据；`git branch --merged` 对 squash 合并无效，不得作为判据。未合并或有未归档成果时保留 worktree；被取代而不再需要的**未合并**分支，先打注释标签 `archive/<分支名>` 并推送 origin，再删分支。合并 main 只在本任务分支上 `git merge origin/main` 后 push，不另开 `*-pr` 分支或第二个 PR。（2026-09-16 起生效：此前"默认保留分支"的做法曾累积 148 个远程分支、20 个 worktree 与 3 个重复 PR，清理记录见工作区根目录 `worktree全量合并状态分析-2026-09-16.md`。）
+9. 合并后按排班清单 §6 核验 PR merged、squash SHA 已进入 origin/main、该 main 门禁、全部文件归档和无在用进程。满足条件后由**合并的那个会话**立即从 worktree 外执行 `git worktree remove`，并**一并删除本地分支（squash 合并须 `-D`）和远程分支（`git push origin --delete`）**；PR 页面与 `refs/pull/<N>/head` 永久保留 head，回滚不依赖分支存在。禁止 `--force`、递归删除或以分支存在/PR closed 代替合并证据；`git branch --merged` 对 squash 合并无效，不得作为判据。未合并或有未归档成果时保留 worktree；被取代而不再需要的**未合并**分支，先打注释标签 `archive/<分支名>` 并推送 origin，再删分支。合并 main 只在本任务分支上 `git merge origin/main` 后 push，不另开 `*-pr` 分支或第二个 PR。（2026-09-16 起生效：此前"默认保留分支"的做法曾累积 148 个远程分支、20 个 worktree 与 3 个重复 PR。2026-09-18 起仓库已开启 GitHub 的 Automatically delete head branches，合并后远程 head 分支自动删除，本条的 `git push origin --delete` 只用于历史残留和自动删除未生效的情况。）
 
 ## 硬红线（摘要）
 
