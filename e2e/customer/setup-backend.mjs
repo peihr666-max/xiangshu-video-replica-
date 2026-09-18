@@ -82,6 +82,14 @@ export async function setup() {
   const dsn = `${PG_BASE}/${E2E_DB}`;
   const adminDsn = `${PG_BASE}/postgres`;
 
+  // The seeded E2E database runs active_storage_provider="local" (see
+  // seed_codes.py); this is the matching root for that adapter. Without it
+  // every storage-touching route answers 503 STORAGE_PROVIDER_FORBIDDEN.
+  const runDir =
+    process.env.CUSTOMER_E2E_RUN_DIR ?? path.join(__dirname, "run");
+  const storageRoot = path.join(runDir, "storage");
+  mkdirSync(storageRoot, { recursive: true });
+
   // 1. Fresh database.
   runSync(python, [
     "-c",
@@ -141,6 +149,7 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
     // Recharge lane (PR #65 task #7): the customer wallet view needs the ZPay
     // config + deployment settings to create orders.
     VIDEO_REPLICA_SETTINGS_KEY: settingsKey,
+    VIDEO_REPLICA_STORAGE_ROOT: storageRoot,
     PUBLIC_BASE_URL: "https://callback.example.com",
   };
   const api = spawn(
@@ -191,9 +200,6 @@ with psycopg.connect("${adminDsn}", autocommit=True) as c:
   await waitForHealth(WEB_URL, 60_000, "vite");
 
   // Persist run state for the specs.
-  const runDir =
-    process.env.CUSTOMER_E2E_RUN_DIR ?? path.join(__dirname, "run");
-  mkdirSync(runDir, { recursive: true });
   writeFileSync(
     path.join(runDir, "run.json"),
     `${JSON.stringify(
