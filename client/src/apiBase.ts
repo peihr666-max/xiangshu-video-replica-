@@ -40,8 +40,13 @@ export function apiBaseUrl(): string {
   );
 }
 
-/** 站内相对媒体地址 → 可加载的绝对地址；已经是绝对地址的原样返回。 */
-export function resolveManagedMediaUrl(url: string): string {
+/** 站内相对媒体地址 → 可加载的绝对地址；已经是绝对地址的原样返回。
+ *
+ * 老版本服务端/降级响应可能不带 url 字段（undefined/null/空串），此时按
+ * "无地址"返回空串，由调用方渲染占位——绝不能抛 TypeError 把整个素材网格
+ * 或人物面板的加载链炸掉。 */
+export function resolveManagedMediaUrl(url: string | null | undefined): string {
+  if (!url) return "";
   return url.startsWith("/") && !url.startsWith("//")
     ? `${apiBaseUrl()}${url}`
     : url;
