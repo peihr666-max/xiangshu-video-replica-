@@ -10,14 +10,11 @@ import {
   type CharacterReferenceSelection,
   capturePromptSession,
   customerVisibleErrorMessage,
-  type GenerationPriceQuote,
   type GenerationRatio,
   getAnalysisTask,
   getAssetDownloadUrl,
-  getGenerationPriceQuote,
   getLatestGenerationPrompt,
   getLatestProjectAnalysis,
-  getLatestProjectFirstFrameSelection,
   getLatestProjectShotCards,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
@@ -45,7 +42,6 @@ import {
 import { CharacterSelection } from "../CharacterSelection";
 import { FirstFrameSelection } from "../FirstFrameSelection";
 import { isInsufficientCredits } from "../insufficientCredits";
-import { PromptMarkdown } from "../PromptMarkdown";
 import { ShotCardEditor } from "../ShotCardEditor";
 import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
@@ -56,7 +52,6 @@ import {
   readAudioDuration,
   readVideoDuration,
   readVideoFirstFrame,
-  runReplicaGeneration,
   uploadReferenceAudioMaterial,
   uploadVideoMaterial,
   uploadWorkbenchSourceVideo,
@@ -94,7 +89,6 @@ import {
   hasCopyResult,
   MAX_REFERENCE_MEDIA_SECONDS,
   mergeStudioAssets,
-  SUPPORTED_VIDEO_RATIOS,
   validateReferences,
 } from "./state";
 import type {
@@ -1229,33 +1223,6 @@ function normalizeCustomerDuration(seconds: number): 4 | 15 {
   return seconds === 4 || seconds === 15 ? seconds : seconds <= 9 ? 4 : 15;
 }
 
-type ReplicaQuoteInput = {
-  resolution: "768P" | "2K";
-  duration_seconds: 4 | 15;
-  quantity: 1 | 2 | 4;
-};
-
-function replicaQuoteInput(draft: StudioDraft): ReplicaQuoteInput {
-  return {
-    resolution: draft.resolution === "2K" ? "2K" : "768P",
-    duration_seconds: normalizeCustomerDuration(draft.duration),
-    quantity: draft.count === 2 || draft.count === 4 ? draft.count : 1,
-  };
-}
-
-function replicaQuoteMatches(
-  quote: GenerationPriceQuote | null,
-  input: ReplicaQuoteInput,
-): quote is GenerationPriceQuote {
-  return Boolean(
-    quote &&
-      quote.resolution === input.resolution &&
-      quote.duration_seconds === input.duration_seconds &&
-      quote.quantity === input.quantity &&
-      quote.estimated_seconds === input.duration_seconds * input.quantity,
-  );
-}
-
 export function ReplicaPage() {
   const {
     state,
@@ -1344,15 +1311,6 @@ export function ReplicaPage() {
   const [promptName, setPromptName] = useState("");
   const [savingPrompt, setSavingPrompt] = useState(false);
 
-  const [generating, setGenerating] = useState(false);
-  const [replicaQuote, setReplicaQuote] = useState<GenerationPriceQuote | null>(
-    null,
-  );
-  const [replicaQuoteStatus, setReplicaQuoteStatus] = useState<
-    "idle" | "loading" | "ready" | "error"
-  >("idle");
-  const [replicaQuoteError, setReplicaQuoteError] = useState("");
-  const [replicaQuoteRevision, setReplicaQuoteRevision] = useState(0);
   const [restoreBusy, setRestoreBusy] = useState(false);
   const [restoreError, setRestoreError] = useState("");
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -1373,13 +1331,8 @@ export function ReplicaPage() {
   const promptTypedThisMountRef = useRef(false);
   const latestDraftRef = useRef(state.draft);
   const patchDraftRef = useRef(patchDraft);
-  const replicaSubmittingRef = useRef(false);
   const replicaOperationRef = useRef(0);
   const replicaContextRef = useRef("");
-  const replicaSubmissionRef = useRef<{
-    fingerprint: string;
-    key: string;
-  } | null>(null);
   replicaContextRef.current = JSON.stringify({
     draftId: state.draft.id,
     projectId: state.draft.projectId,
@@ -1588,81 +1541,6 @@ export function ReplicaPage() {
 
   const replicaProjectId = state.draft.projectId;
   const replicaDuration = normalizeCustomerDuration(state.draft.duration);
-  const replicaResolution: ReplicaQuoteInput["resolution"] =
-    state.draft.resolution === "2K" ? "2K" : "768P";
-  const replicaQuantity: ReplicaQuoteInput["quantity"] =
-    state.draft.count === 2 || state.draft.count === 4 ? state.draft.count : 1;
-  const currentReplicaQuoteInput: ReplicaQuoteInput = {
-    resolution: replicaResolution,
-    duration_seconds: replicaDuration,
-    quantity: replicaQuantity,
-  };
-  const replicaQuoteReady =
-    replicaQuoteStatus === "ready" &&
-    replicaQuoteMatches(replicaQuote, currentReplicaQuoteInput);
-  useEffect(() => {
-    void replicaQuoteRevision;
-    if (
-      review ||
-      stage !== "ready" ||
-      !replicaProjectId ||
-      !shotCardVersionId ||
-      shots.length === 0
-    ) {
-      setReplicaQuote(null);
-      setReplicaQuoteStatus("idle");
-      setReplicaQuoteError("");
-      return;
-    }
-    let active = true;
-    const input = {
-      resolution: replicaResolution,
-      duration_seconds: replicaDuration,
-      quantity: replicaQuantity,
-    };
-    setReplicaQuote(null);
-    setReplicaQuoteStatus("loading");
-    setReplicaQuoteError("");
-    void getGenerationPriceQuote(input)
-      .then((quote) => {
-        if (!active) return;
-        if (!replicaQuoteMatches(quote, input)) {
-          setReplicaQuoteStatus("error");
-          setReplicaQuoteError(
-            "复刻报价参数与当前生成参数不一致，请重新获取。",
-          );
-          return;
-        }
-        setReplicaQuote(quote);
-        setReplicaQuoteStatus("ready");
-      })
-      .catch((cause: unknown) => {
-        if (!active) return;
-        setReplicaQuote(null);
-        setReplicaQuoteStatus("error");
-        setReplicaQuoteError(
-          customerVisibleErrorMessage(cause, "复刻报价读取失败，请重试。"),
-        );
-      });
-    return () => {
-      active = false;
-    };
-  }, [
-    review,
-    stage,
-    replicaProjectId,
-    replicaDuration,
-    replicaResolution,
-    replicaQuantity,
-    shotCardVersionId,
-    shots.length,
-    replicaQuoteRevision,
-  ]);
-
-  const retryReplicaQuote = useCallback(
-    () => setReplicaQuoteRevision((value) => value + 1),
-    [],
-  );
 
   const handleUpload = async (file: File) => {
     if (review || readOnly) {
@@ -1900,7 +1778,8 @@ export function ReplicaPage() {
     }
   };
 
-  const saveAsCustomPrompt = async () => {
+  // customName 为空串时按日期自动命名：供「存入我的提示词」一键直存。
+  const saveAsCustomPrompt = async (customName: string) => {
     if (review || readOnly) {
       notify("审核示例不调用真实接口。");
       return;
@@ -1917,7 +1796,7 @@ export function ReplicaPage() {
     try {
       await saveGenerationPrompt(projectId, {
         name:
-          promptName.trim() ||
+          customName.trim() ||
           `复刻提示词 ${new Date().toLocaleDateString("zh-CN")}`,
         prompt_text: submittedPrompt,
         generation_context: {
@@ -1956,102 +1835,16 @@ export function ReplicaPage() {
     }
   };
 
-  const sendToGeneration = async () => {
-    if (review || readOnly) {
-      notify("审核示例不调用真实接口。");
+  // 复刻链路到此交付提示词；生成与付费在 AI 视频创作页完成。
+  const goToVideoCreation = () => {
+    const text = promptTextRef.current;
+    if (!text) {
+      notify("请先合成最终提示词。");
       return;
     }
-    if (replicaSubmittingRef.current) return;
-    if (shotsDirty) {
-      notify("请先保存分镜。");
-      return;
-    }
-    const operation = replicaOperationRef.current + 1;
-    replicaOperationRef.current = operation;
-    const contextFingerprint = replicaContextRef.current;
-    const isCurrent = () =>
-      replicaOperationRef.current === operation &&
-      replicaContextRef.current === contextFingerprint;
-    const draft = latestDraftRef.current;
-    const quoteInput = replicaQuoteInput(draft);
-    if (
-      replicaQuoteStatus !== "ready" ||
-      !replicaQuoteMatches(replicaQuote, quoteInput)
-    ) {
-      notify("请先取得与当前参数一致的复刻报价后再提交。");
-      return;
-    }
-    const projectId = draft.projectId;
-    if (!projectId || !shotCardVersionId) {
-      notify("请先完成 AI 拆解。");
-      return;
-    }
-    if (!finalReady || !finalSnapshot) {
-      notify("文案、首帧或参数尚未合成为最终稿，请先完成最终提示词步骤。");
-      return;
-    }
-    replicaSubmittingRef.current = true;
-    setGenerating(true);
-    try {
-      const selection = await getLatestProjectFirstFrameSelection(projectId);
-      const firstFrameAssetId =
-        selection.version && !selection.stale
-          ? (readFirstFrameSelectionPayload(selection.version)
-              ?.first_frame_asset_id ?? null)
-          : null;
-      if (!isCurrent()) return;
-      if (!firstFrameAssetId) {
-        notify("请先在上方选定置换首帧。");
-        return;
-      }
-      if (firstFrameAssetId !== draft.firstFrameId) {
-        applyFinalSnapshot(null);
-        throw new Error("首帧已更新，请加载新首帧并重新合成最终提示词。");
-      }
-      const request = {
-        currentUserId: user.id,
-        promptText,
-        originalScriptText: originalScript,
-        finalPromptVersionId: finalSnapshot.versionId,
-        scriptVersionId: finalSnapshot.scriptVersionId,
-        confirmedScriptText: draft.script.confirmed
-          ? draft.script.text
-          : undefined,
-        shotCardVersionId,
-        firstFrameAssetId,
-        outputDurationSeconds: quoteInput.duration_seconds,
-        resolution: quoteInput.resolution,
-        ratio: (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
-          draft.ratio,
-        )
-          ? (draft.ratio as GenerationRatio)
-          : "adaptive",
-        quantity: quoteInput.quantity,
-      };
-      const fingerprint = JSON.stringify({ request, replicaQuote });
-      if (replicaSubmissionRef.current?.fingerprint !== fingerprint) {
-        replicaSubmissionRef.current = {
-          fingerprint,
-          key: crypto.randomUUID(),
-        };
-      }
-      await runReplicaGeneration(projectId, {
-        ...request,
-        idempotencyKey: replicaSubmissionRef.current.key,
-        isCurrent,
-      });
-      replicaSubmissionRef.current = null;
-      if (!isCurrent()) return;
-      notify("复刻任务已提交，可在任务中心查看进度。");
-      navigate("tasks");
-    } catch (cause: unknown) {
-      if (isCurrent()) {
-        notify(customerVisibleErrorMessage(cause, "送生成失败，请稍后重试。"));
-      }
-    } finally {
-      replicaSubmittingRef.current = false;
-      setGenerating(false);
-    }
+    patchDraft({ prompt: text, promptEdited: true });
+    navigate("video");
+    notify("最终提示词已带入 AI 视频创作页。");
   };
 
   const updateShot = (index: number, patch: Partial<ShotCard>) => {
@@ -2285,197 +2078,168 @@ export function ReplicaPage() {
           {!replicaProjectId ? (
             <Hint>先完成视频拆解，再确认首帧与文案。</Hint>
           ) : (
-            <ReplicaMediaRow ratio={firstFramePreviewRatio}>
-              <Panel className="creation-final-preview">
-                <div className="creation-panel-title-row">
-                  <span>已选首帧</span>
+            <>
+              <ReplicaMediaRow ratio={firstFramePreviewRatio}>
+                <Panel className="creation-final-preview">
+                  <div className="creation-panel-title-row">
+                    <span>已选首帧</span>
+                  </div>
+                  <div className="media-frame">
+                    <Media
+                      asset={selectedFirstFrame}
+                      alt="已选首帧"
+                      aspectRatio="adaptive"
+                      className="creation-final-preview__media"
+                      onAspectRatioChange={(ratio) =>
+                        setFirstFrameRatio({
+                          source: firstFrameMediaKey,
+                          ratio,
+                        })
+                      }
+                    />
+                  </div>
+                </Panel>
+                <div className="creation-final-copy">
+                  <ReplicaNarration />
                 </div>
-                <div className="media-frame">
-                  <Media
-                    asset={selectedFirstFrame}
-                    alt="已选首帧"
-                    aspectRatio="adaptive"
-                    className="creation-final-preview__media"
-                    onAspectRatioChange={(ratio) =>
-                      setFirstFrameRatio({
-                        source: firstFrameMediaKey,
-                        ratio,
-                      })
-                    }
-                  />
-                </div>
-              </Panel>
-              <div className="creation-final-copy">
-                <ReplicaNarration />
-                {/* 提示词渲染与「合成」是两条独立的可用性：拆解完成即有文案可看，
-                    但必须选定首帧才能合成，故门禁分开判定。 */}
-                {state.draft.firstFrameId || promptText ? (
-                  <Panel className="creation-prompt-output">
-                    <div className="creation-panel-title-row">
-                      <span>最终提示词</span>
-                      {displayShots.length === 0 && (
-                        <small>确认文案与首帧后合成</small>
-                      )}
-                    </div>
-                    {promptText ? (
-                      <PromptMarkdown
-                        readOnly={review}
-                        scope={`${user.id}:${state.draft.projectId ?? ""}`}
-                        text={promptText}
-                      />
+              </ReplicaMediaRow>
+              {/* 最终提示词独立成横向整宽框：首帧与口播先齐平排布，提示词
+                在其下方整宽展示；上游变化但未重新合成时在标题行给出显性
+                标记，避免"上游变了、正文还是旧稿"的静默错位。 */}
+              {/* 提示词渲染与「合成」是两条独立的可用性：拆解完成即有文案可看，
+                但必须选定首帧才能合成，故门禁分开判定。 */}
+              {state.draft.firstFrameId || promptText ? (
+                <Panel className="creation-prompt-output">
+                  <div className="creation-panel-title-row">
+                    <span>最终提示词</span>
+                    {displayShots.length === 0 ? (
+                      <small>确认文案与首帧后合成</small>
+                    ) : promptText && !finalReady ? (
+                      <small>上游已变化，请重新合成</small>
                     ) : null}
-                    {state.draft.firstFrameId ? (
+                  </div>
+                  {/* 单一文本框：展示与编辑合一，不再另设只读渲染与折叠编辑框。
+                      无首帧时也展示（配合占位提示），有首帧后才出现合成控件。 */}
+                  <PromptEditor
+                    label="最终提示词"
+                    readOnly={readOnly}
+                    optimizationDisabled={review}
+                    scope={`${user.id}:${state.draft.projectId ?? ""}`}
+                    context={{
+                      route: "replica",
+                      project_id: state.draft.projectId,
+                      source_asset_id: state.draft.sourceAssetId,
+                      shot_card_version_id: shotCardVersionId,
+                      script_version_id: finalSnapshot?.scriptVersionId,
+                      first_frame_asset_id: state.draft.firstFrameId,
+                      duration_seconds: replicaDuration,
+                      ratio: state.draft.ratio as GenerationRatio,
+                    }}
+                    rows={12}
+                    value={promptText}
+                    onChange={(text) => {
+                      compiledPromptRef.current = false;
+                      setPromptText(text);
+                      promptTextRef.current = text;
+                      promptEditedRef.current = true;
+                      promptTypedThisMountRef.current = true;
+                      promptEditVersionRef.current += 1;
+                      patchDraft({
+                        prompt: text,
+                        promptEdited: true,
+                      });
+                    }}
+                    placeholder="确认文案和新首帧后合成最终提示词。"
+                  />
+                  {state.draft.firstFrameId ? (
+                    <ReplicaFinalPromptControls
+                      input={finalInput}
+                      sourceDuration={sourceDuration}
+                      sourceFrameTimestamp={
+                        state.draft.sourceFrameTimestampSeconds
+                      }
+                      showScriptPreview={false}
+                      value={promptText}
+                      snapshot={finalSnapshot}
+                      onPrepared={(snapshot) => {
+                        compiledPromptRef.current = true;
+                        applyFinalSnapshot(snapshot);
+                      }}
+                      readOnly={readOnly || review}
+                      restoreEnabled={!review}
+                      onChange={(text) => {
+                        compiledPromptRef.current = false;
+                        setPromptText(text);
+                        promptTextRef.current = text;
+                        promptEditedRef.current = true;
+                        promptTypedThisMountRef.current = true;
+                        promptEditVersionRef.current += 1;
+                        patchDraft({ prompt: text, promptEdited: true });
+                      }}
+                    />
+                  ) : (
+                    missingFirstFrameHint
+                  )}
+                  <div className="creation-upload-row">
+                    {promptNameOpen ? (
                       <>
-                        <ReplicaFinalPromptControls
-                          input={finalInput}
-                          sourceDuration={sourceDuration}
-                          sourceFrameTimestamp={
-                            state.draft.sourceFrameTimestampSeconds
+                        <input
+                          aria-label="自定义提示词名称"
+                          className="creation-project-select"
+                          disabled={readOnly || review}
+                          onChange={(event) =>
+                            setPromptName(event.target.value)
                           }
-                          showScriptPreview={false}
-                          value={promptText}
-                          snapshot={finalSnapshot}
-                          onPrepared={(snapshot) => {
-                            compiledPromptRef.current = true;
-                            applyFinalSnapshot(snapshot);
-                          }}
-                          readOnly={readOnly || review}
-                          restoreEnabled={!review}
-                          onChange={(text) => {
-                            compiledPromptRef.current = false;
-                            setPromptText(text);
-                            promptTextRef.current = text;
-                            promptEditedRef.current = true;
-                            promptTypedThisMountRef.current = true;
-                            promptEditVersionRef.current += 1;
-                            patchDraft({ prompt: text, promptEdited: true });
-                          }}
+                          placeholder="提示词名称"
+                          value={promptName}
                         />
-                        <details className="creation-final-prompt-details">
-                          <summary>查看或编辑提示词</summary>
-                          <PromptEditor
-                            label="最终提示词"
-                            readOnly={readOnly}
-                            optimizationDisabled={review}
-                            scope={`${user.id}:${state.draft.projectId ?? ""}`}
-                            context={{
-                              route: "replica",
-                              project_id: state.draft.projectId,
-                              source_asset_id: state.draft.sourceAssetId,
-                              shot_card_version_id: shotCardVersionId,
-                              script_version_id: finalSnapshot?.scriptVersionId,
-                              first_frame_asset_id: state.draft.firstFrameId,
-                              duration_seconds: replicaDuration,
-                              ratio: state.draft.ratio as GenerationRatio,
-                            }}
-                            onChange={(text) => {
-                              compiledPromptRef.current = false;
-                              setPromptText(text);
-                              promptTextRef.current = text;
-                              promptEditedRef.current = true;
-                              promptTypedThisMountRef.current = true;
-                              promptEditVersionRef.current += 1;
-                              patchDraft({
-                                prompt: text,
-                                promptEdited: true,
-                              });
-                            }}
-                            placeholder="确认文案和新首帧后合成最终提示词。"
-                            rows={10}
-                            value={promptText}
-                          />
-                        </details>
-                        <div className="creation-upload-row">
-                          {promptNameOpen ? (
-                            <>
-                              <input
-                                aria-label="自定义提示词名称"
-                                className="creation-project-select"
-                                disabled={readOnly || review}
-                                onChange={(event) =>
-                                  setPromptName(event.target.value)
-                                }
-                                placeholder="提示词名称"
-                                value={promptName}
-                              />
-                              <Button
-                                disabled={readOnly || review || savingPrompt}
-                                onClick={() => void saveAsCustomPrompt()}
-                                variant="primary"
-                              >
-                                {savingPrompt ? "保存中…" : "确认保存"}
-                              </Button>
-                              <Button
-                                onClick={() => setPromptNameOpen(false)}
-                                variant="quiet"
-                              >
-                                取消
-                              </Button>
-                            </>
-                          ) : (
-                            <>
-                              <Button
-                                disabled={readOnly || review}
-                                onClick={() => setPromptNameOpen(true)}
-                                variant="outline"
-                              >
-                                保存为自定义提示词
-                              </Button>
-                              {replicaQuoteStatus === "loading" ? (
-                                <Hint>正在读取复刻报价…</Hint>
-                              ) : null}
-                              {replicaQuoteError ? (
-                                <div className="settings-error" role="alert">
-                                  <p>{replicaQuoteError}</p>
-                                  <Button
-                                    onClick={retryReplicaQuote}
-                                    variant="outline"
-                                  >
-                                    重新获取复刻报价
-                                  </Button>
-                                </div>
-                              ) : null}
-                              {replicaQuoteReady ? (
-                                <Hint>
-                                  {(replicaQuote.estimated_credits ?? 0) > 0
-                                    ? `预计费用 ${replicaQuote.estimated_credits} 积分（${replicaQuote.unit_credits} 积分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`
-                                    : replicaQuote.estimated_price_fen > 0
-                                      ? `预计费用 ${(replicaQuote.estimated_price_fen / 100).toFixed(2)} 元（${replicaQuote.unit_price_fen_per_second} 分/秒 × ${replicaDuration} 秒/条 × ${replicaQuantity} 条）`
-                                      : // 后端在计费目录缺项时只把原因写进 free_reason（客户端 schema 会丢掉该字段），
-                                        // credits 与价格同时为 0，直接渲染就成了"预计费用 0 积分"。
-                                        "预计费用暂不可用"}
-                                </Hint>
-                              ) : null}
-                              <Button
-                                disabled={
-                                  readOnly ||
-                                  review ||
-                                  generating ||
-                                  analysisBusy ||
-                                  shotsDirty ||
-                                  displayShots.length === 0 ||
-                                  !finalReady ||
-                                  !replicaQuoteReady
-                                }
-                                onClick={() => void sendToGeneration()}
-                                variant="primary"
-                              >
-                                {generating ? "提交中…" : "确认费用并送生成"}
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                        <Hint>生成前核对文案和费用。</Hint>
+                        <Button
+                          disabled={readOnly || review || savingPrompt}
+                          onClick={() => void saveAsCustomPrompt(promptName)}
+                          variant="primary"
+                        >
+                          {savingPrompt ? "保存中…" : "确认保存"}
+                        </Button>
+                        <Button
+                          onClick={() => setPromptNameOpen(false)}
+                          variant="quiet"
+                        >
+                          取消
+                        </Button>
                       </>
                     ) : (
-                      missingFirstFrameHint
+                      <>
+                        <Button
+                          disabled={readOnly || review}
+                          onClick={() => setPromptNameOpen(true)}
+                          variant="outline"
+                        >
+                          保存为自定义提示词
+                        </Button>
+                        <Button
+                          disabled={
+                            readOnly || review || savingPrompt || !promptText
+                          }
+                          onClick={() => void saveAsCustomPrompt("")}
+                          variant="outline"
+                        >
+                          {savingPrompt ? "保存中…" : "存入我的提示词"}
+                        </Button>
+                        <Button
+                          disabled={readOnly || review || !promptText}
+                          onClick={goToVideoCreation}
+                          variant="primary"
+                        >
+                          去 AI 视频创作
+                        </Button>
+                      </>
                     )}
-                  </Panel>
-                ) : (
-                  missingFirstFrameHint
-                )}
-              </div>
-            </ReplicaMediaRow>
+                  </div>
+                </Panel>
+              ) : (
+                missingFirstFrameHint
+              )}
+            </>
           )}
         </section>
       </div>
@@ -4294,7 +4058,7 @@ export function VideoPage() {
           )}
           <PromptEditor
             label="提示词"
-            rows={5}
+            rows={16}
             showToolbarLabel
             toolbarLabel={
               <>
