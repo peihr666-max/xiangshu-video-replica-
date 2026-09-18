@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from app.admin_auth_routes import AdminActor, AdminWriter
+from app.api_errors import http_error as _http
 from app.auth import CurrentUser
 from app.db_pg import pg_transaction
 from app.db_portable import BusinessConnection
@@ -25,10 +26,6 @@ from app.image_tasks import (
 )
 
 router = APIRouter(prefix="/api/control", tags=["admin-first-frame"])
-
-
-def _http(status_code: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status_code, detail={"code": code, "message": message})
 
 
 def _admin_to_current_user(actor: AdminActor) -> CurrentUser:
