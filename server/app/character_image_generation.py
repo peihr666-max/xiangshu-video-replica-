@@ -1197,7 +1197,7 @@ def normalize_generation_views(
         raise character_error(
             409,
             "CHARACTER_VERSION_HAS_NO_STANDARD_VIEWS",
-            "历史导入角色版本没有标准七视角生成契约。",
+            "历史导入角色版本没有标准五视角生成契约。",
         )
     requested_set = required_set if requested is None else {str(value) for value in requested}
     if not requested_set or not requested_set <= required_set:

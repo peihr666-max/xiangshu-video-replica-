@@ -28,9 +28,7 @@ const viewTypes = [
   "FRONT_HALF",
   "FRONT_FULL",
   "LEFT_45",
-  "RIGHT_45",
   "LEFT_SIDE",
-  "RIGHT_SIDE",
 ] as const;
 
 const option: api.ProjectCharacterVersionOption = {
@@ -517,7 +515,7 @@ describe("CharacterSelection", () => {
     );
   });
 
-  it("shows only server-approved options with all seven published assets", async () => {
+  it("shows only server-approved options with all five published assets", async () => {
     render(<CharacterSelection projectId="project-1" />);
 
     await screen.findByText(/已自动选择角色版本/);
@@ -535,10 +533,10 @@ describe("CharacterSelection", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(optionLabel);
-    const assets = await screen.findByRole("list", { name: "七类已发布资产" });
-    expect(within(assets).getAllByRole("listitem")).toHaveLength(7);
+    const assets = await screen.findByRole("list", { name: "五类已发布资产" });
+    expect(within(assets).getAllByRole("listitem")).toHaveLength(5);
     expect(within(assets).getByText("正脸近景")).toBeInTheDocument();
-    expect(within(assets).getByText("右侧面")).toBeInTheDocument();
+    expect(within(assets).getByText("左侧面")).toBeInTheDocument();
   });
 
   it("saves the immutable version id and advances the project workflow", async () => {

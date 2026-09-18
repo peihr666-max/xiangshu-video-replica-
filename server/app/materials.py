@@ -443,7 +443,7 @@ def _scope_clause(actor: CurrentUser) -> tuple[str, list[object]]:
 
 def _grouped_character_clause() -> str:
     # Keep derived IDs resolvable for saved drafts, but list/count one sheet per set.
-    # A hidden sheet must not make its seven derived images reappear.
+    # A hidden sheet must not make its five derived images reappear.
     return """NOT (candidate.source = 'character' AND EXISTS (
         SELECT 1 FROM character_assets AS view
         JOIN character_sheets AS sheet ON sheet.version_id = view.character_version_id

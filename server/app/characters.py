@@ -21,7 +21,7 @@ LEGACY_CHARACTER_VERSION_PREFIX = "legacy-version:"
 LEGACY_CHARACTER_ASSET_PREFIX = "legacy-asset:"
 LEGACY_CHARACTER_TEMPLATE_VERSION = "legacy-character-v1"
 LEGACY_CHARACTER_TEMPLATE = (
-    "Grandfather an imported legacy character snapshot without claiming seven generated views."
+    "Grandfather an imported legacy character snapshot without claiming five generated views."
 )
 LEGACY_CHARACTER_TEMPLATE_HASH = hashlib.sha256(LEGACY_CHARACTER_TEMPLATE.encode()).hexdigest()
 

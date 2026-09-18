@@ -582,11 +582,11 @@ def require_standard_publication_views(
     version: sqlite3.Row,
 ) -> list[RequiredCharacterViewType]:
     required = decode_string_list(version["required_view_types_json"])
-    if set(required) != set(REQUIRED_CHARACTER_VIEW_TYPES):
+    if not set(REQUIRED_CHARACTER_VIEW_TYPES).issubset(set(required)):
         raise character_error(
             409,
             "CHARACTER_VERSION_NO_STANDARD_VIEWS",
-            "历史导入版本不能套用标准七视角发布流程。",
+            "历史导入版本不能套用标准五视角发布流程。",
         )
     return list(REQUIRED_CHARACTER_VIEW_TYPES)
 
@@ -599,7 +599,7 @@ def require_complete_publication_selection(
         raise character_error(
             422,
             "CHARACTER_PUBLISH_SELECTION_INCOMPLETE",
-            "发布前必须为七个必需视角各选择一张已批准资产。",
+            "发布前必须为五个必需视角各选择一张已批准资产。",
             required_view_types=required_views,
         )
 

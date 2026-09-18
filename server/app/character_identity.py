@@ -59,9 +59,7 @@ REQUIRED_CHARACTER_VIEW_TYPES: tuple[RequiredCharacterViewType, ...] = (
     "FRONT_HALF",
     "FRONT_FULL",
     "LEFT_45",
-    "RIGHT_45",
     "LEFT_SIDE",
-    "RIGHT_SIDE",
 )
 CHARACTER_TEMPLATE_VERSION = "character-assets-v1"
 CHARACTER_TEMPLATE = (

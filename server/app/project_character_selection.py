@@ -263,7 +263,7 @@ def available_option_from_rows(
     try:
         version_id = str(version["character_version_id"])
         required_views = decode_string_list(version["required_view_types_json"])
-        if required_views != list(REQUIRED_CHARACTER_VIEW_TYPES):
+        if not set(REQUIRED_CHARACTER_VIEW_TYPES).issubset(set(required_views)):
             return None
         persona_snapshot = decode_object(version["persona_snapshot_json"])
         if not scope_allows_project(
@@ -280,15 +280,21 @@ def available_option_from_rows(
             return None
         publication = decode_object(publication_json)
         assets_snapshot = publication.get("assets_by_view")
+        publication_views = publication.get("required_view_types")
         if (
             publication.get("schema_version") != "character-publication.v1"
             or publication.get("character_version_id") != version_id
-            or publication.get("required_view_types") != list(REQUIRED_CHARACTER_VIEW_TYPES)
+            or not (
+                isinstance(publication_views, list)
+                and set(REQUIRED_CHARACTER_VIEW_TYPES).issubset(
+                    {str(view) for view in publication_views}
+                )
+            )
             or not isinstance(assets_snapshot, dict)
         ):
             return None
         assets_by_view = {str(row["view_type"]): row for row in asset_rows}
-        if set(assets_by_view) != set(REQUIRED_CHARACTER_VIEW_TYPES):
+        if not set(REQUIRED_CHARACTER_VIEW_TYPES).issubset(set(assets_by_view)):
             return None
         assets: list[ProjectCharacterAssetOption] = []
         for view_type in REQUIRED_CHARACTER_VIEW_TYPES:

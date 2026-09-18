@@ -87,12 +87,22 @@ class ReferenceSelectionInputs:
     character_version_snapshot: dict[str, object]
 
 
+_BODY_VIEW_BY_ORIENTATION: dict[SourceOrientation, RequiredCharacterViewType] = {
+    "LEFT_45": "LEFT_45",
+    "RIGHT_45": "LEFT_45",
+    "LEFT_SIDE": "LEFT_SIDE",
+    "RIGHT_SIDE": "LEFT_SIDE",
+}
+
+
 def recommended_body_view(features: SourceFrameFeatures) -> RequiredCharacterViewType:
     if features.orientation == "FRONT":
         if features.shot_size == "FULL_BODY" or features.body_completeness == "FULL_BODY":
             return "FRONT_FULL"
         return "FRONT_HALF"
-    return cast(RequiredCharacterViewType, features.orientation)
+    # 源帧朝向是原片事实（含 RIGHT_*）；资产合同只有左侧真视图，右向源帧改用
+    # 对侧真视图做身份/服装参考，朝向差异由生成模型吸收，不再用镜像伪造右侧资产。
+    return _BODY_VIEW_BY_ORIENTATION[features.orientation]
 
 
 def create_character_reference_selection(
@@ -357,7 +367,7 @@ def load_reference_selection_inputs(
         raise reference_error(
             422,
             "CHARACTER_REFERENCE_ASSET_INVALID",
-            "只能选择当前已发布七视图中的人物参考图。",
+            "只能选择当前已发布五视图中的人物参考图。",
         )
 
     source_frame_version_id = str(source_selection["id"])
@@ -507,11 +517,15 @@ def validated_publication(version: sqlite3.Row) -> tuple[dict[str, object], str]
     snapshot = decode_object(snapshot_value)
     publication_hash = str(publication_hash_value)
     expected_hash = hashlib.sha256(encode_json(snapshot).encode()).hexdigest()
+    snapshot_views = snapshot.get("required_view_types")
+    views_compatible = isinstance(snapshot_views, list) and set(
+        REQUIRED_CHARACTER_VIEW_TYPES
+    ).issubset({str(view) for view in snapshot_views})
     if (
         publication_hash != expected_hash
         or snapshot.get("schema_version") != "character-publication.v1"
         or snapshot.get("character_version_id") != str(version["id"])
-        or snapshot.get("required_view_types") != list(REQUIRED_CHARACTER_VIEW_TYPES)
+        or not views_compatible
         or not isinstance(snapshot.get("assets_by_view"), dict)
     ):
         raise invalid_publication()
@@ -556,8 +570,11 @@ def load_published_reference_assets(
         raise invalid_publication()
     for row in rows:
         view = str(row["view_type"])
-        if view not in REQUIRED_CHARACTER_VIEW_TYPES or str(row["review_status"]) != "APPROVED":
+        if str(row["review_status"]) != "APPROVED":
             raise invalid_publication()
+        if view not in REQUIRED_CHARACTER_VIEW_TYPES:
+            # 存量七资产人物的镜像右侧视图行：保留在库，不再参与引用选择。
+            continue
         typed_view = view
         try:
             size_bytes = int(row["size_bytes"])
@@ -585,7 +602,7 @@ def load_published_reference_assets(
         if not publication_asset_matches(asset, snapshot_asset):
             raise invalid_publication()
         assets_by_view[typed_view] = asset
-    if set(assets_by_view) != set(REQUIRED_CHARACTER_VIEW_TYPES):
+    if not set(REQUIRED_CHARACTER_VIEW_TYPES).issubset(set(assets_by_view)):
         raise invalid_publication()
     return assets_by_view
 

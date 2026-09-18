@@ -22,9 +22,7 @@ const VIEW_LABELS: Record<CharacterViewType, string> = {
   FRONT_HALF: "正面半身",
   FRONT_FULL: "正面全身",
   LEFT_45: "左 45°",
-  RIGHT_45: "右 45°",
   LEFT_SIDE: "左侧面",
-  RIGHT_SIDE: "右侧面",
 };
 const CHARACTER_PAGE_SIZE = 12;
 
