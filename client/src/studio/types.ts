@@ -256,6 +256,14 @@ export type StudioDraft = {
   replicaPromptBasis?: string;
   /** 内容准备变更后，须显式交接最新提示词与采用首帧。 */
   replicaPreparationPending?: boolean;
+  /** 已合成终稿的最小指纹（不含完整版本对象）：重进页面时据此判断 finalReady，
+   * 否则按钮会退回"待合成"，上游其实没有任何变化。 */
+  finalSnapshot?: {
+    inputKey: string;
+    versionId: string;
+    scriptVersionId: string;
+    shotCardVersionId: string;
+  };
   /** 当前 Prompt 是否包含尚未保存为项目版本的本地编辑，包括主动清空。 */
   promptEdited?: boolean;
   referenceIds: string[];
