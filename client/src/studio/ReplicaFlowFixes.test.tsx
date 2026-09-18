@@ -514,15 +514,10 @@ describe("复刻页 C 类：素材签名与提示词渲染", () => {
     );
 
     // 单一文本框契约：提示词正文直接在可编辑框中展示，不再有第二渲染体。
-    await waitFor(
-      () => {
-        const box = screen.getByLabelText(
-          "最终提示词",
-        ) as HTMLTextAreaElement;
-        expect(box.value.includes("镜头缓推庭院")).toBe(true);
-      },
-      RED_TIMEOUT,
-    );
+    await waitFor(() => {
+      const box = screen.getByLabelText("最终提示词") as HTMLTextAreaElement;
+      expect(box.value.includes("镜头缓推庭院")).toBe(true);
+    }, RED_TIMEOUT);
     expect(
       screen.getByRole("button", { name: "去 AI 视频创作" }),
     ).toBeEnabled();
