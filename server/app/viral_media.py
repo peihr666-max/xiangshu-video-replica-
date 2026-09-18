@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Protocol, cast
 from urllib.parse import quote, urlencode, urljoin, urlsplit
 
+from app.net_safety import FAKE_IP_NETWORK
 from app.storage import DownloadIntent, StorageAdapter, StoredObject
 from app.viral_decrypt import decrypt_chunks, is_encrypted_mp4
 from app.viral_media_preparation import ViralMediaPreparation
@@ -45,7 +46,6 @@ _USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 # 单文件下载上限：短视频/封面远超此值的必然是异常响应，防止把响应体整读进
 # 内存时被恶意或异常源站打爆 API 进程。
 _MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
-_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 _PUBLIC_DNS_HOST = "cloudflare-dns.com"
 _PUBLIC_DNS_IPS = ("1.1.1.1", "1.0.0.1")
 _MAX_DNS_RESPONSE_BYTES = 16 * 1024
@@ -264,6 +264,19 @@ def _pinned_connection(
     return _PinnedHTTPConnection(hostname, port, connect_ip, timeout)
 
 
+# Public alias (finding C16): ``first_frames`` imports this name instead of
+# reaching for the private ``_pinned_connection`` across modules. The private
+# name is kept for the in-module call site and the existing tests.
+#
+# Binding-time snapshot, not a live indirection: ``first_frames`` copies the
+# function object into its own ``_pinned_connection`` at import, and the
+# in-module call site resolves the private name directly. Tests that need to
+# fake the pinned connection must patch ``viral_media._pinned_connection``
+# (in-module lane) or ``first_frames._pinned_connection`` (cross-module lane) —
+# patching this public alias alone changes neither call path.
+pinned_connection = _pinned_connection
+
+
 def _resolve_fake_ip_domain(hostname: str) -> list[str]:
     """Resolve proxy synthetic DNS via authenticated DoH, without the media URL.
 
@@ -343,7 +356,7 @@ def _resolve_public_http_url(url: str) -> tuple[str, str, int, str]:
         literal_host = True
     except ValueError:
         literal_host = False
-    if not literal_host and all(ip in _FAKE_IP_NETWORK for ip in resolved_ips):
+    if not literal_host and all(ip in FAKE_IP_NETWORK for ip in resolved_ips):
         resolved_ips = [ipaddress.ip_address(value) for value in _resolve_fake_ip_domain(hostname)]
     if not resolved_ips:
         raise ViralMediaDNSUnavailable("媒体域名无法解析到公网地址，请检查代理或 DNS 设置。")

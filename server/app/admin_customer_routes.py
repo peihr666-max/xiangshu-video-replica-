@@ -66,6 +66,7 @@ from app.admin_write_contract import (
     write_with_idempotency as _shared_write_with_idempotency,
 )
 from app.auth import CurrentUser, Role
+from app.csv_export import spreadsheet_safe_cell
 from app.db_pg import MissingDatabaseConfigError, pg_transaction
 from app.db_portable import BusinessConnection
 from app.permissions import write_audit
@@ -1109,7 +1110,7 @@ def export_customers_csv(
     writer = csv_mod.writer(buffer)
     writer.writerow(["username", "masked_code", "activated_at", "status"])
     for row in rows:
-        writer.writerow([str(value) for value in row])
+        writer.writerow([spreadsheet_safe_cell(str(value)) for value in row])
     payload = buffer.getvalue().encode("utf-8")
     return HttpResponse(
         content=payload,

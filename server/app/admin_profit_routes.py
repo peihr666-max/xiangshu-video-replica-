@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.admin_auth_routes import AdminReader, AdminWriter
 from app.admin_dates import SHANGHAI
 from app.admin_write_contract import AdminWriteContract, write_with_idempotency
+from app.csv_export import spreadsheet_safe_cell
 from app.db_pg import pg_transaction
 
 router = APIRouter(prefix="/api/control", tags=["admin-profit"])
@@ -425,14 +426,17 @@ def export_profit_csv(
     for row in payload.days:
         writer.writerow(
             [
-                row.day,
-                row.settled_seconds,
-                row.revenue_fen,
-                "" if row.cost_fen is None else row.cost_fen,
-                "" if row.gross_fen is None else row.gross_fen,
-                "" if row.margin_pct is None else row.margin_pct,
-                row.video_count,
-                row.cost_unknown_count,
+                spreadsheet_safe_cell(cell)
+                for cell in (
+                    row.day,
+                    row.settled_seconds,
+                    row.revenue_fen,
+                    "" if row.cost_fen is None else row.cost_fen,
+                    "" if row.gross_fen is None else row.gross_fen,
+                    "" if row.margin_pct is None else row.margin_pct,
+                    row.video_count,
+                    row.cost_unknown_count,
+                )
             ]
         )
     return Response(
@@ -601,16 +605,19 @@ def export_costs_csv(
     for row in payload.days:
         writer.writerow(
             [
-                row.day,
-                row.video_count,
-                row.output_seconds,
-                row.video_768p_fen,
-                row.video_2k_fen,
-                row.analysis_fen,
-                row.image_fen,
-                row.context_ir_fen,
-                row.total_cost_fen,
-                row.unknown_count,
+                spreadsheet_safe_cell(cell)
+                for cell in (
+                    row.day,
+                    row.video_count,
+                    row.output_seconds,
+                    row.video_768p_fen,
+                    row.video_2k_fen,
+                    row.analysis_fen,
+                    row.image_fen,
+                    row.context_ir_fen,
+                    row.total_cost_fen,
+                    row.unknown_count,
+                )
             ]
         )
     return Response(

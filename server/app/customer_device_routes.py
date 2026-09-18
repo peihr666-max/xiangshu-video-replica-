@@ -116,6 +116,7 @@ from app.activation_code_service import (
     mask_activation_code,
     normalize_activation_code,
 )
+from app.auth_headers import bearer_token as _bearer_token
 from app.customer_auth import CustomerSessionContext, SessionFencingError, verify_session_context
 from app.customer_device_service import (
     APPROVE_ALREADY_CONSUMED,
@@ -186,8 +187,6 @@ from app.security_rate_limit import (
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZATION_HEADER = "Authorization"
-BEARER_SCHEME = "bearer"
 REQUEST_ID_HEADER = "X-Request-Id"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 REPLAY_HEADER = "X-Idempotent-Replay"
@@ -290,18 +289,6 @@ class ActivationCodeResetResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Bearer authentication (device credential layer)
 # ---------------------------------------------------------------------------
-
-
-def _bearer_token(request: Request) -> str | None:
-    """The raw bearer token, or ``None`` when the header is absent/malformed."""
-    header = request.headers.get(AUTHORIZATION_HEADER, "").strip()
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != BEARER_SCHEME:
-        return None
-    token = parts[1].strip()
-    return token or None
 
 
 def _authenticate(conn: psycopg.Connection, token: str | None) -> AuthenticatedDevice:

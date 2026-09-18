@@ -70,6 +70,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from app.activation_code_service import ActivationKeyError
+from app.auth_headers import bearer_token as _bearer_token
 from app.customer_auth import SessionFencingError, verify_session_context
 from app.customer_device_service import (
     AuthenticatedDevice,
@@ -121,8 +122,6 @@ from app.security_rate_limit import (
 
 logger = logging.getLogger(__name__)
 
-AUTHORIZATION_HEADER = "Authorization"
-BEARER_SCHEME = "bearer"
 REQUEST_ID_HEADER = "X-Request-Id"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 REPLAY_HEADER = "X-Idempotent-Replay"
@@ -184,17 +183,6 @@ RENEWAL_RESPONSES: dict[int | str, dict[str, Any]] = {
         "(the outcome-sealed envelope replays with the original token).",
     },
 }
-
-
-def _bearer_token(request: Request) -> str | None:
-    header = request.headers.get(AUTHORIZATION_HEADER, "").strip()
-    if not header:
-        return None
-    parts = header.split(None, 1)
-    if len(parts) != 2 or parts[0].lower() != BEARER_SCHEME:
-        return None
-    token = parts[1].strip()
-    return token or None
 
 
 def _request_id(request: Request) -> str:
