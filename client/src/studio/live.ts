@@ -3,7 +3,6 @@ import {
   type CurrentUser,
   cancelGenerationBatch,
   cancelOralTask,
-  completeMaterialUpload,
   completeVideoUpload,
   createGenerationBatch,
   createGenerationResultPreviewUrl,
@@ -59,7 +58,6 @@ import {
   type StudioSavedScriptInput,
   saveStudioDraft,
   saveStudioSavedScript,
-  uploadMaterial,
   uploadReferenceVideo,
   type ViralVideoItem,
   verifyPublishAccount,
@@ -1205,8 +1203,7 @@ export async function uploadVideoMaterial(
     title: file.name,
     group,
   });
-  await uploadMaterial(intent, file, onProgress, signal);
-  const material = await completeMaterialUpload(intent.asset_id);
+  const material = await putMaterial(intent, file, onProgress, signal);
   const asset = studioAssetFromMaterial(material);
   const url = material.asset_id
     ? await getAssetDownloadUrl(material.asset_id)
@@ -1252,8 +1249,7 @@ export async function uploadReferenceAudioMaterial(
     audioPurpose: "reference",
     durationSeconds,
   });
-  await uploadMaterial(intent, file, onProgress, signal);
-  const material = await completeMaterialUpload(intent.asset_id);
+  const material = await putMaterial(intent, file, onProgress, signal);
   const asset = studioAssetFromMaterial(material);
   const url = material.asset_id
     ? await getAssetDownloadUrl(material.asset_id)

@@ -5,6 +5,7 @@ import type {
   GenerationBatchListPage,
   GenerationTask,
   MaterialItem,
+  MaterialUploadIntent,
   OralAvatarRecord,
   OralTaskRecord,
   OralVoiceRecord,
@@ -23,11 +24,13 @@ const api = vi.hoisted(() => ({
   createScriptFromAudioTask: vi.fn(),
   getScriptFromAudioTask: vi.fn(),
   getLatestScriptFromAudioTask: vi.fn(),
+  completeMaterialUpload: vi.fn(),
   defaultBatchProvider: vi.fn(async () => "metaso"),
   lockGenerationPrompt: vi.fn(),
   reviseGenerationPrompt: vi.fn(),
   createGenerationResultPreviewUrl: vi.fn(),
   createGenerationTaskPreviewUrl: vi.fn(),
+  createMaterialUploadIntent: vi.fn(),
   downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
   getCachedCharacterAssetUrl: vi.fn(),
@@ -54,10 +57,12 @@ const api = vi.hoisted(() => ({
   listSimpleCharacterLibrary: vi.fn(),
   listSimpleCharacterLibraryPage: vi.fn(),
   readAnalysisPayload: vi.fn(),
+  putMaterial: vi.fn(),
   cancelGenerationBatch: vi.fn(),
   cancelOralTask: vi.fn(),
   retryOralTaskArchive: vi.fn(),
   resolveMaterials: vi.fn(),
+  uploadMaterial: vi.fn(),
 }));
 
 vi.mock("../api", () => api);
@@ -1935,5 +1940,98 @@ describe("单个克隆声音状态", () => {
     expect(api.getAssetDownloadUrl).toHaveBeenCalledExactlyOnceWith("demo-mp3");
     expect(api.listOralVoices).not.toHaveBeenCalled();
     expect(api.listSimpleCharacterLibraryPage).not.toHaveBeenCalled();
+  });
+});
+
+describe("素材按内容哈希去重命中时的复用", () => {
+  const reusedIntent = {
+    material_id: "asset:reused-video",
+    asset_id: "reused-video",
+    storage_key: null,
+    method: "",
+    url: "",
+    headers: {},
+    expires_at: "",
+    upload_required: false,
+    reused_from_asset_id: "video-1",
+  } satisfies MaterialUploadIntent;
+
+  const reusedMaterial = {
+    id: "asset:reused-video",
+    owner_user_id: "user-1",
+    asset_id: "reused-video",
+    generation_task_id: null,
+    project_id: null,
+    person_id: null,
+    title: "参考画面.png",
+    group: "参考素材",
+    media_type: "video",
+    source: "upload",
+    status: "ready",
+    delivery: "stored",
+    content_type: "video/mp4",
+    size_bytes: 2048,
+    duration_seconds: 12,
+    created_at: "2026-09-18 10:00:00",
+    hidden: false,
+    saved: true,
+    composite: false,
+    allowed_uses: ["reference"],
+    allowed_actions: ["preview", "download"],
+  } satisfies MaterialItem;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    api.createMaterialUploadIntent.mockResolvedValue(reusedIntent);
+    api.putMaterial.mockResolvedValue(reusedMaterial);
+    api.completeMaterialUpload.mockResolvedValue(reusedMaterial);
+    api.getAssetDownloadUrl.mockResolvedValue({ url: "/signed/reused.mp4" });
+  });
+
+  it("uploadVideoMaterial 不发起字节传输，直接返回已登记素材", async () => {
+    const file = new File(["same-bytes"], "reference.mp4", {
+      type: "video/mp4",
+    });
+    const onProgress = vi.fn();
+
+    const asset = await live.uploadVideoMaterial(file, "参考素材", onProgress);
+
+    expect(api.uploadMaterial).not.toHaveBeenCalled();
+    expect(api.completeMaterialUpload).not.toHaveBeenCalled();
+    expect(api.putMaterial).toHaveBeenCalledExactlyOnceWith(
+      reusedIntent,
+      file,
+      onProgress,
+      undefined,
+    );
+    expect(asset).toMatchObject({
+      id: "reused-video",
+      materialId: "asset:reused-video",
+      name: "参考画面.png",
+    });
+    expect(asset.url).toBe("/signed/reused.mp4");
+  });
+
+  it("uploadReferenceAudioMaterial 不发起字节传输，直接返回已登记素材", async () => {
+    const file = new File(["same-bytes"], "reference.mp3", {
+      type: "audio/mpeg",
+    });
+    const onProgress = vi.fn();
+
+    const asset = await live.uploadReferenceAudioMaterial(file, 12, onProgress);
+
+    expect(api.uploadMaterial).not.toHaveBeenCalled();
+    expect(api.completeMaterialUpload).not.toHaveBeenCalled();
+    expect(api.putMaterial).toHaveBeenCalledExactlyOnceWith(
+      reusedIntent,
+      file,
+      onProgress,
+      undefined,
+    );
+    expect(asset).toMatchObject({
+      id: "reused-video",
+      materialId: "asset:reused-video",
+    });
+    expect(asset.url).toBe("/signed/reused.mp4");
   });
 });
