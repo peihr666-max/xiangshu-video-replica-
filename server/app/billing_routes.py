@@ -18,6 +18,7 @@ from app.admin_auth_routes import AdminReader, AdminWriter
 from app.admin_write_contract import AdminWriteContract, write_with_idempotency
 from app.billing_catalog import SERVICES, Tariff, read_tariff, retail_snapshot
 from app.billing_reports import operation_rows, statistics
+from app.csv_export import spreadsheet_safe_cell
 from app.customer_fence import customer_read_transaction
 from app.customer_pricing import read_pricing
 from app.db_pg import pg_transaction
@@ -335,14 +336,7 @@ def export(
     ]
     writer.writerow(keys)
     for row in rows:
-        writer.writerow(
-            [
-                ("'" + str(row[key]))
-                if str(row[key]).startswith(("=", "+", "-", "@"))
-                else row[key]
-                for key in keys
-            ]
-        )
+        writer.writerow([spreadsheet_safe_cell(row[key]) for key in keys])
     return Response(
         "\ufeff" + buffer.getvalue(),
         media_type="text/csv; charset=utf-8",

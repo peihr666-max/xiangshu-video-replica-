@@ -1,5 +1,6 @@
-server/tests/test_admin_h3_extended_modes.py
-server/tests/test_async_compat.py
+server/tests/test_admin_first_frame_reconcile.py
+server/tests/test_apilio_image_provider.py
+server/tests/test_batch_titles.py
 server/tests/test_customer_center.py
 server/tests/test_customer_chain_e2e.py
 server/tests/test_customer_devices.py
@@ -19,11 +20,12 @@ server/tests/test_delete_object_gate.py
 server/tests/test_gate1_e2e.py
 server/tests/test_hifly_protocol.py
 server/tests/test_migration_dialect_contract.py
+server/tests/test_migration_guard_manifest.py
 server/tests/test_ops_alerts.py
 server/tests/test_oral_domain.py
-server/tests/test_publish_accounts.py
-server/tests/test_publish_records.py
-server/tests/test_usage_billing.py
+server/tests/test_publish_browser.py
+server/tests/test_storage.py
+server/tests/test_viral_keywords.py
 server/tests/test_viral_tikhub.py
 server/tests/test_wechat_native_client.py
 server/tests/test_worker_crash_recovery.py

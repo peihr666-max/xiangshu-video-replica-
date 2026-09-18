@@ -3,8 +3,9 @@ server/tests/test_activation_code_routes.py
 server/tests/test_admin_auth.py
 server/tests/test_admin_customer_routes.py
 server/tests/test_admin_session_routes.py
-server/tests/test_asr_provider.py
-server/tests/test_character_image_authorization.py
+server/tests/test_api_errors.py
+server/tests/test_auth_headers.py
+server/tests/test_csv_export.py
 server/tests/test_customer_registration.py
 server/tests/test_cw009_security_matrix_export.py
 server/tests/test_cw028_shared_settings_contract.py
@@ -15,11 +16,12 @@ server/tests/test_cw060_operator_isolation.py
 server/tests/test_db_pg.py
 server/tests/test_dedup_cas_pg.py
 server/tests/test_h3_prompts.py
+server/tests/test_material_thumbs.py
 server/tests/test_pg_test_kit.py
-server/tests/test_prompt_optimizer.py
-server/tests/test_publish_delivery.py
+server/tests/test_publish_accounts.py
+server/tests/test_publish_records.py
 server/tests/test_queue_load_10k.py
 server/tests/test_security_contracts.py
-server/tests/test_upload_proxy_contract.py
+server/tests/test_usage_billing.py
 server/tests/test_wechat_native_callback_pg.py
 server/tests/test_zpay.py

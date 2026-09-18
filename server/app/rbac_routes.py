@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
@@ -59,6 +59,9 @@ from app.storage import (
 
 router = APIRouter(prefix="/api", tags=["rbac"])
 DOWNLOAD_URL_EXPIRES_IN = timedelta(minutes=15)
+# MATERIAL-THUMBS-B：缩略图是原对象的派生小图，签名可放宽到 7 天，
+# 让浏览器跨页/跨会话命中本地缓存（瓦片不再每次进素材库重新签名）。
+THUMBNAIL_URL_EXPIRES_IN = timedelta(days=7)
 CHARACTER_CACHE_KINDS = frozenset(
     {
         "character_contact_sheet",
@@ -946,6 +949,18 @@ def _create_download_grant(
         entity_type="asset",
         entity_id=asset_id,
     )
+    _row, url = _grant_download_for_asset(conn, actor=actor, asset_id=asset_id)
+    return DownloadUrlResponse(url=url)
+
+
+def _grant_download_for_asset(
+    conn: BusinessConnection, *, actor: CurrentUser, asset_id: str
+) -> tuple[sqlite3.Row, str]:
+    """单资产授权主体：属主校验 → 完整性校验 → 逐资产审计 → 签名 URL。
+
+    单资产端点与批量端点（MATERIAL-PERF-A）共用，保证两条通道的授权、
+    审计口径与签名格式完全一致。
+    """
     row = require_asset_access(
         conn,
         actor=actor,
@@ -995,7 +1010,130 @@ def _create_download_grant(
             status_code=503,
             detail={"code": "STORAGE_PROVIDER_UNAVAILABLE"},
         ) from exc
-    return DownloadUrlResponse(url=url)
+    return row, url
+
+
+class DownloadUrlsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: Annotated[list[str], Field(min_length=1, max_length=100)]
+
+
+class DownloadUrlItem(BaseModel):
+    asset_id: str
+    url: str | None = None
+    sha256: str | None = None
+    size_bytes: int | None = None
+    content_type: str | None = None
+    error_code: str | None = None
+    # MATERIAL-THUMBS-B：带缩略图键的视频资产额外签出的 7 天缩略图 URL。
+    thumbnail_url: str | None = None
+
+
+class DownloadUrlsResponse(BaseModel):
+    items: list[DownloadUrlItem]
+
+
+@router.post("/assets/download-urls", response_model=DownloadUrlsResponse)
+def create_download_urls(
+    request: DownloadUrlsRequest,
+    db: BusinessDbDep,
+) -> DownloadUrlsResponse:
+    """批量签发素材预览授权（MATERIAL-PERF-A P0-2）。
+
+    素材库网格此前对每个瓦片各发一次单资产授权（N+1 写连接 + 审计往返）；
+    本端点在一个写事务内逐资产复用与单资产端点完全相同的授权逻辑。他属/
+    缺失/未完成上传按条返回 ``error_code``（属主掩蔽与单端点同形），不拖垮
+    整批；审计仍逐资产落行，口径不因批量而变稀。
+    """
+    with db.write() as (conn, actor):
+        require_not_auditor(
+            conn,
+            actor=actor,
+            action="asset.download_url.create",
+            entity_type="asset",
+            entity_id="batch",
+        )
+        items: list[DownloadUrlItem] = []
+        seen: set[str] = set()
+        for asset_id in request.asset_ids:
+            if asset_id in seen:
+                continue
+            seen.add(asset_id)
+            try:
+                row, url = _grant_download_for_asset(conn, actor=actor, asset_id=asset_id)
+            except HTTPException as exc:
+                detail: dict[Any, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+                code = detail.get("code")
+                items.append(
+                    DownloadUrlItem(
+                        asset_id=asset_id,
+                        error_code=str(code) if code else f"HTTP_{exc.status_code}",
+                    )
+                )
+                continue
+            thumbnail_url = _signed_thumbnail_url(conn, actor=actor, row=row, asset_id=asset_id)
+            items.append(
+                DownloadUrlItem(
+                    asset_id=asset_id,
+                    url=url,
+                    sha256=str(row["sha256"]),
+                    size_bytes=int(row["size_bytes"]),
+                    content_type=(
+                        str(row["content_type"]) if row["content_type"] is not None else None
+                    ),
+                    thumbnail_url=thumbnail_url,
+                )
+            )
+    return DownloadUrlsResponse(items=items)
+
+
+def _signed_thumbnail_url(
+    conn: BusinessConnection,
+    *,
+    actor: CurrentUser,
+    row: sqlite3.Row,
+    asset_id: str,
+) -> str | None:
+    """MATERIAL-THUMBS-B：为带缩略图键的视频签出 7 天缩略图对象 URL。
+
+    属主校验已在 ``_grant_download_for_asset`` 完成；此处只读元数据派生键，
+    签名走与原视频完全相同的通道。无键/非视频/存储异常一律 None。
+    """
+    if row["content_type"] is None or not str(row["content_type"]).startswith("video/"):
+        return None
+    try:
+        metadata = json.loads(str(row["metadata_json"] or "{}"))
+    except (TypeError, ValueError):
+        return None
+    thumbnail_key = metadata.get("thumbnail_key") if isinstance(metadata, dict) else None
+    if not isinstance(thumbnail_key, str) or not thumbnail_key:
+        return None
+    try:
+        storage_for_asset(conn, str(row["storage_uri"]))
+        secret = settings_encryption_key()
+        expires_at = str(int(time.time()) + int(THUMBNAIL_URL_EXPIRES_IN.total_seconds()))
+        session_epoch = signed_asset_session_epoch(conn, actor)
+        signature = local_download_signature(
+            thumbnail_key,
+            expires_at,
+            user_id=actor.id,
+            asset_id=asset_id,
+            session_epoch=session_epoch,
+            secret=secret,
+        )
+        query = urlencode(
+            {
+                "expires": expires_at,
+                "user_id": actor.id,
+                "asset_id": asset_id,
+                "session_epoch": session_epoch,
+                "sig": signature,
+            }
+        )
+        return f"/api/assets/signed-objects/{quote(thumbnail_key, safe='/')}?{query}"
+    except StorageBackendUnavailable:
+        return None
 
 
 @router.post("/assets/{asset_id}/cached-url", response_model=DownloadUrlResponse)

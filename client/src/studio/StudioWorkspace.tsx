@@ -62,6 +62,7 @@ import {
   publishScriptVersion,
   reloadStats,
   reloadTasks,
+  sameTasks,
   studioAssetFromMaterial,
 } from "./live";
 import {
@@ -126,6 +127,25 @@ type WalletSummary = Pick<
   StudioAccountSummary,
   "walletStatus" | "availableCredits"
 >;
+
+// 侧边栏折叠是设备级偏好：仅存本地，不上服务端。
+const SIDEBAR_COLLAPSED_KEY = "studio.sidebar.collapsed";
+
+function readSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function persistSidebarCollapsed(collapsed: boolean) {
+  try {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    // 存储不可用（隐私模式等）时静默降级为会话内状态
+  }
+}
 
 function quoteMatchesInput(
   quote: GenerationPriceQuote | null,
@@ -309,6 +329,13 @@ export function StudioWorkspace({
   const closeMenu = () => {
     setMenuOpen(false);
     menuButtonRef.current?.focus();
+  };
+  const [sidebarCollapsed, setSidebarCollapsed] =
+    useState(readSidebarCollapsed);
+  const toggleSidebarCollapsed = () => {
+    const next = !sidebarCollapsed;
+    persistSidebarCollapsed(next);
+    setSidebarCollapsed(next);
   };
   const [search, setSearch] = useState("");
   const [showSearch, setShowSearch] = useState(false);
@@ -1099,7 +1126,10 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, workspaceUser, revision]);
+    // MATERIAL-PERF-C（P0-5）：bootstrap 只随 user.id 重跑——profile 异步到达
+    // 只改 display_name/username，若随整个 workspaceUser 依赖会把首屏全量
+    // 加载整体重跑一遍（double bootstrap，第一遍全部作废）。
+  }, [review, workspaceUser.id, revision]);
 
   // Silent tasks poll: the shell reads everything once on entry, so a batch
   // that finishes while the customer watches would otherwise stay "running"
@@ -1114,14 +1144,15 @@ export function StudioWorkspace({
       void reloadTasks(currentUser)
         .then((tasks) => {
           setData((previous) => {
+            // MATERIAL-PERF-D（P1-3）：任务无实质变化时返回原引用，跳过
+            // 全树重渲染（此前每 20s 必然重渲染整个工作区）。
             const refreshedIds = new Set(tasks.map((task) => task.id));
-            return {
-              ...previous,
-              tasks: [
-                ...tasks,
-                ...previous.tasks.filter((task) => !refreshedIds.has(task.id)),
-              ],
-            };
+            const merged = [
+              ...tasks,
+              ...previous.tasks.filter((task) => !refreshedIds.has(task.id)),
+            ];
+            if (sameTasks(previous.tasks, merged)) return previous;
+            return { ...previous, tasks: merged };
           });
         })
         .catch(() => {});
@@ -1829,7 +1860,7 @@ export function StudioWorkspace({
   return (
     <StudioContext.Provider value={context}>
       <div
-        className={`studio-shell ${creationWorkspace ? "studio-shell--creation" : ""} ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""}`}
+        className={`studio-shell ${creationWorkspace ? "studio-shell--creation" : ""} ${state.page === "profile" && customerAccount && !livePanel ? "studio-shell--center" : ""} ${menuOpen ? "studio-shell--menu-open" : ""} ${sidebarCollapsed ? "studio-shell--sidebar-collapsed" : ""}`}
       >
         {menuOpen && (
           <button
@@ -1883,6 +1914,7 @@ export function StudioWorkspace({
                     key={item.id}
                     aria-current={activeNav === item.id ? "page" : undefined}
                     className={activeNav === item.id ? "is-active" : ""}
+                    title={sidebarCollapsed ? item.title : undefined}
                     onClick={() => navigate(item.id)}
                   >
                     <Icon name={item.icon} />
@@ -1909,6 +1941,16 @@ export function StudioWorkspace({
         </aside>
         <main className={`studio-main studio-route-${state.page}`}>
           <div className="studio-topbar">
+            <button
+              type="button"
+              aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              aria-expanded={!sidebarCollapsed}
+              aria-controls="studio-sidebar"
+              className="studio-sidebar-toggle"
+              onClick={toggleSidebarCollapsed}
+            >
+              <Icon name={sidebarCollapsed ? "chevron" : "back"} />
+            </button>
             <button
               type="button"
               aria-label="展开导航"

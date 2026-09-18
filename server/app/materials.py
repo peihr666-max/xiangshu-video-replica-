@@ -27,7 +27,12 @@ from app.content_store import (
     retain_existing_content_object,
 )
 from app.db_portable import BusinessConnection
-from app.media import MAX_UPLOAD_BYTES, UPLOAD_INTENT_EXPIRES_IN
+from app.material_thumbs import extract_thumbnail_jpeg, store_video_thumbnail
+from app.media import (
+    MAX_UPLOAD_BYTES,
+    UPLOAD_INTENT_EXPIRES_IN,
+    storage_key_from_uri,
+)
 from app.media_tools import (
     MediaToolFailed,
     MediaToolUnavailable,
@@ -122,6 +127,8 @@ class MaterialItem(BaseModel):
     saved: bool
     composite: bool = False
     preview_asset_id: str | None = None
+    # MATERIAL-THUMBS-B：缩略图对象键（assets.metadata_json 派生；历史素材为 None）。
+    thumbnail_key: str | None = None
     character_views: list[MaterialCharacterView] = Field(default_factory=list)
     allowed_uses: list[str]
     allowed_actions: list[str]
@@ -203,6 +210,9 @@ class ProbedMaterialUpload:
     sha256: str
     size_bytes: int
     duration_seconds: float | None = None
+    # MATERIAL-THUMBS-B：视频素材的首帧 JPEG 字节（探测期抽出；落存储与记键
+    # 延后到持久化之后——dedup 可能改写最终对象键，且外部 I/O 不得进入写事务）。
+    thumbnail_jpeg: bytes | None = None
 
 
 def material_error(status: int, code: str, message: str) -> HTTPException:
@@ -653,6 +663,11 @@ def material_item(row: Any) -> MaterialItem:
         saved=ready and not direct,
         composite=composite,
         preview_asset_id=preferred.asset_id if composite and preferred else None,
+        thumbnail_key=(
+            metadata["thumbnail_key"]
+            if isinstance(metadata.get("thumbnail_key"), str) and metadata["thumbnail_key"]
+            else None
+        ),
         character_views=views if composite else [],
         allowed_uses=uses,
         allowed_actions=actions,
@@ -1075,6 +1090,7 @@ def probe_material_upload(
     if not content_matches:
         raise material_error(422, "MATERIAL_CONTENT_INVALID", "文件内容与素材类型不匹配。")
     duration_seconds = None
+    thumbnail_jpeg: bytes | None = None
     if prepared.media_type == "video":
         try:
             inspection = inspect_media_bytes(
@@ -1087,6 +1103,7 @@ def probe_material_upload(
             raise material_error(
                 503, "MATERIAL_VIDEO_PROBE_UNAVAILABLE", "视频校验服务暂不可用，请稍后重试。"
             ) from exc
+        thumbnail_jpeg = extract_thumbnail_jpeg(content)
     if prepared.media_type == "audio" and prepared.audio_purpose is not None:
         if prepared.audio_purpose == "voice_clone":
             try:
@@ -1138,7 +1155,44 @@ def probe_material_upload(
         sha256=digest,
         size_bytes=stored.size,
         duration_seconds=duration_seconds,
+        thumbnail_jpeg=thumbnail_jpeg,
     )
+
+
+def attach_video_thumbnail(
+    conn: BusinessConnection,
+    *,
+    asset_id: str,
+    thumbnail_jpeg: bytes,
+    storage: StorageAdapter,
+) -> None:
+    """MATERIAL-THUMBS-B：持久化完成后把首帧缩略图落到最终对象旁并记键.
+
+    必须在写事务之外调用（存储 PUT 是外部 I/O）；dedup 可能改写最终对象键，
+    因此读取持久化后的 storage_uri 派生缩略图键。任何失败只损失缩略图。
+    """
+    row = conn.execute(
+        "SELECT storage_uri, content_type FROM assets WHERE id = %s", (asset_id,)
+    ).fetchone()
+    if row is None or row["content_type"] is None:
+        return
+    if not str(row["content_type"]).startswith("video/"):
+        return
+    key = store_video_thumbnail(
+        storage, storage_key_from_uri(str(row["storage_uri"])), thumbnail_jpeg
+    )
+    if key is None:
+        return
+    with conn:
+        current = conn.execute(
+            "SELECT metadata_json FROM assets WHERE id = %s FOR UPDATE", (asset_id,)
+        ).fetchone()
+        metadata = _metadata(current["metadata_json"] if current is not None else "{}")
+        metadata["thumbnail_key"] = key
+        conn.execute(
+            "UPDATE assets SET metadata_json = %s WHERE id = %s",
+            (json.dumps(metadata, ensure_ascii=False, sort_keys=True), asset_id),
+        )
 
 
 def persist_material_upload(

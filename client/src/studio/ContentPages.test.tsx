@@ -35,6 +35,7 @@ const {
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
   getMaterialCacheUsage,
   clearMaterialCache,
@@ -69,6 +70,7 @@ const {
   hideMaterial: vi.fn(),
   downloadMaterialAsset: vi.fn(),
   getAssetDownloadUrl: vi.fn(),
+  getMaterialBatchPreviews: vi.fn(),
   getMaterialCachedPreview: vi.fn(),
   getMaterialCacheUsage: vi.fn(),
   clearMaterialCache: vi.fn(),
@@ -111,6 +113,7 @@ vi.mock("../api", () => ({
   hideMaterial,
   downloadMaterialAsset,
   getAssetDownloadUrl,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
   getMaterialCacheUsage,
   clearMaterialCache,
@@ -161,7 +164,22 @@ import {
   ViralDetailPage,
   ViralFavoriteButton,
   ViralPage,
+  visiblePageButtons,
 } from "./ContentPages";
+
+describe("素材分页窗口化", () => {
+  it("页数不超过 7 时完整展示页码", () => {
+    expect(visiblePageButtons(1, 3)).toEqual([1, 2, 3]);
+    expect(visiblePageButtons(3, 7)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("页数较多时折叠为省略号并始终保留首末页与当前页邻域", () => {
+    expect(visiblePageButtons(1, 13)).toEqual([1, 2, "…", 13]);
+    expect(visiblePageButtons(2, 13)).toEqual([1, 2, 3, "…", 13]);
+    expect(visiblePageButtons(7, 13)).toEqual([1, "…", 6, 7, 8, "…", 13]);
+    expect(visiblePageButtons(13, 13)).toEqual([1, "…", 12, 13]);
+  });
+});
 
 function studio(
   overrides: Partial<StudioContextValue> = {},
@@ -423,6 +441,27 @@ describe("V1.4 内容与运营页面", () => {
         cached: false,
         release: vi.fn(),
       }));
+    getMaterialBatchPreviews
+      .mockReset()
+      .mockImplementation(
+        async (
+          _userId: string,
+          entries: { id: string; populate: boolean }[],
+        ) => {
+          const previews: Record<
+            string,
+            { url: string; cached: boolean; release: () => unknown }
+          > = {};
+          for (const entry of entries) {
+            previews[entry.id] = {
+              ...(await getAssetDownloadUrl(entry.id)),
+              cached: false,
+              release: vi.fn(),
+            };
+          }
+          return { previews, thumbnails: {} };
+        },
+      );
     getMaterialCacheUsage.mockReset().mockResolvedValue({
       bytes: 0,
       limitBytes: 256 * 1024 * 1024,
@@ -3083,27 +3122,27 @@ describe("V1.4 内容与运营页面", () => {
     },
   );
 
-  it("素材库六条分页，初始定位已选素材且筛选后保留右侧选择", () => {
+  it("素材库二十四条分页，初始定位已选素材且筛选后保留右侧选择", () => {
     const base = studio();
-    const assets = Array.from({ length: 7 }, (_, index) => ({
+    const assets = Array.from({ length: 30 }, (_, index) => ({
       id: `image-${index + 1}`,
       name: `乡墅素材 ${index + 1}`,
       kind: "image" as const,
       group: "人物素材",
       source: "人物库",
       saved: true,
-      ...(index === 6 ? { composite: true } : {}),
+      ...(index === 29 ? { composite: true } : {}),
     }));
     useStudio.mockReturnValue(
       studio({
         data: { ...base.data, assets },
-        state: { ...base.state, selectedAssetId: "image-7" },
+        state: { ...base.state, selectedAssetId: "image-30" },
       }),
     );
     render(<MaterialsPage />);
 
     expect(
-      screen.getByRole("button", { name: "选择素材 乡墅素材 7" }),
+      screen.getByRole("button", { name: "选择素材 乡墅素材 30" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "选择素材 乡墅素材 1" }),
@@ -3113,11 +3152,11 @@ describe("V1.4 内容与运营页面", () => {
       screen.getByRole("button", { name: "选择素材 乡墅素材 1" }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { level: 2, name: "乡墅素材 7" }),
+      screen.getByRole("heading", { level: 2, name: "乡墅素材 30" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
     expect(
-      screen.getByRole("button", { name: "选择素材 乡墅素材 7" }),
+      screen.getByRole("button", { name: "选择素材 乡墅素材 30" }),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "上一页" }));
     expect(
@@ -3344,6 +3383,17 @@ describe("V1.4 内容与运营页面", () => {
       total: 1,
     });
     const release = vi.fn();
+    // 网格预览走批量通道（P0-2）；播放后的后台填充仍走单资产预览（populate）。
+    getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "cache-video": {
+          url: "https://storage.test/video",
+          cached: false,
+          release: vi.fn(),
+        },
+      },
+      thumbnails: {},
+    });
     getMaterialCachedPreview.mockImplementation(
       async (_userId, _assetId, options) =>
         options?.populate
@@ -3385,10 +3435,15 @@ describe("V1.4 内容与运营页面", () => {
       total: 1,
     });
     const release = vi.fn();
-    getMaterialCachedPreview.mockResolvedValue({
-      url: "blob:cached-image",
-      cached: true,
-      release,
+    getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "cache-image": {
+          url: "blob:cached-image",
+          cached: true,
+          release,
+        },
+      },
+      thumbnails: {},
     });
     getMaterialCacheUsage.mockResolvedValue({
       bytes: 1048576,
@@ -3420,15 +3475,20 @@ describe("V1.4 内容与运营页面", () => {
     });
     let resolveOld!: (value: unknown) => void;
     const releaseOld = vi.fn();
-    getMaterialCachedPreview.mockImplementation((userId) =>
+    getMaterialBatchPreviews.mockImplementation((userId) =>
       userId === "old-user"
         ? new Promise((resolve) => {
             resolveOld = resolve;
           })
         : Promise.resolve({
-            url: "blob:new-user",
-            cached: true,
-            release: vi.fn(),
+            previews: {
+              "cache-image": {
+                url: "blob:new-user",
+                cached: true,
+                release: vi.fn(),
+              },
+            },
+            thumbnails: {},
           }),
     );
     const context = studio({
@@ -3449,7 +3509,16 @@ describe("V1.4 内容与运营页面", () => {
       ).toHaveAttribute("src", "blob:new-user"),
     );
     await act(async () => {
-      resolveOld({ url: "blob:old-user", cached: true, release: releaseOld });
+      resolveOld({
+        previews: {
+          "cache-image": {
+            url: "blob:old-user",
+            cached: true,
+            release: releaseOld,
+          },
+        },
+        thumbnails: {},
+      });
     });
     expect(releaseOld).toHaveBeenCalledOnce();
     expect(
@@ -3484,12 +3553,12 @@ describe("V1.4 内容与运营页面", () => {
         source: "upload",
         query: "庭院",
         page: 1,
-        pageSize: 6,
+        pageSize: 24,
       }),
     );
   });
 
-  it("只并行签名当前素材页并在翻页后打开真实图视频音频详情", async () => {
+  it("素材页一次批量签名当前页并在翻页后加载下一页", async () => {
     const firstPage = [
       material("image-1"),
       material("video-2", {
@@ -3502,35 +3571,40 @@ describe("V1.4 内容与运营页面", () => {
         media_type: "audio",
         content_type: "audio/mpeg",
       }),
-      ...Array.from({ length: 3 }, (_, index) =>
+      ...Array.from({ length: 21 }, (_, index) =>
         material(`image-${index + 4}`),
       ),
     ];
     listMaterials.mockImplementation(({ page }: { page: number }) =>
       Promise.resolve({
-        items: page === 1 ? firstPage : [material("image-7")],
+        items: page === 1 ? firstPage : [material("image-25")],
         page,
-        page_size: 6,
-        total: 7,
+        page_size: 24,
+        total: 25,
       }),
     );
-    const pendingResolvers: Array<() => void> = [];
-    getAssetDownloadUrl.mockImplementation(
-      (id: string) =>
-        new Promise((resolve) => {
-          pendingResolvers.push(() =>
-            resolve({ url: `https://storage.test/${id}` }),
-          );
-        }),
+    getAssetDownloadUrl.mockImplementation((id: string) =>
+      Promise.resolve({ url: `https://storage.test/${id}` }),
     );
     useStudio.mockReturnValue(studio({ review: false }));
     render(<MaterialsPage />);
 
-    await waitFor(() => expect(getAssetDownloadUrl).toHaveBeenCalledTimes(6));
-    expect(pendingResolvers).toHaveLength(6);
-    pendingResolvers.splice(0).forEach((resolve) => {
-      resolve();
-    });
+    // 整页可见素材只发一次批量授权（P0-2），不再逐瓦片请求。
+    await waitFor(() =>
+      expect(getMaterialBatchPreviews).toHaveBeenCalledTimes(1),
+    );
+    const firstEntries = getMaterialBatchPreviews.mock.calls[0][1];
+    expect(firstEntries).toHaveLength(24);
+    expect(
+      firstEntries.slice(0, 3).map((entry: { id: string }) => entry.id),
+    ).toEqual(["image-1", "video-2", "audio-3"]);
+    // 图片允许写本机缓存，音视频只签在线预览。
+    const populateIds = firstEntries
+      .filter((entry: { populate: boolean }) => entry.populate)
+      .map((entry: { id: string }) => entry.id);
+    expect(populateIds).toHaveLength(22);
+    expect(populateIds).not.toContain("video-2");
+    expect(populateIds).not.toContain("audio-3");
     expect(
       await screen.findByRole("img", { name: "image-1.png" }),
     ).toHaveAttribute("src", "https://storage.test/image-1");
@@ -3544,21 +3618,26 @@ describe("V1.4 内容与运营页面", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
-    await waitFor(() => expect(getAssetDownloadUrl).toHaveBeenCalledTimes(7));
-    pendingResolvers.splice(0).forEach((resolve) => {
-      resolve();
-    });
-    fireEvent.click(
-      await screen.findByRole("button", { name: "选择素材 image-7.png" }),
+    await waitFor(() =>
+      expect(getMaterialBatchPreviews).toHaveBeenCalledTimes(2),
     );
     expect(
-      screen.getByRole("heading", { level: 2, name: "image-7.png" }),
+      getMaterialBatchPreviews.mock.calls[1][1].map(
+        (entry: { id: string }) => entry.id,
+      ),
+    ).toEqual(["image-25"]);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "选择素材 image-25.png" }),
+    );
+    expect(
+      screen.getByRole("heading", { level: 2, name: "image-25.png" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("img", { name: "image-7.png" })).toHaveLength(2);
-    expect(getAssetDownloadUrl).toHaveBeenCalledTimes(7);
+    expect(screen.getAllByRole("img", { name: "image-25.png" })).toHaveLength(
+      2,
+    );
   });
 
-  it("预览签名失败显示重试且旧页迟到响应不能覆盖当前页", async () => {
+  it("批量授权失败退回逐条并自动重试，旧页迟到响应不能覆盖当前页", async () => {
     let resolveOld: ((value: { url: string }) => void) | undefined;
     listMaterials.mockImplementation(({ page }: { page: number }) =>
       Promise.resolve({
@@ -3566,16 +3645,33 @@ describe("V1.4 内容与运营页面", () => {
           page === 1
             ? [
                 material("old-1"),
-                ...Array.from({ length: 5 }, (_, index) =>
+                ...Array.from({ length: 23 }, (_, index) =>
                   material(`old-${index + 2}`),
                 ),
               ]
             : [material("current-7")],
         page,
-        page_size: 6,
-        total: 7,
+        page_size: 24,
+        total: 25,
       }),
     );
+    // 第 1 页批量授权成功；第 2 页批量整体超时 → 退回逐条路径。
+    getMaterialBatchPreviews
+      .mockImplementationOnce(async (_userId, entries) => {
+        const previews: Record<
+          string,
+          { url: string; cached: boolean; release: () => unknown }
+        > = {};
+        for (const entry of entries) {
+          previews[entry.id] = {
+            ...(await getAssetDownloadUrl(entry.id)),
+            cached: false,
+            release: vi.fn(),
+          };
+        }
+        return { previews, thumbnails: {} };
+      })
+      .mockRejectedValueOnce(new Error("批量授权超时"));
     getAssetDownloadUrl.mockImplementation((id: string) => {
       if (id === "old-1")
         return new Promise((resolve) => {
@@ -3601,20 +3697,50 @@ describe("V1.4 内容与运营页面", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "选择素材 current-7.png" }),
     );
-    expect(
-      await screen.findAllByRole("img", { name: "current-7.png" }),
-    ).toHaveLength(2);
+    // 首次签名失败后 1 秒自动重试（P0-4），无需用户再次操作。
+    await waitFor(
+      () =>
+        expect(
+          screen.getAllByRole("img", { name: "current-7.png" }),
+        ).toHaveLength(2),
+      { timeout: 4000 },
+    );
     for (const image of screen.getAllByRole("img", { name: "current-7.png" }))
       expect(image).toHaveAttribute("src", "https://storage.test/current-7");
     expect(screen.queryByText("stale-old-1")).toBeNull();
-    expect(getAssetDownloadUrl).toHaveBeenCalledTimes(8);
   });
 
-  it("签名地址过期后显示失败并由用户重试取得新地址", async () => {
+  it("预览失败自动重试最多两次后停止，不形成无限重试", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      listMaterials.mockResolvedValue({
+        items: [material("doomed-image")],
+        page: 1,
+        page_size: 24,
+        total: 1,
+      });
+      getAssetDownloadUrl.mockRejectedValue(new Error("签名服务不可用"));
+      useStudio.mockReturnValue(studio({ review: false }));
+      render(<MaterialsPage />);
+
+      await screen.findByRole("button", { name: "选择素材 doomed-image.png" });
+      expect(
+        await screen.findByText("预览加载失败，点击重试"),
+      ).toBeInTheDocument();
+      // 批量授权 1 次 + 逐条回退 1 次 + 自动重试 2 次 = 4 次，之后不再重试。
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(getAssetDownloadUrl).toHaveBeenCalledTimes(4);
+      expect(screen.getByText("预览加载失败，点击重试")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("签名地址过期后自动重签取得新地址并同步详情", async () => {
     listMaterials.mockResolvedValue({
       items: [material("expiring-image")],
       page: 1,
-      page_size: 6,
+      page_size: 24,
       total: 1,
     });
     getAssetDownloadUrl
@@ -3633,9 +3759,14 @@ describe("V1.4 内容与运营页面", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "选择素材 expiring-image.png" }),
     );
-    expect(
-      await screen.findAllByRole("img", { name: "expiring-image.png" }),
-    ).toHaveLength(2);
+    // 过期不再永久置灰：约 1 秒后自动重签并恢复（P0-4）。
+    await waitFor(
+      () =>
+        expect(
+          screen.getAllByRole("img", { name: "expiring-image.png" }),
+        ).toHaveLength(2),
+      { timeout: 4000 },
+    );
     for (const image of screen.getAllByRole("img", {
       name: "expiring-image.png",
     }))
@@ -3658,7 +3789,7 @@ describe("V1.4 内容与运营页面", () => {
       listMaterials.mockResolvedValue({
         items: [item],
         page: 1,
-        page_size: 6,
+        page_size: 24,
         total: 1,
       });
       getAssetDownloadUrl
@@ -3682,11 +3813,14 @@ describe("V1.4 内容与运营页面", () => {
       });
       fireEvent.error(oldMedia);
       fireEvent.click(card);
-      await waitFor(() =>
-        expect(card.querySelector(tagName)).toHaveAttribute(
-          "src",
-          `https://storage.test/${mediaType}-new`,
-        ),
+      // 媒体错误触发单次自动重签（P0-4），详情复用新地址。
+      await waitFor(
+        () =>
+          expect(card.querySelector(tagName)).toHaveAttribute(
+            "src",
+            `https://storage.test/${mediaType}-new`,
+          ),
+        { timeout: 4000 },
       );
       fireEvent.error(oldMedia);
 
@@ -3706,6 +3840,90 @@ describe("V1.4 内容与运营页面", () => {
       expect(getAssetDownloadUrl).toHaveBeenCalledTimes(2);
     },
   );
+
+  it("带封面的视频瓦片用缩略图懒加载展示，详情仍可播放原视频", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("thumb-video", {
+          title: "thumb-video.mp4",
+          media_type: "video",
+          content_type: "video/mp4",
+        }),
+      ],
+      page: 1,
+      page_size: 24,
+      total: 1,
+    });
+    getMaterialBatchPreviews.mockResolvedValue({
+      previews: {
+        "thumb-video": {
+          url: "https://storage.test/video",
+          cached: false,
+          release: vi.fn(),
+        },
+      },
+      thumbnails: { "thumb-video": "https://media.test/thumb.jpg" },
+    });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 thumb-video.mp4",
+    });
+    // 网格展示缩略图 img（懒加载），不再经服务端代理流式拉原视频。
+    const thumb = await waitFor(() => {
+      const element = card.querySelector("img");
+      expect(element).toHaveAttribute("src", "https://media.test/thumb.jpg");
+      expect(element).toHaveAttribute("loading", "lazy");
+      return element as HTMLElement;
+    });
+    expect(card.querySelector("video")).toBeNull();
+    expect(thumb).toBeInTheDocument();
+    // 点开详情：先见封面海报，随后加载可播放视频。
+    fireEvent.click(card);
+    const heading = await screen.findByRole("heading", {
+      name: "thumb-video.mp4",
+    });
+    expect(heading.parentElement?.querySelector("img")).toHaveAttribute(
+      "src",
+      "https://media.test/thumb.jpg",
+    );
+    await waitFor(() =>
+      expect(heading.parentElement?.querySelector("video")).toHaveAttribute(
+        "src",
+        "https://storage.test/video",
+      ),
+    );
+  });
+
+  it("无封面的历史视频瓦片保持原视频预览行为", async () => {
+    listMaterials.mockResolvedValue({
+      items: [
+        material("legacy-video", {
+          title: "legacy-video.mp4",
+          media_type: "video",
+          content_type: "video/mp4",
+        }),
+      ],
+      page: 1,
+      page_size: 24,
+      total: 1,
+    });
+    useStudio.mockReturnValue(studio({ review: false }));
+    render(<MaterialsPage />);
+
+    const card = await screen.findByRole("button", {
+      name: "选择素材 legacy-video.mp4",
+    });
+    // 默认批量夹具不含缩略图 → 瓦片回退为 video 预览（beforeEach 默认 URL）。
+    await waitFor(() =>
+      expect(card.querySelector("video")).toHaveAttribute(
+        "src",
+        "https://storage.test/material",
+      ),
+    );
+    expect(card.querySelector("img")).toBeNull();
+  });
 
   it("直出素材通过 generation_task_id 获取预览且详情复用", async () => {
     const direct = material("direct-task", {
@@ -3747,15 +3965,15 @@ describe("V1.4 内容与运营页面", () => {
   });
 
   it("移除末页唯一素材后回到有效页且不形成空白死页", async () => {
-    const firstPage = Array.from({ length: 6 }, (_, index) =>
+    const firstPage = Array.from({ length: 24 }, (_, index) =>
       material(`item-${index + 1}`),
     );
-    let total = 7;
+    let total = 25;
     listMaterials.mockImplementation(({ page }: { page: number }) =>
       Promise.resolve({
         items: page === 1 ? firstPage : [material("last-item")],
         page,
-        page_size: 6,
+        page_size: 24,
         total,
       }),
     );

@@ -3,7 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { components } from "./generated/api";
 
-const REQUEST_TIMEOUT_MS = 5_000;
+// MATERIAL-PERF-C（P0-6）：启动扇出约 20–40 个请求，5 秒硬超时会让任何一片
+// 慢请求把对应数据降级为空（首开缺内容）。默认放宽到 10 秒，配合 loadStudioData
+// 的失败切片单次重试。
+export const REQUEST_TIMEOUT_MS = 10_000;
 // Cloud/storage operations (diagnostics, presigned URLs, archive prechecks)
 // may legitimately take much longer than a normal API round-trip.
 const CLOUD_OP_TIMEOUT_MS = 60_000;
@@ -1276,6 +1279,7 @@ export async function getCurrentUser(): Promise<CurrentUser> {
 
 export function setInternalAccessToken(token: string | null): void {
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   const normalized = token?.trim() ?? "";
   internalAccessToken = normalized || null;
 }
@@ -1285,6 +1289,7 @@ export function setInternalAccessToken(token: string | null): void {
  * shared project/analysis/generation API adapter can authenticate requests. */
 export function setCustomerSessionToken(token: string | null): void {
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   const normalized = token?.trim() ?? "";
   customerSessionToken = normalized || null;
   customerSessionOwner = null;
@@ -1300,6 +1305,7 @@ export function attachCustomerSessionToken(token: string): () => void {
   }
   const owner = Symbol("customer-workspace-session");
   workspaceCredentialEpoch += 1;
+  bumpDownloadUrlCacheEpoch();
   customerSessionToken = normalized;
   customerSessionOwner = owner;
   return () => {
@@ -4064,16 +4070,42 @@ export async function confirmFirstFrame(
   );
 }
 
+// MATERIAL-PERF-C（P1-2）：签名 URL 有效期 15 分钟，模块级缓存 12 分钟内
+// 直接复用（跨页/跨弹层不再重复授权请求）；会话代际变化时整体失效。
+const DOWNLOAD_URL_CACHE_TTL_MS = 12 * 60 * 1000;
+const downloadUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+function clearDownloadUrlCache(): void {
+  downloadUrlCache.clear();
+}
+
+/** 会话凭据代际变化时整体失效签名缓存（换号/登出绝不复用旧授权）。 */
+function bumpDownloadUrlCacheEpoch(): void {
+  clearDownloadUrlCache();
+}
+
 export async function getAssetDownloadUrl(
   assetId: string,
+  options: { fresh?: boolean } = {},
 ): Promise<DownloadUrl> {
+  // 素材持久缓存通道要求每次预览都重新授权（吊销/清理必须即时生效，
+  // 由既有测试钉住）；其余展示型调用方默认享受 12 分钟签名复用。
+  const cached = options.fresh ? undefined : downloadUrlCache.get(assetId);
+  if (cached && Date.now() < cached.expiresAt) {
+    return { url: cached.url };
+  }
   const result = await requestApiJson<DownloadUrl>(
     `/api/assets/${encodeURIComponent(assetId)}/download-url`,
     "读取源画面失败",
     { method: "POST" },
     CLOUD_OP_TIMEOUT_MS,
   );
-  return { ...result, url: resolveManagedMediaUrl(result.url) };
+  const url = resolveManagedMediaUrl(result.url);
+  downloadUrlCache.set(assetId, {
+    url,
+    expiresAt: Date.now() + DOWNLOAD_URL_CACHE_TTL_MS,
+  });
+  return { url };
 }
 
 export async function getCachedCharacterAssetUrl(
@@ -4495,39 +4527,31 @@ function materialBlobPreview(blob: Blob): MaterialCachedPreview {
   };
 }
 
-export async function getMaterialCachedPreview(
-  userId: string,
+async function materialReadGeneration(
+  context: MaterialCacheContext,
   assetId: string,
-  options: { populate?: boolean; signal?: AbortSignal } = {},
-): Promise<MaterialCachedPreview> {
-  const context = materialCacheContext(userId, options.signal, assetId);
-  requireMaterialContext(context);
-  // Capture invalidation before remote authorization waits. Another tab may
-  // clear this user while those requests are in flight; it must win over them.
-  // Only the non-sensitive generation marker is read before authorization.
-  let generationAtStart: string | null = null;
-  if (materialCacheAvailable()) {
-    try {
-      generationAtStart = await materialCacheLocked(context, (cache) =>
-        materialGeneration(cache, context.scope, assetId),
-      );
-    } catch {
-      requireMaterialContext(context);
-    }
+): Promise<string | null> {
+  if (!materialCacheAvailable()) return null;
+  try {
+    return await materialCacheLocked(context, (cache) =>
+      materialGeneration(cache, context.scope, assetId),
+    );
+  } catch {
+    requireMaterialContext(context);
   }
-  // Fresh authorization is required even when every media byte is already local.
-  const { url } = await materialWait(
-    getAssetDownloadUrl(assetId),
-    options.signal,
-  );
-  requireMaterialContext(context);
-  const metadata = await requestApiJson<MaterialAssetMetadata>(
-    `/api/assets/${encodeURIComponent(assetId)}`,
-    "读取素材信息失败",
-    { signal: options.signal },
-  );
-  requireMaterialContext(context);
-  if (!url) throw new Error("素材预览地址不可用");
+  return null;
+}
+
+/** 授权后的缓存判定（单资产与批量共用）：命中本机缓存则出 Blob，
+ * 未命中且允许填充时后台写缓存；否则退回在线签名 URL。 */
+async function materialPreviewAfterAuthorization(
+  context: MaterialCacheContext,
+  assetId: string,
+  url: string,
+  metadata: MaterialAssetMetadata,
+  generationAtStart: string | null,
+  populate: boolean,
+): Promise<MaterialCachedPreview> {
   const online = { url, cached: false, release: () => undefined };
   if (generationAtStart === null || !materialMetadataValid(metadata))
     return online;
@@ -4548,7 +4572,7 @@ export async function getMaterialCachedPreview(
     });
     requireMaterialContext(context);
     if (initial.blob) return materialBlobPreview(initial.blob);
-    if (!options.populate) return online;
+    if (!populate) return online;
     const fillKey = `${key}:${initial.generation}:${context.epoch}:${context.invalidation}:${context.assetInvalidation}`;
     let fill = materialFills.get(fillKey);
     if (!fill) {
@@ -4577,7 +4601,7 @@ export async function getMaterialCachedPreview(
     }
     fill.users += 1;
     try {
-      const blob = await materialWait(fill.promise, options.signal);
+      const blob = await materialWait(fill.promise, context.signal);
       requireMaterialContext(context);
       return blob ? materialBlobPreview(blob) : online;
     } finally {
@@ -4596,6 +4620,117 @@ export async function getMaterialCachedPreview(
       throw error;
     return online;
   }
+}
+
+export async function getMaterialCachedPreview(
+  userId: string,
+  assetId: string,
+  options: { populate?: boolean; signal?: AbortSignal } = {},
+): Promise<MaterialCachedPreview> {
+  const context = materialCacheContext(userId, options.signal, assetId);
+  requireMaterialContext(context);
+  // Capture invalidation before remote authorization waits. Another tab may
+  // clear this user while those requests are in flight; it must win over them.
+  // Only the non-sensitive generation marker is read before authorization.
+  const generationAtStart = await materialReadGeneration(context, assetId);
+  // Fresh authorization is required even when every media byte is already local.
+  const { url } = await materialWait(
+    getAssetDownloadUrl(assetId, { fresh: true }),
+    options.signal,
+  );
+  requireMaterialContext(context);
+  const metadata = await requestApiJson<MaterialAssetMetadata>(
+    `/api/assets/${encodeURIComponent(assetId)}`,
+    "读取素材信息失败",
+    { signal: options.signal },
+  );
+  requireMaterialContext(context);
+  if (!url) throw new Error("素材预览地址不可用");
+  return materialPreviewAfterAuthorization(
+    context,
+    assetId,
+    url,
+    metadata,
+    generationAtStart,
+    options.populate ?? false,
+  );
+}
+
+/** 批量预览解析结果：previews 键为请求 id；thumbnails 仅为带缩略图键的视频
+ * 资产（MATERIAL-THUMBS-B，7 天有效签名 URL），其余 id 不出现在 thumbnails。 */
+export type MaterialBatchPreviews = {
+  previews: Record<string, MaterialCachedPreview>;
+  thumbnails: Record<string, string>;
+};
+
+/** 批量预览解析（MATERIAL-PERF-A P0-2 + MATERIAL-THUMBS-B P0-3）：一次批量授权
+ * + 逐条本机缓存判定，替代素材库网格的逐瓦片 N+1 授权请求。授权失败或被
+ * 拒绝的 id 不出现在 previews/thumbnails 中，由调用方按失败处理。 */
+export async function getMaterialBatchPreviews(
+  userId: string,
+  entries: { id: string; populate: boolean }[],
+  options: { signal?: AbortSignal } = {},
+): Promise<MaterialBatchPreviews> {
+  const unique = [...new Set(entries.map((entry) => entry.id).filter(Boolean))];
+  if (!unique.length) return { previews: {}, thumbnails: {} };
+  const contexts = new Map<string, MaterialCacheContext>();
+  const generations = new Map<string, string | null>();
+  const populateById = new Map<string, boolean>(
+    entries.map((entry) => [entry.id, entry.populate]),
+  );
+  for (const assetId of unique) {
+    const context = materialCacheContext(userId, options.signal, assetId);
+    requireMaterialContext(context);
+    contexts.set(assetId, context);
+    generations.set(assetId, await materialReadGeneration(context, assetId));
+  }
+  const authorized = await materialWait(
+    requestApiJson<components["schemas"]["DownloadUrlsResponse"]>(
+      "/api/assets/download-urls",
+      "批量读取素材预览授权失败",
+      {
+        method: "POST",
+        body: JSON.stringify({ asset_ids: unique }),
+        signal: options.signal,
+      },
+    ),
+    options.signal,
+  );
+  requireMaterialContext(materialCacheContext(userId, options.signal));
+  const results: Record<string, MaterialCachedPreview> = {};
+  const thumbnails: Record<string, string> = {};
+  for (const item of authorized.items) {
+    const context = contexts.get(item.asset_id);
+    if (!context || !item.url) continue;
+    if (item.thumbnail_url) thumbnails[item.asset_id] = item.thumbnail_url;
+    const metadata: MaterialAssetMetadata = {
+      id: item.asset_id,
+      project_id: null,
+      kind: "material_image",
+      sha256: item.sha256 ?? "",
+      size_bytes: item.size_bytes ?? 0,
+      content_type: item.content_type,
+    };
+    results[item.asset_id] = await materialPreviewAfterAuthorization(
+      context,
+      item.asset_id,
+      item.url,
+      metadata,
+      generations.get(item.asset_id) ?? null,
+      populateById.get(item.asset_id) ?? false,
+    );
+  }
+  return { previews: results, thumbnails };
+}
+
+/** 兼容包装（MATERIAL-PERF-A 语义）：只要预览映射、不带缩略图。 */
+export async function getMaterialCachedPreviews(
+  userId: string,
+  entries: { id: string; populate: boolean }[],
+  options: { signal?: AbortSignal } = {},
+): Promise<Record<string, MaterialCachedPreview>> {
+  const { previews } = await getMaterialBatchPreviews(userId, entries, options);
+  return previews;
 }
 
 export async function getMaterialCacheUsage(

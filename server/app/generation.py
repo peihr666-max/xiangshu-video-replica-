@@ -6070,6 +6070,7 @@ def persist_generation_result_archive(
     stored: StoredObject,
     duration_seconds: float,
     normalization_metadata: dict[str, Any] | None = None,
+    thumbnail_key: str | None = None,
 ) -> TaskResult:
     """Publish one physical asset; archiving never changes settled billing."""
     task_id = str(prepared["id"])
@@ -6108,6 +6109,7 @@ def persist_generation_result_archive(
                             if normalization_metadata is not None
                             else {}
                         ),
+                        **({"thumbnail_key": thumbnail_key} if thumbnail_key is not None else {}),
                     }
                 ),
                 current["created_by_user_id"],

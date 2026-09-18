@@ -33,14 +33,17 @@ export function WorkspaceNotifications() {
     if (review) return;
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
-      try {
-        const next = await getWorkspaceNotifications();
-        if (current !== generation.current) return;
-        setResult(next);
-        setError("");
-      } catch (cause) {
-        if (current !== generation.current) return;
-        setError(cause instanceof Error ? cause.message : "读取通知失败");
+      // MATERIAL-PERF-D（P1-5）：页面隐藏时跳过本轮请求（下一个 30s tick 续上）。
+      if (!document.hidden) {
+        try {
+          const next = await getWorkspaceNotifications();
+          if (current !== generation.current) return;
+          setResult(next);
+          setError("");
+        } catch (cause) {
+          if (current !== generation.current) return;
+          setError(cause instanceof Error ? cause.message : "读取通知失败");
+        }
       }
       if (current === generation.current)
         timer = setTimeout(() => void poll(), 30_000);

@@ -996,7 +996,7 @@ describe("ProjectDetailFlow", () => {
     );
 
     const generateButton = await screen.findByRole("button", {
-      name: "生成3张首帧",
+      name: "生成1张首帧",
     });
     await waitFor(() => expect(generateButton).toBeEnabled());
     workspaceBusy.mockClear();

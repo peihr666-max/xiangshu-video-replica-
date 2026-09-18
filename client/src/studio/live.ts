@@ -752,6 +752,22 @@ export const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
   replacement: "人物置换",
 };
 
+/** MATERIAL-PERF-D（P1-3）：任务清单是否无实质变化（id/状态/进度/提交时间一致）。
+ * 任务轮询据此在无变化时返回原 data 引用，避免每 20s 全树重渲染。 */
+export function sameTasks(a: StudioTask[], b: StudioTask[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((task, index) => {
+    const other = b[index];
+    if (!other) return false;
+    return (
+      task.id === other.id &&
+      task.status === other.status &&
+      task.progress === other.progress &&
+      task.submitted === other.submitted
+    );
+  });
+}
+
 function studioTask(batch: GenerationBatchListItem): StudioTask {
   return {
     id: batch.id,
@@ -1051,6 +1067,18 @@ export async function loadViralVideos(): Promise<{
   return { videos, errors };
 }
 
+/** MATERIAL-PERF-C（P0-6）：失败切片重试一次（400ms 退避）——启动 allSettled
+ * 扇出里任何一片瞬时失败都会把对应数据降级为空数组且无自动重试，用户只能
+ * 重进页面。这里给每个切片一次自动补救机会，最终语义仍由 allSettled 兜底。 */
+async function retryOnce<T>(factory: () => Promise<T>): Promise<T> {
+  try {
+    return await factory();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return factory();
+  }
+}
+
 export async function loadStudioData(
   currentUser: CurrentUser,
   options: { includeViral?: boolean } = {},
@@ -1066,17 +1094,17 @@ export async function loadStudioData(
     viralResult,
     materialsResult,
   ] = await Promise.allSettled([
-    loadProjects(),
-    loadPeople(),
-    loadTasks(currentUser),
-    getStudioStats(),
-    getStudioAnalytics(7),
-    getStudioAnalytics(30),
-    loadOralTasks(),
+    retryOnce(loadProjects),
+    retryOnce(loadPeople),
+    retryOnce(() => loadTasks(currentUser)),
+    retryOnce(getStudioStats),
+    retryOnce(() => getStudioAnalytics(7)),
+    retryOnce(() => getStudioAnalytics(30)),
+    retryOnce(loadOralTasks),
     options.includeViral === false
       ? Promise.resolve({ videos: [], errors: [] })
-      : loadViralVideos(),
-    loadVideoMaterialMetadata(),
+      : retryOnce(loadViralVideos),
+    retryOnce(loadVideoMaterialMetadata),
   ]);
   const errors: string[] = [];
   const projectData =

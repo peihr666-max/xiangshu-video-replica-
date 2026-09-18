@@ -28,6 +28,7 @@ from app.character_reference_matching import (
 )
 from app.characters import character_is_available, get_project_main_character, read_character
 from app.db_portable import BusinessConnection
+from app.net_safety import FAKE_IP_NETWORK
 from app.permissions import (
     require_asset_access,
     require_not_auditor,
@@ -49,7 +50,8 @@ from app.storage import (
     require_storage_match,
     storage_object_ref_from_uri,
 )
-from app.viral_media import ViralMediaError, _pinned_connection
+from app.viral_media import ViralMediaError
+from app.viral_media import pinned_connection as _pinned_connection
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,6 @@ MAX_FIRST_FRAME_CANDIDATES = 3
 APILIO_DEFAULT_BASE_URL = "https://api.apilio.ai"
 APILIO_IMAGE_EDIT_PATH = "/v1/images/edits"
 APILIO_OUTPUT_HOSTS = frozenset({"files.closeai.fans"})
-APILIO_PROXY_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 MAX_PROVIDER_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_QUALITY_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_QUALITY_REQUEST_IMAGE_BYTES = 32 * 1024 * 1024
@@ -74,6 +75,9 @@ SOURCE_FRAME_QUALITY_TIMEOUT_SECONDS = 8.0
 # 质检是标注不是闸门：先出图后质检，最多自动补做一轮；未通过的候选照样
 # 发布给用户，由人工确认环节决定是否使用。
 MAX_FIRST_FRAME_QUALITY_ATTEMPTS = 2
+# 单张产品流：每次付费任务交付 1 张，再次生成把新候选追加进最新候选版本；
+# 池子封顶防止无限重生成的 payload 无界增长（超出的旧图仍在历史版本里）。
+MAX_FIRST_FRAME_CANDIDATE_POOL = 6
 MAX_SCENE_CONTACT_SHEET_QUALITY_ATTEMPTS = 2
 MIN_FIRST_FRAME_IDENTITY_SCORE = 0.78
 MIN_FIRST_FRAME_RECONSTRUCTION_SCORE = 0.75
@@ -1246,7 +1250,7 @@ def require_safe_provider_download_url(value: str) -> tuple[str, tuple[str, ...]
     trusted_output_host = hostname.lower() in APILIO_OUTPUT_HOSTS
     for address in addresses:
         ip = ipaddress.ip_address(address[4][0])
-        proxy_fake_ip = trusted_output_host and ip in APILIO_PROXY_FAKE_IP_NETWORK
+        proxy_fake_ip = trusted_output_host and ip in FAKE_IP_NETWORK
         if not ip.is_global and not proxy_fake_ip:
             raise ImageProviderFailed("Apilio output URL must resolve to a public address")
     return hostname, tuple(dict.fromkeys(str(address[4][0]) for address in addresses))
@@ -2017,6 +2021,38 @@ def persist_project_character_appearance(
     )
 
 
+def _first_frame_pool_binding(payload: object) -> tuple[object, ...] | None:
+    """Input identity of a candidates payload; ``None`` for legacy shapes.
+
+    Candidates may only be carried forward across generations made from the
+    same bound inputs: confirm and the H3 fence read only the latest
+    candidates version, so a merged pool must never mix different input
+    bindings.
+    """
+    if not isinstance(payload, dict):
+        return None
+    parts: list[object] = []
+    for key in (
+        "source_frame_selection_version_id",
+        "main_character_version_id",
+        "character_reference_asset_ids",
+        "character_reference_asset_roles",
+        "model",
+        "aspect_ratio",
+        "replace_scene",
+        "prompt",
+    ):
+        value: object = payload.get(key)
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value, sort_keys=True, ensure_ascii=False)
+        parts.append(value)
+    appearance = payload.get("project_appearance")
+    parts.append(appearance.get("fingerprint") if isinstance(appearance, dict) else None)
+    if parts[0] is None or parts[1] is None:
+        return None
+    return tuple(parts)
+
+
 def complete_first_frame_generation(
     conn: BusinessConnection,
     *,
@@ -2101,6 +2137,31 @@ def complete_first_frame_generation(
                 work.character_inputs.character_reference_selection_id
             )
             version_payload["character_version_id"] = work.character_inputs.character_version_id
+        # 单张重生成：同输入绑定的上一池候选仍必须可确认（确认与 H3 围栏
+        # 只读最新候选版本），随新版本一并携带；绑定变化则从空池开始。
+        previous_candidates_version = latest_version(
+            conn, work.project_id, FIRST_FRAME_CANDIDATES_KIND
+        )
+        if previous_candidates_version is not None:
+            try:
+                previous_payload = json.loads(str(previous_candidates_version["payload_json"]))
+            except json.JSONDecodeError:
+                previous_payload = None
+            if (
+                isinstance(previous_payload, dict)
+                and _first_frame_pool_binding(previous_payload)
+                == _first_frame_pool_binding(version_payload)
+                and isinstance(previous_payload.get("candidates"), list)
+            ):
+                carried = [
+                    candidate
+                    for candidate in previous_payload["candidates"]
+                    if isinstance(candidate, dict)
+                ]
+                version_payload["candidates"] = [
+                    *carried,
+                    *stored.candidates,
+                ][-MAX_FIRST_FRAME_CANDIDATE_POOL:]
         row = insert_version(
             conn,
             project_id=work.project_id,

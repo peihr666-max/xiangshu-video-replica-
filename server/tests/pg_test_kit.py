@@ -93,6 +93,8 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         "t16_customer_devices_test",
         "t19_customer_sessions_test",
         "cw027_admin_matrix_test",
+        # FIRSTFRAME-RECONCILE admin endpoint suite (dedicated migrated DB).
+        "admin_ff_reconcile_test",
         "cw007_kit_alpha_test",
         "cw007_kit_beta_test",
         # CW-010 per-category recovery baselines: each owns a dedicated migrated
@@ -177,6 +179,14 @@ RECORDED_TEST_DATABASES: frozenset[str] = frozenset(
         # later CW before they may use create_test_database/drop_test_database):
         #   t11_activation_code_service, t34_chain_e2e,
         #   t13c_customer_activation_concurrency, t22r_customer_recharge
+        # MATERIAL-PERF-A-20260917 批量素材预览授权：dedicated database for the
+        # 批量 download-urls 安全/语义矩阵 (test_material_perf_batch_urls.py),
+        # migrated to alembic head and truncated per test.
+        "matperf_a_batch_urls_test",
+        # MATERIAL-THUMBS-B-20260917 视频素材缩略图：dedicated database for the
+        # 缩略图键/批量缩略图签名矩阵 (test_material_thumbs.py), migrated to
+        # alembic head and truncated per test.
+        "matthumbs_test",
     }
 )
 

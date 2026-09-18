@@ -26,6 +26,7 @@ import {
   uploadWorkbenchSourceVideo,
 } from "./live";
 import { PlatformLogo } from "./PlatformLogo";
+import { readPageCache, writePageCache } from "./pageCache";
 import { draftFromTask } from "./state";
 import type { StudioAsset, StudioData, StudioTask, StudioVideo } from "./types";
 import {
@@ -233,11 +234,15 @@ export function WorkbenchPage() {
     setPublishedTotal(null);
     if (review || !user.id) return;
     void (async () => {
+      // MATERIAL-PERF-C（P1-1）：先回放上次摘要（切页立即出数），再后台刷新。
+      const cached = readPageCache<number>(`publish-summary:${user.id}`);
+      if (cached !== undefined && active) setPublishedTotal(cached);
       try {
         const summary = await getPublishSummary();
+        writePageCache(`publish-summary:${user.id}`, summary.published_total);
         if (active) setPublishedTotal(summary.published_total);
       } catch {
-        if (active) setPublishedTotal(null);
+        if (active && cached === undefined) setPublishedTotal(null);
       }
     })();
     return () => {
@@ -711,7 +716,8 @@ export function WorkbenchPage() {
           </p>
         )}
         <p className="studio-start-helper">
-          支持抖音、小红书视频链接；其他平台请上传 MP4/MOV 文件。
+          支持抖音、小红书的 App
+          分享链接、网页链接与主页视频链接；其他平台请上传 MP4/MOV 文件。
         </p>
         {linkState.status === "error" && (
           <p className="viral-media-status is-error" role="alert">

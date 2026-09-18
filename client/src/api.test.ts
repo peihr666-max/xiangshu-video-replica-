@@ -59,7 +59,9 @@ import {
   getLatestProjectFirstFrames,
   getLatestScriptRewriteTask,
   getLatestScriptVersion,
+  getMaterialBatchPreviews,
   getMaterialCachedPreview,
+  getMaterialCachedPreviews,
   getMaterialCacheUsage,
   getOralTask,
   getScriptFromAudioTask,
@@ -79,6 +81,7 @@ import {
   lockGenerationPrompt,
   publishBrowserRequest,
   putMaterial,
+  REQUEST_TIMEOUT_MS,
   readAnalysisPayload,
   readFirstFrameCandidates,
   reconcileUncertainTask,
@@ -636,6 +639,234 @@ describe("素材持久缓存", () => {
     expect((await getMaterialCacheUsage("other")).bytes).toBe(
       250 * 1024 * 1024,
     );
+  });
+});
+
+describe("批量素材预览授权", () => {
+  afterEach(() => {
+    setCustomerSessionToken(null);
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function batchFixture(itemOverrides: Record<string, unknown> = {}) {
+    const entries = new Map<string, Response>();
+    const cache = {
+      keys: async () => [...entries.keys()].map((key) => new Request(key)),
+      match: async (key: RequestInfo) =>
+        entries.get(typeof key === "string" ? key : key.url)?.clone(),
+      put: vi.fn(async (key: RequestInfo, value: Response) => {
+        entries.set(typeof key === "string" ? key : key.url, value.clone());
+      }),
+      delete: async (key: RequestInfo) =>
+        entries.delete(typeof key === "string" ? key : key.url),
+    };
+    const tails = new Map<string, Promise<unknown>>();
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: async (
+          name: string,
+          options: unknown,
+          callback?: () => Promise<unknown>,
+        ) => {
+          const action = callback ?? (options as () => Promise<unknown>);
+          const next = (tails.get(name) ?? Promise.resolve()).then(action);
+          tails.set(
+            name,
+            next.catch(() => undefined),
+          );
+          return next;
+        },
+      },
+    });
+    vi.stubGlobal("caches", { open: vi.fn(async () => cache) });
+    vi.stubGlobal("crypto", webcrypto);
+    let blobId = 0;
+    const create = vi.fn(() => `blob:material-${++blobId}`);
+    const revoke = vi.fn();
+    const NativeURL = URL;
+    vi.stubGlobal(
+      "URL",
+      class extends NativeURL {
+        static createObjectURL = create;
+        static revokeObjectURL = revoke;
+      },
+    );
+    const content = new Uint8Array([5, 6, 7, 8]);
+    const sha = Array.from(
+      new Uint8Array(await webcrypto.subtle.digest("SHA-256", content)),
+    )
+      .map((value) => value.toString(16).padStart(2, "0"))
+      .join("");
+    const media = vi.fn(
+      async () =>
+        new Response(content, { headers: { "Content-Type": "image/png" } }),
+    );
+    const batchCalls: { asset_ids: string[] }[] = [];
+    const fetcher = vi.fn(
+      async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url).endsWith("/api/assets/download-urls")) {
+          batchCalls.push(JSON.parse(String(init?.body ?? "{}")));
+          return Response.json({
+            items: [
+              {
+                asset_id: "batch-a",
+                url: "https://media.example/a?sig=1",
+                sha256: sha,
+                size_bytes: content.length,
+                content_type: "image/png",
+                error_code: null,
+                ...itemOverrides,
+              },
+            ],
+          });
+        }
+        return media();
+      },
+    );
+    vi.stubGlobal("fetch", fetcher);
+    setCustomerSessionToken("test-batch-session");
+    return { batchCalls, create, fetcher, media, revoke, entries, sha };
+  }
+
+  it("一次批量授权返回在线预览，不再逐条请求授权与元数据", async () => {
+    const f = await batchFixture();
+    const results = await getMaterialCachedPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(Object.keys(results)).toEqual(["batch-a"]);
+    expect(results["batch-a"]).toMatchObject({
+      url: "https://media.example/a?sig=1",
+      cached: false,
+    });
+    expect(f.batchCalls).toEqual([{ asset_ids: ["batch-a"] }]);
+    // 批量通道替代逐瓦片请求：不得再出现单资产授权或元数据往返。
+    expect(
+      f.fetcher.mock.calls.filter(([url]) =>
+        String(url).endsWith("/download-url"),
+      ),
+    ).toHaveLength(0);
+    expect(f.media).not.toHaveBeenCalled();
+  });
+
+  it("重复 id 去重为一次批量请求", async () => {
+    const f = await batchFixture();
+    const results = await getMaterialCachedPreviews("user", [
+      { id: "batch-a", populate: false },
+      { id: "batch-a", populate: true },
+    ]);
+    expect(f.batchCalls).toEqual([{ asset_ids: ["batch-a"] }]);
+    expect(Object.keys(results)).toEqual(["batch-a"]);
+  });
+
+  it("populate 图片写入本机缓存并可在下次命中", async () => {
+    const f = await batchFixture();
+    const first = await getMaterialCachedPreviews("user", [
+      { id: "batch-a", populate: true },
+    ]);
+    expect(first["batch-a"].cached).toBe(true);
+    expect(f.media).toHaveBeenCalledOnce();
+    const second = await getMaterialCachedPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(second["batch-a"].cached).toBe(true);
+    first["batch-a"].release();
+    second["batch-a"].release();
+  });
+
+  it("授权失败的条目不出现在结果中，成功条目不受影响", async () => {
+    const f = await batchFixture({ url: null, error_code: "ASSET_NOT_FOUND" });
+    const results = await getMaterialCachedPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(results["batch-a"]).toBeUndefined();
+    expect(f.media).not.toHaveBeenCalled();
+  });
+
+  it("空入参不发起任何请求", async () => {
+    const f = await batchFixture();
+    expect(await getMaterialCachedPreviews("user", [])).toEqual({});
+    expect(f.fetcher).not.toHaveBeenCalled();
+  });
+
+  it("视频条目附带缩略图 URL，无缩略图条目不出现", async () => {
+    await batchFixture({
+      thumbnail_url: "https://media.example/a-thumb?sig=2",
+    });
+    const { previews, thumbnails } = await getMaterialBatchPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(thumbnails["batch-a"]).toBe("https://media.example/a-thumb?sig=2");
+    expect(previews["batch-a"]).toMatchObject({
+      url: "https://media.example/a?sig=1",
+    });
+    const plain = await batchFixture();
+    expect(plain.batchCalls).toEqual([]);
+    const again = await getMaterialBatchPreviews("user", [
+      { id: "batch-a", populate: false },
+    ]);
+    expect(again.thumbnails).toEqual({});
+  });
+
+  it("中止信号取消批量请求", async () => {
+    const f = await batchFixture();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      getMaterialCachedPreviews("user", [{ id: "batch-a", populate: false }], {
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow();
+    expect(f.batchCalls).toHaveLength(0);
+  });
+});
+
+describe("下载签名模块级缓存", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  function grantFetcher(calls: string[]) {
+    return vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      if (String(url).endsWith("/download-url"))
+        return Response.json({ url: `https://media.example/${calls.length}` });
+      throw new Error(`unexpected ${String(url)}`);
+    });
+  }
+
+  it("12 分钟内复用同一签名，过期后重新授权", async () => {
+    vi.useFakeTimers();
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", grantFetcher(calls));
+    setCustomerSessionToken("sig-cache-session");
+    const first = await getAssetDownloadUrl("asset-a");
+    const second = await getAssetDownloadUrl("asset-a");
+    expect(second.url).toBe(first.url);
+    expect(calls).toHaveLength(1);
+    vi.advanceTimersByTime(13 * 60 * 1000);
+    await getAssetDownloadUrl("asset-a");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("fresh 选项绕过缓存（素材持久缓存通道要求每次新授权）", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", grantFetcher(calls));
+    setCustomerSessionToken("sig-cache-session");
+    await getAssetDownloadUrl("asset-a");
+    await getAssetDownloadUrl("asset-a", { fresh: true });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("不同资产互不串用", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", grantFetcher(calls));
+    setCustomerSessionToken("sig-cache-session");
+    await getAssetDownloadUrl("asset-a");
+    await getAssetDownloadUrl("asset-b");
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -2755,7 +2986,11 @@ describe("startVideoAnalysis", () => {
 
     await startVideoAnalysis("project-1", "asset-1");
 
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 5_000);
+    // MATERIAL-PERF-C：默认超时 5s→10s；本用例钉住分析入队走普通超时而非云操作超时。
+    expect(timeoutSpy).toHaveBeenCalledWith(
+      expect.any(Function),
+      REQUEST_TIMEOUT_MS,
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:8000/api/projects/project-1/analysis-tasks",
       expect.objectContaining({

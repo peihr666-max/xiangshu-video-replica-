@@ -290,7 +290,8 @@ html:has(.studio-shell) {
 .studio-global-search button,
 .studio-notifications,
 .studio-top-avatar,
-.studio-menu-button {
+.studio-menu-button,
+.studio-sidebar-toggle {
   background: none;
   border: 0;
   padding: 3px;
@@ -318,8 +319,17 @@ html:has(.studio-shell) {
 .studio-top-avatar .studio-user-initial {
   font-size: var(--font-subtitle);
 }
-.studio-menu-button {
+.studio-menu-button,
+.studio-sidebar-toggle {
   display: none;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .studio-sidebar {
+    transition: width 0.18s ease;
+  }
+  .studio-main {
+    transition: margin-left 0.18s ease;
+  }
 }
 .studio-stage {
   padding: 29px 28px 0;
@@ -1921,30 +1931,34 @@ html:has(.studio-shell) {
   min-width: 140px;
   padding: 16px 24px;
 }
-@media (min-width: 1100px) {
-  .studio-shell {
+@media (min-width: 801px) {
+  .studio-sidebar-toggle {
+    display: block;
+  }
+  /* 收起态＝原 88px 图标栏；由顶栏开关与 localStorage 记忆驱动，不再按屏宽强制 */
+  .studio-shell--sidebar-collapsed {
     --studio-sidebar: 88px;
   }
-  .studio-shell .studio-sidebar {
+  .studio-shell--sidebar-collapsed .studio-sidebar {
     padding: 16px 6px;
   }
-  .studio-shell .studio-brand .brand-identity__text,
-  .studio-shell .studio-brand small,
-  .studio-shell .studio-nav-label {
+  .studio-shell--sidebar-collapsed .studio-brand .brand-identity__text,
+  .studio-shell--sidebar-collapsed .studio-brand small,
+  .studio-shell--sidebar-collapsed .studio-nav-label {
     display: none;
   }
-  .studio-shell .studio-new-button {
+  .studio-shell--sidebar-collapsed .studio-new-button {
     font-size: 0;
     min-height: 40px;
     margin-bottom: 12px;
   }
-  .studio-shell .studio-new-button .studio-icon {
+  .studio-shell--sidebar-collapsed .studio-new-button .studio-icon {
     width: 20px;
   }
-  .studio-shell .studio-nav-group {
+  .studio-shell--sidebar-collapsed .studio-nav-group {
     margin-bottom: 8px;
   }
-  .studio-shell .studio-nav-group button {
+  .studio-shell--sidebar-collapsed .studio-nav-group button {
     flex-direction: column;
     gap: 4px;
     padding: 8px 2px;
@@ -1952,12 +1966,12 @@ html:has(.studio-shell) {
     text-align: center;
     min-height: 56px;
   }
-  .studio-shell .studio-account-entry {
+  .studio-shell--sidebar-collapsed .studio-account-entry {
     flex-direction: column;
     padding: 8px 2px;
     gap: 4px;
   }
-  .studio-shell .studio-account-name {
+  .studio-shell--sidebar-collapsed .studio-account-name {
     font-size: 12px;
     max-width: 72px;
   }

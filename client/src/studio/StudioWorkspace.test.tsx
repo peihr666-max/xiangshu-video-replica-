@@ -502,6 +502,45 @@ describe("V1.4 workspace integration", () => {
     expect(screen.getByRole("heading", { name: /工作台/ })).toBeInTheDocument();
   });
 
+  it("桌面端默认展开侧边栏，可通过顶栏按钮收起并写入记忆", () => {
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+    const shell = container.querySelector(".studio-shell");
+    expect(shell?.className).not.toContain("studio-shell--sidebar-collapsed");
+    const toggle = screen.getByRole("button", { name: "收起侧边栏" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(shell?.className).toContain("studio-shell--sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "展开侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem("studio.sidebar.collapsed")).toBe("1");
+  });
+
+  it("收起状态跨会话记忆，可再次展开并清除记忆", () => {
+    window.localStorage.setItem("studio.sidebar.collapsed", "1");
+    const { container } = render(
+      <StudioWorkspace
+        currentUser={reviewUser}
+        reviewData={createReviewData()}
+        initialState={createReviewState("workbench")}
+      />,
+    );
+    const shell = container.querySelector(".studio-shell");
+    expect(shell?.className).toContain("studio-shell--sidebar-collapsed");
+    const toggle = screen.getByRole("button", { name: "展开侧边栏" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(shell?.className).not.toContain("studio-shell--sidebar-collapsed");
+    expect(screen.getByRole("button", { name: "收起侧边栏" })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(window.localStorage.getItem("studio.sidebar.collapsed")).toBe("0");
+  });
+
   it("保持共享壳层尺寸稳定，避免路由切换时 Logo 和标题跳动", () => {
     const { container } = render(
       <StudioWorkspace
@@ -530,13 +569,20 @@ describe("V1.4 workspace integration", () => {
     expect(sidebar?.closest("[class*='studio-route-']")).toBeNull();
   });
 
-  it("所有工作区在宽屏共用自动收窄的侧边栏", () => {
+  it("所有工作区共用可切换的侧边栏：默认展开、收起态为 88px 图标栏", () => {
     const studioStyles = readFileSync("src/studio/studio.css", "utf8");
 
+    // 默认展开：基础变量保持 224px，不再按屏宽强制收窄
     expect(studioStyles).toMatch(
-      /@media \(min-width: 1100px\)[\s\S]*?\.studio-shell\s*\{\s*--studio-sidebar:\s*88px;/,
+      /\.studio-shell\s*\{\s*[^}]*--studio-sidebar:\s*224px;/,
     );
-    expect(studioStyles).toContain(".studio-shell .studio-sidebar");
+    // 收起态由 class 驱动（顶栏开关 + localStorage 记忆），仅桌面端生效
+    expect(studioStyles).toMatch(
+      /@media \(min-width: 801px\)[\s\S]*?\.studio-shell--sidebar-collapsed\s*\{\s*--studio-sidebar:\s*88px;/,
+    );
+    expect(studioStyles).toContain(
+      ".studio-shell--sidebar-collapsed .studio-sidebar",
+    );
     expect(studioStyles).not.toContain(
       ".studio-shell--creation .studio-sidebar",
     );

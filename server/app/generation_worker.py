@@ -76,6 +76,7 @@ from app.image_tasks import (
     complete_character_sheet_task,
     complete_first_frame_task,
     fail_image_task,
+    log_image_task_failure,
     perform_character_sheet_task,
     prepare_character_sheet_task,
     prepare_first_frame_task,
@@ -771,6 +772,7 @@ def run_worker_once(
                     stored=stored,
                 )
             except Exception as exc:
+                log_image_task_failure("first_frame_tasks", first_frame_lease, exc)
                 if stored is not None and work is not None:
                     from app.first_frames import delete_created_first_frames
 
@@ -816,6 +818,7 @@ def run_worker_once(
                     storage=storage,
                 )
             except Exception as exc:
+                log_image_task_failure("character_sheet_tasks", character_sheet_lease, exc)
                 fail_image_task(
                     conn,
                     table="character_sheet_tasks",
@@ -1646,6 +1649,7 @@ def run_pg_worker_once(
                         stored=stored,
                     )
             except Exception as exc:
+                log_image_task_failure("first_frame_tasks", first_frame_lease, exc)
                 if stored is not None and work is not None:
                     from app.first_frames import delete_created_first_frames
 
@@ -1720,6 +1724,7 @@ def run_pg_worker_once(
                         storage=storage,
                     )
             except Exception as exc:
+                log_image_task_failure("character_sheet_tasks", character_sheet_lease, exc)
                 with pg_transaction() as raw_conn:
                     conn = BusinessConnection.postgres(raw_conn)
                     complete_operation_cost(
