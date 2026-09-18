@@ -445,8 +445,7 @@
   margin-top: 12px;
 }
 
-.creation-frame-card,
-.creation-upload {
+.creation-frame-card {
   background: #0d0f0e;
   border: 1px dashed #555851;
   border-radius: 8px;
@@ -466,19 +465,6 @@
 .creation-frame-card-label {
   display: block;
   margin-top: 7px;
-}
-
-.creation-upload {
-  align-items: center;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  justify-content: center;
-  width: 100%;
-}
-
-.creation-upload small {
-  color: #777a75;
 }
 
 .creation-reference-list {
@@ -845,10 +831,6 @@
   display: flex;
   gap: 10px;
   align-items: stretch;
-}
-
-.creation-upload-row .creation-upload {
-  flex: 1;
 }
 
 .creation-upload-mini {
@@ -1224,22 +1206,27 @@
 .creation-video-workspace .creation-video-preview .studio-empty {
   min-height: 300px;
 }
+/* 参考素材行（视频工作区）：缩略图居左、@编号文案居中、移除居右，用途输入独占
+   次行整宽；行内不再做多列小卡片，素材区整体落在合并上传区下方。 */
 .creation-video-workspace .creation-reference-list {
   max-height: none;
   overflow: visible;
 }
 .creation-video-workspace .creation-reference-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
-  gap: 8px;
-  padding: 0;
-  margin: 18px 0;
-  border: 0;
-  border-radius: 0;
+  grid-template-columns: 132px minmax(0, 1fr) 32px;
+  grid-template-areas:
+    "preview copy remove"
+    "purpose purpose purpose";
+  gap: 8px 12px;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid #262823;
+  border-radius: 8px;
+  align-items: start;
 }
 .creation-video-workspace .creation-reference-copy {
-  grid-column: 1;
-  grid-row: 1;
+  grid-area: copy;
 }
 .creation-video-workspace .creation-reference-copy strong {
   white-space: normal;
@@ -1250,19 +1237,26 @@
   font-size: var(--font-caption);
 }
 .creation-video-workspace .creation-reference-remove {
-  grid-column: 2;
-  grid-row: 1;
+  grid-area: remove;
+}
+.creation-video-workspace .creation-reference-row > input {
+  grid-area: purpose;
+  min-width: 0;
+  width: 100%;
 }
 .creation-video-workspace .creation-reference-preview-button {
-  --image-preview-height: 96px;
-  grid-column: 1 / -1;
-  grid-row: 2;
-  padding: 0;
-  width: 100%;
+  --image-preview-height: 74px;
+  grid-area: preview;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 132px;
+  height: auto;
   aspect-ratio: 16 / 9;
+  padding: 0;
   border: 1px solid transparent;
   border-radius: 7px;
-  background: transparent;
+  background: #15140e;
   overflow: hidden;
 }
 .creation-reference-preview-button[aria-pressed="true"] {
@@ -1273,16 +1267,6 @@
   width: 100%;
   height: 100%;
   min-height: 0;
-}
-.creation-video-workspace .creation-upload {
-  min-height: 40px;
-  flex-direction: row;
-  flex-wrap: wrap;
-  border-style: solid;
-  font-size: var(--font-caption);
-}
-.creation-video-workspace .creation-upload small {
-  width: 100%;
 }
 .creation-upload-dropzone {
   display: flex;
@@ -1628,67 +1612,100 @@
 .creation-video-grid.reference .creation-video-form > .studio-field {
   position: relative;
 }
-.creation-video-grid.reference .creation-upload-row {
-  position: absolute;
-  top: -8px;
-  right: 0;
-  max-width: 75%;
+/* 合并上传区（REFERENCE-MATERIAL-PREVIEW）：上传框在上、素材库入口紧随其下，
+   参考素材列表整体落在上传框下方，不再挤在右上角或多列小卡片里。 */
+.creation-reference-upload {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.creation-reference-upload .creation-upload-dropzone {
+  margin: 0;
+  min-height: 152px;
+}
+.creation-reference-upload .creation-upload-hint {
   margin: 0;
 }
-.creation-video-grid.reference .creation-upload-row .creation-upload {
-  min-height: 36px;
-  padding: 6px 10px;
-}
-.creation-video-grid.reference .creation-upload-row .creation-upload small {
-  width: auto;
+.creation-reference-upload > .studio-button {
+  width: 100%;
+  justify-content: center;
 }
 .creation-reference-materials {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px 14px;
+  margin-top: 14px;
 }
 .creation-video-workspace
   .creation-reference-materials
   .creation-reference-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-  max-height: 208px;
-  overflow-y: auto;
-  overflow-x: hidden;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  max-height: none;
+  overflow: visible;
   margin: 0;
-}
-.creation-video-workspace
-  .creation-reference-materials
-  .creation-reference-row {
-  margin: 0;
-  gap: 5px;
-  align-content: start;
 }
 .creation-reference-materials .creation-reference-copy strong {
-  max-height: 40px;
+  /* 长文件名最多两行，超出以省略号收尾——原先只有 max-height 裁剪，会无声
+     切掉半行且不给截断提示。 */
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  line-clamp: 2;
   overflow: hidden;
 }
-.creation-reference-materials .creation-reference-row input {
-  grid-column: 1 / -1;
-  min-width: 0;
-  width: 100%;
-}
-.creation-video-workspace
-  .creation-reference-materials
-  .creation-reference-preview-button {
-  height: 96px;
-  aspect-ratio: auto;
-}
-.creation-reference-materials .creation-upload-dropzone {
+.creation-reference-empty {
+  color: var(--studio-muted);
+  font-size: var(--font-caption);
   margin: 0;
-  height: 208px;
 }
-.creation-reference-materials .creation-upload-hint {
-  grid-column: 1 / -1;
+.creation-reference-counter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 12px 0 0;
+  font-size: var(--font-caption);
 }
-.creation-reference-materials .creation-reference-list:empty {
-  display: none;
+.creation-reference-counter small {
+  color: var(--studio-muted);
+}
+.creation-reference-counter small[data-state="limited"] {
+  color: var(--studio-gold);
+}
+.creation-reference-placeholder {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+  color: var(--studio-muted);
+  font-size: var(--font-caption);
+  padding: 0 8px;
+  text-align: center;
+}
+.creation-reference-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--studio-text, inherit);
+  word-break: break-all;
+}
+.creation-reference-placeholder small {
+  color: var(--studio-muted);
+}
+.creation-reference-retry {
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  color: var(--studio-gold);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-caption);
+  margin-top: 4px;
+  padding: 0;
+  text-decoration: underline;
 }
 .creation-reference-dialog-media {
   width: min(78vw, 960px);
@@ -1894,11 +1911,5 @@
   }
   .creation-video-workspace--split .creation-frame-card > .video-preview {
     --image-preview-height: 200px;
-  }
-}
-@media (max-width: 720px) {
-  .creation-video-grid.reference .creation-upload-row {
-    position: static;
-    max-width: none;
   }
 }
