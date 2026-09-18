@@ -2660,6 +2660,7 @@ describe("character reference and first-frame binding", () => {
       model: "nano-banana-pro-2k",
       prompt: "replace",
       quantity: 1,
+      replace_scene: false,
       character_version_id: "character-version-1",
       character_reference_selection_id: "reference-selection-1",
     });

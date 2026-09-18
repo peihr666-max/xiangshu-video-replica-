@@ -485,7 +485,7 @@ export function FirstFrameSelection({
           // contact-sheet/reference-role prompt assembly on the server.
           prompt: simplified ? undefined : prompt,
           quantity,
-          ...(replaceScene ? { replace_scene: true } : {}),
+          replace_scene: replaceScene,
           ...(aspectRatio === "source" ? {} : { aspect_ratio: aspectRatio }),
           ...binding,
         },
