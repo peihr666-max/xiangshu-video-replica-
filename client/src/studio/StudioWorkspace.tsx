@@ -1122,7 +1122,10 @@ export function StudioWorkspace({
     return () => {
       active = false;
     };
-  }, [review, workspaceUser, revision]);
+    // MATERIAL-PERF-C（P0-5）：bootstrap 只随 user.id 重跑——profile 异步到达
+    // 只改 display_name/username，若随整个 workspaceUser 依赖会把首屏全量
+    // 加载整体重跑一遍（double bootstrap，第一遍全部作废）。
+  }, [review, workspaceUser.id, revision]);
 
   // Silent tasks poll: the shell reads everything once on entry, so a batch
   // that finishes while the customer watches would otherwise stay "running"

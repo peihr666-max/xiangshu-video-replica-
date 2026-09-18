@@ -771,6 +771,19 @@ describe("真实 Studio 只读适配器", () => {
     });
   });
 
+  it("启动切片瞬时失败自动重试一次（P0-6）", async () => {
+    let analyticsCalls = 0;
+    // allSettled 依序发起 analytics7 → analytics30；第一次调用瞬时失败。
+    api.getStudioAnalytics.mockImplementation(async () => {
+      analyticsCalls += 1;
+      if (analyticsCalls === 1) throw new Error("瞬时超时");
+      return null;
+    });
+    api.getStudioStats.mockResolvedValue(null);
+    const data = await loadStudioData(user);
+    expect(data.errors).toEqual([]);
+  });
+
   it("映射项目、单张五视图合成图和真实批次进度", async () => {
     const data = await loadStudioData(user);
 
