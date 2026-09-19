@@ -213,6 +213,9 @@ MAX_ARCHIVE_RETRIES = 5
 SAFE_PRE_PROVIDER_FAILURE_CODES = {
     "FIRST_FRAME_URL_SIGN_FAILED",
     "METASO_SETTINGS_UNAVAILABLE",
+    # 契约违规在发出 Provider 请求之前就失败，未触达供应商、未计费，
+    # 与首帧签名失败同样允许原地重试。
+    "PROVIDER_REQUEST_CONTRACT",
 }
 
 logger = logging.getLogger(__name__)
@@ -415,6 +418,15 @@ class H3ProviderFailed(RuntimeError):
 
 class H3ProviderSettingsUnavailable(RuntimeError):
     pass
+
+
+class ProviderRequestContractError(ValueError):
+    """请求参数违反供应商契约（如 T2V 携带 adaptive ratio）。
+
+    继承 ValueError 以兼容既有捕获方；worker 用它把契约违规与
+    “首帧 URL 签名失败”分开归类，避免误导排障。新提交已在建批
+    入口（independent.py 422）拦下，这里只兜底存量/异常路径。
+    """
 
 
 class GeneratedVideoValidationUnavailable(RuntimeError):
@@ -5736,6 +5748,49 @@ def mark_task_first_frame_url_sign_failed(
         release_user_queue_slot_for_task(conn, task_id=task_id)
 
 
+def mark_task_provider_request_contract_failed(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+) -> None:
+    """Terminal failure for a submission that violates the provider contract.
+
+    Same safe-failure shape as ``mark_task_first_frame_url_sign_failed`` (the
+    provider call never started), but with an honest error code so triage
+    does not chase a first-frame signing problem that never existed.
+    """
+    task_id = str(lease["id"])
+    batch_id = str(lease["batch_id"])
+    with conn:
+        contract_failed_update = conn.execute(
+            """
+            UPDATE generation_tasks
+            SET
+                status = 'FAILED',
+                error_code = 'PROVIDER_REQUEST_CONTRACT',
+                error_message_redacted = 'Generation parameters violate the provider contract.',
+                submitted_at = NULL,
+                locked_by = NULL,
+                locked_until = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = %s AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
+            """,
+            (
+                task_id,
+                str(lease["status"]),
+                str(lease["locked_by"]),
+                str(lease["locked_until"]),
+            ),
+        )
+        if contract_failed_update.rowcount != 1:
+            raise GenerationTaskSupersededError(task_id)
+        record_video_generation_not_called(conn, task_id=task_id)
+        finalize_internal_billing(conn, task_id=task_id, outcome="failed")
+        _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
+        release_user_queue_slot_for_task(conn, task_id=task_id)
+
+
 def _insert_worker_audit(
     conn: BusinessConnection,
     *,
@@ -6807,7 +6862,7 @@ def build_h3_request(
         effective_ratio = "adaptive"
     else:
         if ratio == "adaptive":
-            raise ValueError(
+            raise ProviderRequestContractError(
                 "text-to-video (T2V) requires a concrete ratio; "
                 "adaptive is not supported by the provider"
             )

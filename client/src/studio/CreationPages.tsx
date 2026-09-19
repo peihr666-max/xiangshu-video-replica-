@@ -97,6 +97,7 @@ import {
   hasCopyResult,
   MAX_REFERENCE_MEDIA_SECONDS,
   mergeStudioAssets,
+  resolveSubmittedRatio,
   resolveVideoMode,
   validateReferences,
 } from "./state";
@@ -4585,8 +4586,19 @@ export function VideoPage() {
               : firstFrameId
                 ? "图生视频"
                 : "文生视频"}{" "}
-            · {state.draft.resolution} · {state.draft.duration} 秒 ·{" "}
-            {state.draft.ratio === "adaptive" ? "自动" : state.draft.ratio}
+            · {state.draft.resolution} · {state.draft.duration} 秒 · {(() => {
+              // 底栏展示的比例必须与实际提交值一致（图生恒为自动，
+              // 文生回落具体比例），不能在扣费确认处误导用户。
+              const submitted = resolveSubmittedRatio(
+                resolveVideoMode(
+                  state.page,
+                  Boolean(firstFrameId),
+                  Boolean(state.draft.tailFrameId),
+                ),
+                state.draft.ratio,
+              );
+              return submitted === "adaptive" ? "自动" : submitted;
+            })()}
           </strong>
           <Hint>提交前确认费用；生成结果进入任务中心。</Hint>
         </div>

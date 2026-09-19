@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.generation import build_h3_request
+from app.generation import ProviderRequestContractError, build_h3_request
 
 REFERENCE_IMAGE = ({"name": "scene", "url": "local://scene.png"},)
 
@@ -37,8 +37,11 @@ def _build(**overrides: object) -> dict:
 
 
 def test_t2v_rejects_adaptive_ratio() -> None:
-    with pytest.raises(ValueError, match=r"requires a concrete ratio"):
+    # 专用异常类型：worker 据此把契约违规与首帧 URL 签名失败分开归类；
+    # 仍是 ValueError 子类，兼容既有捕获方。
+    with pytest.raises(ProviderRequestContractError, match=r"requires a concrete ratio"):
         _build(ratio="adaptive")
+    assert issubclass(ProviderRequestContractError, ValueError)
 
 
 def test_t2v_passes_concrete_ratio_through() -> None:
