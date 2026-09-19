@@ -340,6 +340,7 @@ def test_admin_price_publication_drives_authenticated_api_billing(pricing_client
     request = {
         "mode": "t2v",
         "prompt_text": "乡墅庭院",
+        "ratio": "16:9",
         "output_duration_seconds": 6,
         "resolution": "2K",
         "quantity": 1,

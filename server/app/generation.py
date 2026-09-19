@@ -213,6 +213,9 @@ MAX_ARCHIVE_RETRIES = 5
 SAFE_PRE_PROVIDER_FAILURE_CODES = {
     "FIRST_FRAME_URL_SIGN_FAILED",
     "METASO_SETTINGS_UNAVAILABLE",
+    # 契约违规在发出 Provider 请求之前就失败，未触达供应商、未计费，
+    # 与首帧签名失败同样允许原地重试。
+    "PROVIDER_REQUEST_CONTRACT",
 }
 
 logger = logging.getLogger(__name__)
@@ -415,6 +418,15 @@ class H3ProviderFailed(RuntimeError):
 
 class H3ProviderSettingsUnavailable(RuntimeError):
     pass
+
+
+class ProviderRequestContractError(ValueError):
+    """请求参数违反供应商契约（如 T2V 携带 adaptive ratio）。
+
+    继承 ValueError 以兼容既有捕获方；worker 用它把契约违规与
+    “首帧 URL 签名失败”分开归类，避免误导排障。新提交已在建批
+    入口（independent.py 422）拦下，这里只兜底存量/异常路径。
+    """
 
 
 class GeneratedVideoValidationUnavailable(RuntimeError):
@@ -2333,6 +2345,11 @@ def create_generation_batch(
         request_snapshot["prompt_version_id"] = prompt_version_id
         task_prompt_snapshot = {
             **prompt_snapshot,
+            # 复刻流恒为图生视频（首帧已确认）。内联提示词路径不经 compile，
+            # snapshot 会缺 first_frame_uri，导致 worker 误判为纯文本并以
+            # adaptive 触发供应商契约失败；这里用已确认首帧的 storage_uri 兜底。
+            "first_frame_uri": prompt_snapshot.get("first_frame_uri")
+            or str(first_frame["storage_uri"]),
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
             "ratio": request.ratio,
@@ -5736,6 +5753,49 @@ def mark_task_first_frame_url_sign_failed(
         release_user_queue_slot_for_task(conn, task_id=task_id)
 
 
+def mark_task_provider_request_contract_failed(
+    conn: BusinessConnection,
+    *,
+    lease: dict[str, Any],
+) -> None:
+    """Terminal failure for a submission that violates the provider contract.
+
+    Same safe-failure shape as ``mark_task_first_frame_url_sign_failed`` (the
+    provider call never started), but with an honest error code so triage
+    does not chase a first-frame signing problem that never existed.
+    """
+    task_id = str(lease["id"])
+    batch_id = str(lease["batch_id"])
+    with conn:
+        contract_failed_update = conn.execute(
+            """
+            UPDATE generation_tasks
+            SET
+                status = 'FAILED',
+                error_code = 'PROVIDER_REQUEST_CONTRACT',
+                error_message_redacted = 'Generation parameters violate the provider contract.',
+                submitted_at = NULL,
+                locked_by = NULL,
+                locked_until = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = %s AND locked_by = %s AND locked_until = %s
+              AND superseded_by_task_id IS NULL
+            """,
+            (
+                task_id,
+                str(lease["status"]),
+                str(lease["locked_by"]),
+                str(lease["locked_until"]),
+            ),
+        )
+        if contract_failed_update.rowcount != 1:
+            raise GenerationTaskSupersededError(task_id)
+        record_video_generation_not_called(conn, task_id=task_id)
+        finalize_internal_billing(conn, task_id=task_id, outcome="failed")
+        _refresh_batch_status_in_transaction(conn, batch_id=batch_id)
+        release_user_queue_slot_for_task(conn, task_id=task_id)
+
+
 def _insert_worker_audit(
     conn: BusinessConnection,
     *,
@@ -6793,6 +6853,25 @@ def build_h3_request(
         raise ValueError("ratio is unsupported")
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt_text}]
     has_reference = bool(reference_images or reference_videos or reference_audios)
+    has_frame = bool(first_frame_url or last_frame_url)
+    # 供应商 ratio 契约（2026-09-19 对 MiniMax-H3 真实付费核对，见
+    # .dev-env/ratio-probe-20260919/FINDINGS.json）：
+    #   T2VA（仅文本）：ratio 必填且不能为 adaptive，否则供应商 400（err 2013）。
+    #   I2VA/FL2VA/L2VA（含首/尾帧）：ratio 恒为 adaptive，传具体值不报错但被
+    #     静默忽略、按首帧图片比例渲染——这里统一归一为 adaptive，使发出的请求
+    #     与供应商真实行为一致，避免快照记录一个不会生效的比例。
+    #   Ref2VA（含参考素材）：ratio 可选、默认 adaptive，具体比例被供应商尊重，透传。
+    if has_reference:
+        effective_ratio = ratio
+    elif has_frame:
+        effective_ratio = "adaptive"
+    else:
+        if ratio == "adaptive":
+            raise ProviderRequestContractError(
+                "text-to-video (T2V) requires a concrete ratio; "
+                "adaptive is not supported by the provider"
+            )
+        effective_ratio = ratio
     if has_reference:
         if first_frame_url or last_frame_url:
             raise ValueError("reference mode must not carry first/last frame")
@@ -6840,7 +6919,7 @@ def build_h3_request(
         "content": content,
         "resolution": resolution,
         "duration": duration_seconds,
-        "ratio": ratio,
+        "ratio": effective_ratio,
     }
 
 

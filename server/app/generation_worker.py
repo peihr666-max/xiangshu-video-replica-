@@ -49,6 +49,7 @@ from app.generation import (
     H3ProviderFailed,
     H3ProviderSettingsUnavailable,
     MetasoH3Provider,
+    ProviderRequestContractError,
     SubmissionUncertain,
     acquire_generation_continuation_lease,
     acquire_generation_reconcile_operation,
@@ -61,6 +62,7 @@ from app.generation import (
     mark_generation_task_running,
     mark_task_first_frame_url_sign_failed,
     mark_task_provider_failed,
+    mark_task_provider_request_contract_failed,
     mark_task_provider_settings_unavailable,
     mark_task_submission_uncertain,
     perform_generation_reconcile_operation,
@@ -890,6 +892,15 @@ def _run_pg_generation_step(
         except H3ProviderSettingsUnavailable:
             with pg_transaction() as raw_conn:
                 mark_task_provider_settings_unavailable(
+                    BusinessConnection.postgres(raw_conn),
+                    lease=lease,
+                )
+            return
+        except ProviderRequestContractError:
+            # 参数违反供应商契约（如存量 T2V+adaptive），单独归类，
+            # 避免误标为首帧 URL 签名失败误导排障。
+            with pg_transaction() as raw_conn:
+                mark_task_provider_request_contract_failed(
                     BusinessConnection.postgres(raw_conn),
                     lease=lease,
                 )

@@ -2171,6 +2171,100 @@ describe("V1.4 创作页面", () => {
     ).not.toBeNull();
   });
 
+  // 供应商 ratio 契约（2026-09-19 真实付费核对）：图生比例由首帧决定，
+  // 文生不支持自动。
+  it("图生视频画面比例选择器禁用并提示由首帧决定", () => {
+    const value = studio({
+      state: { ...studio().state, page: "video" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const ratio = screen.getByRole("combobox", { name: "画面比例" });
+    expect(ratio).toBeDisabled();
+    expect(ratio).toHaveValue("自动");
+    expect(
+      screen.getByText("图生视频的画面比例由首帧图片决定，无需选择。"),
+    ).toBeInTheDocument();
+  });
+
+  it("文生视频隐藏自动选项，默认展示具体比例", () => {
+    const base = studio();
+    const value = studio({
+      state: {
+        ...base.state,
+        page: "video",
+        draft: { ...base.state.draft, firstFrameId: undefined },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const ratio = screen.getByRole("combobox", {
+      name: "画面比例",
+    }) as HTMLSelectElement;
+    expect(ratio).not.toBeDisabled();
+    const labels = Array.from(ratio.options).map((option) => option.value);
+    expect(labels).not.toContain("自动");
+    expect(labels).toContain("16:9");
+    expect(ratio).toHaveValue("16:9");
+  });
+
+  it("文生视频草稿为自动时选择器回落展示 9:16", () => {
+    const base = studio();
+    const value = studio({
+      state: {
+        ...base.state,
+        page: "video",
+        draft: { ...base.state.draft, firstFrameId: undefined, ratio: "自动" },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    expect(screen.getByRole("combobox", { name: "画面比例" })).toHaveValue(
+      "9:16",
+    );
+  });
+
+  it("图生视频底部确认栏展示自动而非草稿具体比例", () => {
+    const base = studio();
+    const value = studio({
+      state: {
+        ...base.state,
+        page: "video",
+        // 草稿默认 16:9，但图生实际提交 adaptive，扣费确认处必须诚实。
+        draft: { ...base.state.draft, ratio: "16:9" },
+      },
+    });
+    useStudio.mockReturnValue(value);
+    const view = render(<VideoPage />);
+
+    const bar = view.container.querySelector(
+      ".creation-video-bottom-bar",
+    ) as HTMLElement;
+    expect(bar).not.toBeNull();
+    expect(bar.textContent).toContain("图生视频");
+    expect(bar.textContent).toContain("自动");
+    expect(bar.textContent).not.toContain("16:9");
+  });
+
+  it("参考生视频比例选择器可用且保留自动选项", () => {
+    const value = studio({
+      state: { ...studio().state, page: "reference" },
+    });
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    const ratio = screen.getByRole("combobox", {
+      name: "画面比例",
+    }) as HTMLSelectElement;
+    expect(ratio).not.toBeDisabled();
+    const labels = Array.from(ratio.options).map((option) => option.value);
+    expect(labels).toContain("自动");
+    expect(ratio).toHaveValue("16:9");
+  });
+
   it("上传区域拒绝多文件与禁用态，单文件拖入复用上传链路", async () => {
     const value = studio({
       review: false,

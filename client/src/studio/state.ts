@@ -1,4 +1,4 @@
-import type { ShotCard } from "./../api";
+import type { GenerationRatio, ShotCard } from "./../api";
 import type {
   StudioAsset,
   StudioDraft,
@@ -626,6 +626,31 @@ export function resolveVideoMode(
 ): "t2v" | "i2v" | "l2v" | "r2v" {
   if (page === "reference") return "r2v";
   return hasFirstFrame ? "i2v" : hasLastFrame ? "l2v" : "t2v";
+}
+
+/**
+ * 按生成模式算出真正提交给后端的画面比例，与供应商契约及后端
+ * build_h3_request 的归一逻辑保持一致（2026-09-19 对 MiniMax-H3 真实核对）：
+ *  - 图生（i2v/l2v）：恒为 adaptive——供应商按首帧图片比例渲染，用户选具体
+ *    值会被静默忽略，这里直接归一，避免提交一个不会生效的比例（BUG-2）。
+ *  - 文生（t2v）：供应商要求具体比例、不接受 adaptive；用户值为自动/无效时
+ *    回落默认竖屏 9:16（BUG-1）。
+ *  - 参考生（r2v）：尊重用户选择，默认/无效时为 adaptive。
+ */
+export function resolveSubmittedRatio(
+  mode: "t2v" | "i2v" | "l2v" | "r2v",
+  draftRatio: string,
+): GenerationRatio {
+  const selected = (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
+    draftRatio,
+  )
+    ? (draftRatio as GenerationRatio)
+    : null;
+  const concrete =
+    selected !== null && selected !== "adaptive" ? selected : null;
+  if (mode === "i2v" || mode === "l2v") return "adaptive";
+  if (mode === "t2v") return concrete ?? "9:16";
+  return selected ?? "adaptive";
 }
 
 /** 把分镜卡拼成可读的反推提示词文本（可编辑、可另存为自定义提示词）。 */
