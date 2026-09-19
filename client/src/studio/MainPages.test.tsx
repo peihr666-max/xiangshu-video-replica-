@@ -930,7 +930,7 @@ describe("V1.4 工作台新版首页布局", () => {
         name: "粘贴一条爆款乡墅视频链接，快速生成它的原创视频",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/支持抖音、小红书的 App 分享链接/)).toHaveClass(
+    expect(screen.getByText(/支持抖音、小红书的视频链接/)).toHaveClass(
       "studio-start-helper",
     );
     expect(
@@ -1810,13 +1810,40 @@ describe("V1.4 工作台上传与创作入口", () => {
     expect(createViralImportTask).not.toHaveBeenCalled();
   });
 
+  it("链接视频超过 15 秒上限时红标报错而非静默无反应", async () => {
+    const value = workbench();
+    useStudio.mockReturnValue(value);
+    resolveViralLink.mockRejectedValue(
+      Object.assign(
+        new Error(
+          "参考视频时长 81 秒，超过 15 秒上限，无法拆解；请上传 15 秒以内的视频。",
+        ),
+        { status: 422, code: "VIRAL_LINK_DURATION_EXCEEDED" },
+      ),
+    );
+    render(<WorkbenchPage />);
+
+    fireEvent.change(screen.getByLabelText("视频链接"), {
+      target: {
+        value: "https://www.douyin.com/jingxuan?modal_id=7672703482771972081",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始复刻" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/超过 15 秒上限/);
+    expect(alert).toHaveClass("is-error");
+    expect(createViralImportTask).not.toHaveBeenCalled();
+    expect(value.navigate).not.toHaveBeenCalled();
+  });
+
   it("工作台明确说明支持抖音、小红书与上传格式，不展示解析耗时", () => {
     useStudio.mockReturnValue(workbench());
     render(<WorkbenchPage />);
 
     expect(
       screen.getByText(
-        /支持抖音、小红书的 App 分享链接、网页链接与主页视频链接；其他平台请上传\s+MP4\/MOV 文件。/,
+        /支持抖音、小红书的视频链接；其他平台请上传\s+MP4\/MOV\s+文件；视频复刻仅支持\s+15\s+秒以内的视频。/,
       ),
     ).toBeInTheDocument();
   });

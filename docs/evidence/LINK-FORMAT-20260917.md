@@ -18,7 +18,7 @@
 | ID 规范化 | 从 `/video/{id}`、`/note/{id}`、`/slides/{id}`、`modal_id=`（抖音）与 `/explore/{id}`、`/discovery/item/{id}`、`/user/profile/{u}/{id}`、`note_id=`（小红书，保留 `xsec_token`）提取内容 ID，重写为规范形态再发网关：抖音 `https://www.douyin.com/jingxuan?modal_id={id}`（网关已知稳定形态，模板为常量，后续探针可一行切换）、小红书 `https://www.xiaohongshu.com/explore/{id}` | `canonicalize_viral_link` |
 | 接入方式 | 规范化在 `DouyidouLinkClient.resolve` 内部完成；`redirect_transport` 构造参数注入（生产由 `douyidou_link_client_from_settings` 传入真实实现；离线测试/旧调用方传 None 时跳过网络还原，行为与旧版完全一致），路由层零改动 | `viral_link.py`、`viral_import_routes.py`（未改） |
 | ID 兼容 | 网关返回抖音 ID 校验放宽为 15–22 位 | `resolve` |
-| 前端文案 | 工作台提示更新为"支持抖音、小红书的 App 分享链接、网页链接与主页视频链接" | `client/src/studio/MainPages.tsx` |
+| 前端文案 | 工作台提示更新为"支持抖音、小红书的 App 分享链接、网页链接与主页视频链接"（**2026-09-19 修订**：随 15 秒上限加严改为"支持抖音、小红书的视频链接；其他平台请上传 MP4/MOV 文件；视频复刻仅支持 15 秒以内的视频。"，见 `VIRAL-DURATION-LIMIT` 任务） | `client/src/studio/MainPages.tsx` |
 
 计费语义不变：去重回执仍按 `normalize_supported_link` 后的原始输入 URL 计（`_link_request_hash` 未动），同一视频不同入口链接各自计费一次，与既有口径一致，未动钱包原子模型。
 
