@@ -85,6 +85,8 @@ export type StudioVoice = {
     | "FAILED";
   error?: string;
   url?: string;
+  /** 试听样本资产 id，供「下载试听」复用签名下载链路。 */
+  demoAssetId?: string;
 };
 export type StudioPerson = {
   id: string;

@@ -1143,6 +1143,34 @@ export async function confirmOralVoice(
   );
 }
 
+export type OralCloneDeleted = { id: string; deleted_at: string };
+
+/**
+ * 软删除口播分身。后端仅本地隐藏（deleted_at 标记），源视频资产保留；
+ * 分身仍在制作中或被进行中的口播任务引用时返回 409 ORAL_RESOURCE_IN_USE，
+ * 其 message 已是可直接展示的中文原因。
+ */
+export async function deleteOralAvatar(
+  avatarId: string,
+): Promise<OralCloneDeleted> {
+  return requestApiJson<OralCloneDeleted>(
+    `/api/oral/avatars/${encodeURIComponent(avatarId)}`,
+    "删除口播分身失败",
+    { method: "DELETE" },
+  );
+}
+
+/** 软删除声音档案。后端仅本地隐藏，源音频与试听资产保留；冲突时同 409。 */
+export async function deleteOralVoice(
+  voiceId: string,
+): Promise<OralCloneDeleted> {
+  return requestApiJson<OralCloneDeleted>(
+    `/api/oral/voices/${encodeURIComponent(voiceId)}`,
+    "删除声音失败",
+    { method: "DELETE" },
+  );
+}
+
 export type OralTaskRequest = {
   identityId: string;
   avatarId: string;

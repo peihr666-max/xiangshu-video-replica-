@@ -23,6 +23,9 @@ const api = vi.hoisted(() => ({
   createOralAvatarClone: vi.fn(),
   createOralConsent: vi.fn(),
   createOralVoiceClone: vi.fn(),
+  deleteOralAvatar: vi.fn(),
+  deleteOralVoice: vi.fn(),
+  downloadMaterialAsset: vi.fn(),
   refreshOralAvatar: vi.fn(),
   refreshOralVoice: vi.fn(),
   updateSimpleCharacterProfile: vi.fn(),
@@ -159,6 +162,7 @@ vi.mock("./context", () => ({
               confirmed: false,
               status: "READY",
               url: "/voice-preview.mp3",
+              demoAssetId: "voice-demo",
             },
             {
               id: "voice-running",
@@ -1513,5 +1517,124 @@ describe("PeoplePages", () => {
     view.rerender(<PersonPage />);
     await act(async () => finishConsent({ id: "late-consent" }));
     expect(api.createOralAvatarClone).not.toHaveBeenCalled();
+  });
+
+  it("口播分身卡片下载源视频走签名下载", async () => {
+    currentPage = "person-avatars";
+    review = false;
+    api.downloadMaterialAsset.mockResolvedValue(undefined);
+    render(<PersonPage />);
+    const card = screen.getByText("测试分身").closest("article");
+    fireEvent.click(
+      within(card as HTMLElement).getByRole("button", { name: "下载源视频" }),
+    );
+    await waitFor(() =>
+      expect(api.downloadMaterialAsset).toHaveBeenCalledWith(
+        "avatar-image",
+        "测试分身-源视频.mp4",
+      ),
+    );
+  });
+
+  it("删除口播分身需二次确认并在正式模式调用后端", async () => {
+    currentPage = "person-avatars";
+    review = false;
+    api.deleteOralAvatar.mockResolvedValue({
+      id: "avatar-1",
+      deleted_at: "2026-09-19T10:00:00+00:00",
+    });
+    render(<PersonPage />);
+    const card = screen.getByText("测试分身").closest("article");
+    fireEvent.click(
+      within(card as HTMLElement).getByRole("button", { name: "删除" }),
+    );
+    expect(
+      await screen.findByText(/确定删除「测试分身」吗/),
+    ).toBeInTheDocument();
+    expect(api.deleteOralAvatar).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() =>
+      expect(api.deleteOralAvatar).toHaveBeenCalledWith("avatar-1"),
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(notify).toHaveBeenCalledWith("口播分身已删除");
+  });
+
+  it("审核模式删除口播分身只本地移除不调用后端", async () => {
+    currentPage = "person-avatars";
+    review = true;
+    render(<PersonPage />);
+    const card = screen.getByText("测试分身").closest("article");
+    fireEvent.click(
+      within(card as HTMLElement).getByRole("button", { name: "删除" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(updateData).toHaveBeenCalled());
+    expect(api.deleteOralAvatar).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith("口播分身已删除");
+  });
+
+  it("声音卡片下载试听样例走签名下载", async () => {
+    currentPage = "person-voices";
+    review = false;
+    api.downloadMaterialAsset.mockResolvedValue(undefined);
+    render(<PersonPage />);
+    const card = screen.getByText("待确认音色").closest("article");
+    fireEvent.click(
+      within(card as HTMLElement).getByRole("button", { name: "下载试听" }),
+    );
+    await waitFor(() =>
+      expect(api.downloadMaterialAsset).toHaveBeenCalledWith(
+        "voice-demo",
+        "待确认音色-试听.mp3",
+      ),
+    );
+  });
+
+  it("删除声音需二次确认并在正式模式调用后端", async () => {
+    currentPage = "person-voices";
+    review = false;
+    api.deleteOralVoice.mockResolvedValue({
+      id: "voice-pending",
+      deleted_at: "2026-09-19T10:00:00+00:00",
+    });
+    render(<PersonPage />);
+    const card = screen.getByText("待确认音色").closest("article");
+    fireEvent.click(
+      within(card as HTMLElement).getByRole("button", { name: "删除" }),
+    );
+    expect(
+      await screen.findByText(/确定删除「待确认音色」吗/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() =>
+      expect(api.deleteOralVoice).toHaveBeenCalledWith("voice-pending"),
+    );
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
+    expect(notify).toHaveBeenCalledWith("声音已删除");
+  });
+
+  it("制作中的声音不提供删除入口", () => {
+    currentPage = "person-voices";
+    review = false;
+    render(<PersonPage />);
+    const card = screen.getByText("克隆中音色").closest("article");
+    expect(
+      within(card as HTMLElement).queryByRole("button", { name: "删除" }),
+    ).toBeNull();
+  });
+
+  it("审计员可见下载但删除按钮禁用", () => {
+    currentRole = "auditor";
+    review = false;
+    currentPage = "person-avatars";
+    render(<PersonPage />);
+    const card = screen.getByText("测试分身").closest("article");
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: "下载源视频" }),
+    ).not.toBeDisabled();
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: "删除" }),
+    ).toBeDisabled();
   });
 });

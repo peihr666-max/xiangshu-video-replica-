@@ -681,6 +681,7 @@ function studioVoice(voice: OralVoiceRecord, url?: string): StudioVoice {
     submissionState: voice.submission_state,
     error: voice.error_message ?? undefined,
     url,
+    demoAssetId: voice.demo_asset_id ?? undefined,
   };
 }
 
