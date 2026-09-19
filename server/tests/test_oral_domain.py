@@ -85,13 +85,21 @@ from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
     OralConflictError,
     OralDomainError,
+    OralResourceInUseError,
+    OralResourceNotFoundError,
     cancel_oral_task,
     confirm_voice_clone,
     create_oral_consent,
     create_oral_task,
+    delete_avatar_clone,
+    delete_voice_clone,
+    list_avatars,
     list_oral_consents,
+    list_voices,
     oral_price_quote,
     oral_unit_price_fen,
+    read_avatar_clone,
+    read_voice_clone,
     refresh_avatar_clone,
     refresh_oral_task,
     refresh_voice_clone,
@@ -504,6 +512,36 @@ def _refresh_voice(**kwargs: Any) -> dict[str, Any]:
 def _confirm_voice(**kwargs: Any) -> dict[str, Any]:
     with pg_transaction() as raw:
         return confirm_voice_clone(BusinessConnection.postgres(raw), **kwargs)
+
+
+def _list_avatars(**kwargs: Any) -> list[dict[str, Any]]:
+    with pg_transaction() as raw:
+        return list_avatars(BusinessConnection.postgres(raw), **kwargs)
+
+
+def _read_avatar(**kwargs: Any) -> dict[str, Any]:
+    with pg_transaction() as raw:
+        return read_avatar_clone(BusinessConnection.postgres(raw), **kwargs)
+
+
+def _delete_avatar(**kwargs: Any) -> dict[str, Any]:
+    with pg_transaction() as raw:
+        return delete_avatar_clone(BusinessConnection.postgres(raw), **kwargs)
+
+
+def _list_voices(**kwargs: Any) -> list[dict[str, Any]]:
+    with pg_transaction() as raw:
+        return list_voices(BusinessConnection.postgres(raw), **kwargs)
+
+
+def _read_voice(**kwargs: Any) -> dict[str, Any]:
+    with pg_transaction() as raw:
+        return read_voice_clone(BusinessConnection.postgres(raw), **kwargs)
+
+
+def _delete_voice(**kwargs: Any) -> dict[str, Any]:
+    with pg_transaction() as raw:
+        return delete_voice_clone(BusinessConnection.postgres(raw), **kwargs)
 
 
 def _oral_unit_price() -> int:
@@ -1039,6 +1077,156 @@ def test_consent_and_voice_confirmation_routes(scene: str) -> None:
         assert confirmed.status_code == 200, confirmed.text
         assert confirmed.json()["confirmed"] == 1
         assert confirmed.json()["confirmed_by_user_id"] == "employee_1"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_avatar_clone_soft_deletes_and_hides_from_list(scene: str) -> None:
+    avatar_id, _ = _seed_ready_assets()
+    assert avatar_id in [row["id"] for row in _list_avatars(actor=actor(), identity_id="ident-1")]
+
+    result = _delete_avatar(avatar_id=avatar_id, actor=actor())
+    assert result["id"] == avatar_id
+    assert result["deleted_at"]
+
+    # Row is retained (oral_tasks.avatar_id is ON DELETE RESTRICT); markers set.
+    row = _fetch(
+        "SELECT status, deleted_at, deleted_by_user_id FROM oral_avatars WHERE id = %s",
+        (avatar_id,),
+    )
+    assert row is not None
+    assert row["status"] == "READY"
+    assert row["deleted_at"]
+    assert row["deleted_by_user_id"] == "employee_1"
+
+    # Hidden from the owner's clone list and unreadable by id.
+    remaining = _list_avatars(actor=actor(), identity_id="ident-1")
+    assert avatar_id not in [item["id"] for item in remaining]
+    with pytest.raises(OralDomainError):
+        _read_avatar(avatar_id=avatar_id, actor=actor())
+
+    audit = _fetch(
+        "SELECT action, actor_user_id FROM audit_logs WHERE entity_id = %s", (avatar_id,)
+    )
+    assert audit is not None
+    assert audit["action"] == "oral.avatar.delete"
+    assert audit["actor_user_id"] == "employee_1"
+
+
+def test_delete_voice_clone_retains_source_and_demo_assets(scene: str) -> None:
+    _, voice_id = _seed_ready_assets()
+    _delete_voice(voice_id=voice_id, actor=actor())
+    # Soft delete hides the clone but never touches the underlying demo asset.
+    remaining = _list_voices(actor=actor(), identity_id="ident-1")
+    assert voice_id not in [item["id"] for item in remaining]
+    retained = _count(
+        "SELECT 1 FROM oral_voices WHERE id = %s AND deleted_at IS NOT NULL", (voice_id,)
+    )
+    assert retained == 1
+    assert _count("SELECT 1 FROM assets WHERE id = 'voice-demo-ready'") == 1
+
+
+def test_delete_avatar_clone_blocked_while_clone_in_flight(scene: str) -> None:
+    with pg_transaction() as raw:
+        BusinessConnection.postgres(raw).execute(
+            "INSERT INTO oral_avatars ("
+            " id, identity_id, owner_user_id, title, status, source_kind,"
+            " source_asset_id, submission_state"
+            ") VALUES ("
+            " 'avatar-running', 'ident-1', 'employee_1', '制作中', 'RUNNING', 'VIDEO',"
+            " 'asset-src', 'SUBMITTING')"
+        )
+    with pytest.raises(OralResourceInUseError):
+        _delete_avatar(avatar_id="avatar-running", actor=actor())
+    row = _fetch("SELECT deleted_at FROM oral_avatars WHERE id = 'avatar-running'")
+    assert row is not None and row["deleted_at"] is None
+
+
+def test_delete_avatar_clone_blocked_by_active_task_until_terminal(scene: str) -> None:
+    avatar_id, _ = _seed_ready_assets()
+    with pg_transaction() as raw:
+        BusinessConnection.postgres(raw).execute(
+            "INSERT INTO oral_tasks ("
+            " id, owner_user_id, identity_id, avatar_id, mode, title,"
+            " estimated_cost_fen, idempotency_key, status"
+            ") VALUES ("
+            " 'task-active', 'employee_1', 'ident-1', %s, 'TTS', '进行中', 100,"
+            " 'idem-task-active', 'RUNNING')",
+            (avatar_id,),
+        )
+    with pytest.raises(OralResourceInUseError):
+        _delete_avatar(avatar_id=avatar_id, actor=actor())
+    # Once the referencing task reaches a terminal state the clone is deletable.
+    _exec("UPDATE oral_tasks SET status = 'SUCCEEDED' WHERE id = 'task-active'")
+    _delete_avatar(avatar_id=avatar_id, actor=actor())
+    deleted = _fetch("SELECT deleted_at FROM oral_avatars WHERE id = %s", (avatar_id,))
+    assert deleted is not None and deleted["deleted_at"]
+
+
+def test_delete_avatar_clone_scoped_to_owner(scene: str) -> None:
+    # An avatar owned by someone else is invisible to employee_1's delete.
+    with pg_transaction() as raw:
+        BusinessConnection.postgres(raw).execute(
+            "INSERT INTO oral_avatars ("
+            " id, identity_id, owner_user_id, title, status, source_kind,"
+            " source_asset_id, submission_state"
+            ") VALUES ("
+            " 'avatar-other', 'ident-1', 'employee_2', '别人的', 'READY', 'VIDEO',"
+            " 'asset-src', 'SUBMITTED')"
+        )
+    with pytest.raises(OralResourceNotFoundError):
+        _delete_avatar(avatar_id="avatar-other", actor=actor())
+    row = _fetch("SELECT deleted_at FROM oral_avatars WHERE id = 'avatar-other'")
+    assert row is not None and row["deleted_at"] is None
+
+
+def test_delete_avatar_and_voice_routes(scene: str) -> None:
+    avatar_id, voice_id = _seed_ready_assets()
+    vendor, _ = make_vendor()
+    db_override, _holder = _make_business_db_override(actor())
+    app.dependency_overrides[get_current_user] = actor
+    app.dependency_overrides[get_business_db] = db_override
+    app.dependency_overrides[get_oral_vendor] = lambda: vendor
+    try:
+        client = TestClient(app)
+        avatar_resp = client.delete(f"/api/oral/avatars/{avatar_id}")
+        assert avatar_resp.status_code == 200, avatar_resp.text
+        voice_resp = client.delete(f"/api/oral/voices/{voice_id}")
+        assert voice_resp.status_code == 200, voice_resp.text
+
+        avatars = client.get("/api/oral/avatars", params={"identity_id": "ident-1"})
+        assert avatar_id not in [row["id"] for row in avatars.json()]
+        voices = client.get("/api/oral/voices", params={"identity_id": "ident-1"})
+        assert voice_id not in [row["id"] for row in voices.json()]
+
+        missing = client.delete("/api/oral/avatars/does-not-exist")
+        assert missing.status_code == 404, missing.text
+        assert missing.json()["detail"]["code"] == "ORAL_RESOURCE_NOT_FOUND"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_delete_avatar_route_conflict_when_in_use(scene: str) -> None:
+    _seed_ready_assets()
+    with pg_transaction() as raw:
+        BusinessConnection.postgres(raw).execute(
+            "INSERT INTO oral_avatars ("
+            " id, identity_id, owner_user_id, title, status, source_kind,"
+            " source_asset_id, submission_state"
+            ") VALUES ("
+            " 'avatar-busy', 'ident-1', 'employee_1', '制作中', 'PENDING', 'VIDEO',"
+            " 'asset-src', 'LOCAL_PENDING')"
+        )
+    vendor, _ = make_vendor()
+    db_override, _holder = _make_business_db_override(actor())
+    app.dependency_overrides[get_current_user] = actor
+    app.dependency_overrides[get_business_db] = db_override
+    app.dependency_overrides[get_oral_vendor] = lambda: vendor
+    try:
+        client = TestClient(app)
+        resp = client.delete("/api/oral/avatars/avatar-busy")
+        assert resp.status_code == 409, resp.text
+        assert resp.json()["detail"]["code"] == "ORAL_RESOURCE_IN_USE"
     finally:
         app.dependency_overrides.clear()
 

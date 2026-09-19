@@ -29,11 +29,15 @@ from app.oral import (
     ORAL_CONSENT_TEXT_VERSION,
     OralConflictError,
     OralDomainError,
+    OralResourceInUseError,
+    OralResourceNotFoundError,
     OralTaskNotFoundError,
     cancel_oral_task,
     confirm_voice_clone,
     create_oral_consent,
     create_oral_task,
+    delete_avatar_clone,
+    delete_voice_clone,
     list_avatars,
     list_oral_consents,
     list_oral_tasks,
@@ -106,6 +110,10 @@ class OralError(HTTPException):
 def _domain_guard(exc: OralDomainError) -> HTTPException:
     if isinstance(exc, OralTaskNotFoundError):
         return OralError("ORAL_TASK_NOT_FOUND", str(exc), status_code=404)
+    if isinstance(exc, OralResourceNotFoundError):
+        return OralError("ORAL_RESOURCE_NOT_FOUND", str(exc), status_code=404)
+    if isinstance(exc, OralResourceInUseError):
+        return OralError("ORAL_RESOURCE_IN_USE", str(exc), status_code=409)
     if isinstance(exc, OralConflictError):
         return OralError("ORAL_IDEMPOTENCY_CONFLICT", str(exc), status_code=409)
     return OralError("ORAL_REQUEST_INVALID", str(exc))
@@ -379,6 +387,30 @@ def confirm_voice(
     with db.write() as (conn, actor):
         try:
             return _serialize(confirm_voice_clone(conn, voice_id=voice_id, actor=actor))
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+
+
+@router.delete("/avatars/{avatar_id}")
+def delete_avatar(
+    avatar_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            return delete_avatar_clone(conn, avatar_id=avatar_id, actor=actor)
+        except OralDomainError as exc:
+            raise _domain_guard(exc) from exc
+
+
+@router.delete("/voices/{voice_id}")
+def delete_voice(
+    voice_id: str,
+    db: BusinessDbDep,
+) -> dict[str, Any]:
+    with db.write() as (conn, actor):
+        try:
+            return delete_voice_clone(conn, voice_id=voice_id, actor=actor)
         except OralDomainError as exc:
             raise _domain_guard(exc) from exc
 

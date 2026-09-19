@@ -32,10 +32,11 @@ from sqlalchemy.engine import make_url
 DEFAULT_DSN = "postgresql://testuser:testpass@localhost:5433/customer_v3_test"
 # PR#103(df7020c) 引入 pg_test_kit.require_pg_or_explicit_skip 模块级 autouse fixture，
 # 取代旧的 SKIP_REASON 常量（已无引用，随 main 基线删除）。
-# HEAD_REVISION 取本分支链尾：PUBLISH-DELIVERY-20260917 追加
-# 20260917T1000_publish_records 在 prompt_optimization_receipts 之后。
+# HEAD_REVISION 取本分支链尾：ASSET-DOWNLOAD-ORAL-DELETE-20260919 追加
+# 20260919T1000_oral_soft_delete（oral_avatars / oral_voices 软删两列）在
+# 20260918T1200_publish_account_avatar 之后。
 # 迁移后 alembic 版本头即该值，9 处 assert version == HEAD_REVISION 依赖此值。
-HEAD_REVISION = "20260918T1200_publish_account_avatar"
+HEAD_REVISION = "20260919T1000_oral_soft_delete"
 
 
 def test_viral_script_cache_migration_preserves_results_without_task_foreign_keys(
