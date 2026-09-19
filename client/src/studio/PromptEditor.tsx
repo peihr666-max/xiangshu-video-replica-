@@ -345,6 +345,7 @@ type Props = {
   placeholder?: string;
   readOnly?: boolean;
   optimizationDisabled?: boolean;
+  optimizationActionLabel?: string;
   rows?: number;
   toolbarStart?: ReactNode;
   showToolbarLabel?: boolean;
@@ -360,6 +361,7 @@ export function PromptEditor({
   placeholder,
   readOnly = false,
   optimizationDisabled = false,
+  optimizationActionLabel = "AI 优化提示词",
   rows = 8,
   toolbarStart,
   showToolbarLabel = false,
@@ -394,9 +396,12 @@ export function PromptEditor({
           onClick={() => void optimization.run()}
         >
           <Icon name={optimization.busy ? "refresh" : "sparkles"} size={16} />
-          <span>{optimization.busy ? "正在优化…" : "AI 优化提示词"}</span>
+          <span>
+            {optimization.busy ? "正在优化…" : optimizationActionLabel}
+          </span>
         </button>
       </div>
+      {optimization.message && <p role="status">{optimization.message}</p>}
       <textarea
         aria-label={label}
         className="creation-textarea"
@@ -409,7 +414,6 @@ export function PromptEditor({
       />
       <small>{count}/7000 字</small>
       {count > 7000 && <p role="alert">提示词超过 7000 字，请精简后提交。</p>}
-      {optimization.message && <p role="status">{optimization.message}</p>}
       {optimization.pending && (
         <details>
           <summary>查看基于旧内容的优化结果</summary>

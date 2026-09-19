@@ -2525,6 +2525,51 @@ describe("V1.4 创作页面", () => {
     expect(within(library).queryByText(/参考图 1\/8/)).toBeNull();
   });
 
+  it("参考生视频导入首帧模板时给出可执行的转换入口", () => {
+    const value = studio({
+      videoCapabilities: referenceCapabilities,
+    });
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: {
+        ...value.state.draft,
+        prompt: "用@2的人物替换视频@1中的主要角色",
+        referenceIds: ["reference-1"],
+        promptBindingsStale: true,
+        importedPromptContext: {
+          route: "text_image",
+          duration_seconds: 8,
+          mode: "I2VA",
+          generation_assets: [{ label: "<Picture 1>", purpose: "first_frame" }],
+        },
+      },
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    expect(
+      screen.getByRole("button", { name: "AI 优化提示词" }),
+    ).toHaveTextContent("按当前素材 AI 转换");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "导入模板与当前生成模式不同",
+    );
+    expect(
+      screen.getByText(
+        /导入模板：首帧生视频（I2VA）；当前模式：参考生视频（Ref2VA）/,
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("提示词"), {
+      target: { value: "手动改写后的参考提示词" },
+    });
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      prompt: "手动改写后的参考提示词",
+      promptEdited: true,
+      importedPromptContext: undefined,
+    });
+  });
+
   it("本机上传视频后立即用本地首帧作为缩略图", async () => {
     replicaLive.readVideoDuration.mockResolvedValue(10);
     replicaLive.readVideoFirstFrame.mockResolvedValue(

@@ -36,9 +36,11 @@ vi.mock("../api", () => ({
 function Harness({
   scope = "user:project",
   rows,
+  optimizationActionLabel,
 }: {
   scope?: string;
   rows?: number;
+  optimizationActionLabel?: string;
 }) {
   const [text, setText] = useState("原始提示词");
   return (
@@ -48,6 +50,7 @@ function Harness({
       scope={scope}
       context={{ route: "text_image", duration_seconds: 8 }}
       rows={rows}
+      optimizationActionLabel={optimizationActionLabel}
     />
   );
 }
@@ -301,6 +304,19 @@ describe("PromptEditor", () => {
       target: { value: "继续手改" },
     });
     expect(screen.queryByRole("button", { name: "撤销" })).toBeNull();
+  });
+  it("转换导入模板时立即展示进度，按钮仍保留统一的可访问名称", async () => {
+    api.create.mockReturnValue(new Promise(() => {}));
+    render(<Harness optimizationActionLabel="按当前素材 AI 转换" />);
+
+    const button = screen.getByRole("button", { name: "AI 优化提示词" });
+    expect(button).toHaveTextContent("按当前素材 AI 转换");
+    fireEvent.click(button);
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "正在提交优化任务",
+    );
+    expect(button).toHaveTextContent("正在优化");
   });
   it("迟到结果不覆盖等待期间的编辑，可主动应用", async () => {
     let finish: ((value: PromptOptimizeResult) => void) | undefined;

@@ -21,6 +21,7 @@ import {
   getLatestScriptVersion,
   getMaterialBatchPreviews,
   getScriptRewriteTask,
+  type H3Mode,
   listUserSavedPrompts,
   type Project,
   type ProjectMainCharacter,
@@ -3449,6 +3450,18 @@ function useReferencePreviews(assets: StudioAsset[], userId: string) {
   return { entries, retry };
 }
 
+const PROMPT_MODE_LABELS: Record<H3Mode, string> = {
+  T2VA: "文生视频",
+  I2VA: "首帧生视频",
+  FL2VA: "首尾帧生视频",
+  L2VA: "尾帧生视频",
+  Ref2VA: "参考生视频",
+};
+
+function promptModeLabel(mode: H3Mode | undefined): string {
+  return mode ? `${PROMPT_MODE_LABELS[mode]}（${mode}）` : "未记录";
+}
+
 export function VideoPage() {
   const {
     state,
@@ -3486,6 +3499,19 @@ export function VideoPage() {
     );
   };
   const referenceMode = state.page === "reference";
+  const currentPromptMode: H3Mode = referenceMode
+    ? "Ref2VA"
+    : state.draft.firstFrameId && state.draft.tailFrameId
+      ? "FL2VA"
+      : state.draft.firstFrameId
+        ? "I2VA"
+        : state.draft.tailFrameId
+          ? "L2VA"
+          : "T2VA";
+  const importedPromptMode = state.draft.importedPromptContext?.mode;
+  const importedModeMismatch = Boolean(
+    importedPromptMode && importedPromptMode !== currentPromptMode,
+  );
   const storedFirstFrame =
     findAsset(data.assets, state.draft.firstFrameId) ??
     findAsset(data.materials, state.draft.firstFrameId);
@@ -4126,9 +4152,16 @@ export function VideoPage() {
             value={state.draft.prompt}
             readOnly={readOnly}
             optimizationDisabled={review}
+            optimizationActionLabel={
+              importedModeMismatch ? "按当前素材 AI 转换" : undefined
+            }
             scope={`${user.id}:${state.page}`}
             onChange={(text) =>
-              patchDraft({ prompt: text, promptEdited: true })
+              patchDraft({
+                prompt: text,
+                promptEdited: true,
+                importedPromptContext: undefined,
+              })
             }
             placeholder="描述镜头、场景、运动与光线"
             context={{
@@ -4153,23 +4186,29 @@ export function VideoPage() {
           />
           {state.draft.promptBindingsStale && (
             <div role="alert">
-              参考素材已变化，请核对提示词的素材编号。
+              {importedModeMismatch
+                ? "导入模板与当前生成模式不同，请点击上方“按当前素材 AI 转换”；转换完成后会自动更新素材引用。"
+                : "参考素材已变化，请核对提示词的素材编号。"}
               <Button
                 onClick={() => patchDraft({ promptBindingsStale: false })}
                 disabled={readOnly}
               >
-                已核对当前素材绑定
+                我已手动核对
               </Button>
             </div>
           )}
           {state.draft.importedPromptContext && (
-            <small>
-              模板模式：{state.draft.importedPromptContext.mode ?? "未记录"}。
-              {(state.draft.importedPromptContext.generation_assets ?? [])
-                .map((asset) => `${asset.label}：${asset.purpose}`)
-                .join("；")}
-              请按当前素材重新核对引用。
-            </small>
+            <div className="creation-prompt-import-context" role="status">
+              <strong>
+                导入模板：{promptModeLabel(importedPromptMode)}；当前模式：
+                {promptModeLabel(currentPromptMode)}。
+              </strong>
+              <span>
+                {importedModeMismatch
+                  ? "模板素材类型与当前选择不同，需要重新绑定。可使用上方 AI 转换，或手动修改后核对。"
+                  : "请核对模板中的素材编号是否与当前列表顺序一致。"}
+              </span>
+            </div>
           )}
         </Panel>
 

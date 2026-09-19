@@ -21,6 +21,11 @@
   width: 100%;
   box-sizing: border-box;
 }
+.h3-prompt-editor > [role="status"] {
+  margin: 6px 0;
+  color: var(--studio-gold, #e5aa36);
+  font-size: var(--font-label, 14px);
+}
 .h3-prompt-editor pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;

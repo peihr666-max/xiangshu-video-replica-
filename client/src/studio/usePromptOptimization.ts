@@ -141,7 +141,7 @@ export function usePromptOptimization(
     if (active.current || !value.trim()) return;
     active.current = true;
     setBusy(true);
-    setMessage("");
+    setMessage("正在提交优化任务，请稍候…");
     const id = ++operation.current;
     const started = { ...latest.current };
     const sessionCurrent = capturePromptSession();
@@ -166,6 +166,13 @@ export function usePromptOptimization(
         : await createPromptOptimization(saved.input);
       saved.taskId = result.task_id;
       if (!current()) return;
+      setMessage(
+        result.status === "RUNNING"
+          ? "AI 正在按当前素材重写提示词…"
+          : result.status === "PENDING"
+            ? "优化任务已排队，请稍候…"
+            : "",
+      );
       saveRecovery(saved);
       const deadline = Date.now() + 12 * 60 * 1000;
       while (
@@ -177,6 +184,14 @@ export function usePromptOptimization(
         await new Promise((resolve) => setTimeout(resolve, 1500));
         if (!current()) return;
         result = await getPromptOptimization(result.task_id);
+        if (current())
+          setMessage(
+            result.status === "RUNNING"
+              ? "AI 正在按当前素材重写提示词…"
+              : result.status === "PENDING"
+                ? "优化任务已排队，请稍候…"
+                : "",
+          );
       }
       if (!current()) return;
       if (result.status !== "SUBMISSION_UNCERTAIN") {
