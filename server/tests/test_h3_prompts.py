@@ -61,6 +61,39 @@ def test_replica_final_prompt_uses_confirmed_script_frame_and_real_cuts() -> Non
     assert not prompt_issues(text, mode="I2VA", duration=4, labels=["<Picture 1>"])
 
 
+def test_replacement_first_frame_neutralizes_source_presenter_identity() -> None:
+    from app.h3_prompts import compile_replica_final_text
+
+    text = compile_replica_final_text(
+        shot_payload={
+            "camera_language": "从争执全景切入女主持人的中景口播",
+            "shots": [
+                {
+                    "start_time": 0,
+                    "end_time": 2,
+                    "segment_kind": "ACTION_BEAT",
+                    "composition": "女主持人位于画面中央，村民站在两侧",
+                    "action": "女主持人拿着文件夹讲解，村民保持静止",
+                    "ambient_sound": "女主持人的清晰人声",
+                    "motion": {"hand_action": "主持人单手做手势"},
+                }
+            ],
+        },
+        script_text="宅基地问题可以依法处理",
+        duration=4,
+        source_duration=4,
+        timeline_policy="preserve",
+        source_frame_time=0,
+    )
+
+    assert "女主持人" not in text
+    assert "主持人单手" not in text
+    assert "<Picture 1> 中的主体是全片唯一主讲人身份参考" in text
+    assert "首帧中的主讲人位于画面中央，村民站在两侧" in text
+    assert "陪衬人物规则：村民等其他人物保持彼此独立" in text
+    assert "不得恢复源视频主持人的外观、性别或音色" in text
+
+
 def test_replaced_scene_prompt_uses_confirmed_first_frame_environment() -> None:
     from app.h3_prompts import compile_replica_final_text
 

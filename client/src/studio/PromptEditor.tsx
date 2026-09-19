@@ -8,6 +8,7 @@ import {
   getLatestProjectShotCards,
   type PromptGenerationContext,
 } from "../api";
+import { anchorReplicaPromptToFirstFrame } from "./promptIdentity";
 import { Icon } from "./ui";
 import { usePromptOptimization } from "./usePromptOptimization";
 import "./prompt-editor.css";
@@ -294,7 +295,9 @@ export function ReplicaFinalPromptControls({
         opening_action: openingAction,
       });
       if (!mounted.current || current.current.key !== start.key) return;
-      const text = String(result.payload.prompt_text ?? "");
+      const text = anchorReplicaPromptToFirstFrame(
+        String(result.payload.prompt_text ?? ""),
+      );
       const prepared = {
         inputKey: key,
         versionId: result.id,

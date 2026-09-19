@@ -29,6 +29,7 @@ import {
   type FinalReplicaSnapshot,
   replicaInputKey,
 } from "./studio/PromptEditor";
+import { anchorReplicaPromptToFirstFrame } from "./studio/promptIdentity";
 import {
   clearScriptRewriteIdempotencyKey,
   type ScriptRewriteScope,
@@ -851,7 +852,9 @@ export function useGenerationDrafts({
       if (actionGeneration !== actionGenerationRef.current) {
         return;
       }
-      const compiledText = readPayloadString(compiled, "prompt_text") ?? "";
+      const compiledText = anchorReplicaPromptToFirstFrame(
+        readPayloadString(compiled, "prompt_text") ?? "",
+      );
       setPromptVersion(compiled);
       setPromptText(compiledText);
       setSavedPromptText(compiledText);

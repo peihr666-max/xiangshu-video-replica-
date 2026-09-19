@@ -120,9 +120,10 @@ H3_PROMPT_TEMPLATE_HASH = hashlib.sha256(
 ).hexdigest()
 
 # Final replica compilation is a separate contract from the retained preview API.
-FINAL_REPLICA_TEMPLATE_VERSION = "h3.replica.final.v2"
+FINAL_REPLICA_TEMPLATE_VERSION = "h3.replica.final.v3"
 FINAL_REPLICA_TEMPLATE_HASH = hashlib.sha256(
-    b"h3.replica.final.v2:confirmed-script:frame-scene-authority:real-cuts:explicit-duration:human-opening"
+    b"h3.replica.final.v3:confirmed-script:first-frame-presenter-authority:"
+    b"frame-scene-authority:real-cuts:explicit-duration:human-opening"
 ).hexdigest()
 
 # 拆解结果 motion 枚举到中文运动指令的确定性映射：渲染逻辑在代码里，

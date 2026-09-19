@@ -16,6 +16,26 @@ MAX_PROMPT_CHARS = 7000
 Mode = Literal["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA"]
 RULES = Path(__file__).with_name("prompt_rules")
 
+_PRESENTER_ROLE_PATTERN = re.compile(
+    r"(?:女性|男性|女|男)?(?:主持人|主讲人|讲解员|出镜人)"
+)
+
+
+def _anchor_presenter_to_first_frame(value: object) -> str:
+    """Remove source-presenter identity labels from retained shot descriptions.
+
+    The shot analysis describes the source video, so labels such as ``女主持人``
+    become contradictory after the user confirms a replacement first frame.  H3
+    still needs the source action and composition, but the performer must resolve
+    to Picture 1 instead of the source person's gender or appearance.
+    """
+
+    text = str(value)
+    marker = "__FIRST_FRAME_PRESENTER__"
+    text = text.replace("首帧中的主讲人", marker)
+    text = _PRESENTER_ROLE_PATTERN.sub(marker, text)
+    return text.replace(marker, "首帧中的主讲人")
+
 
 class Issue(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -123,7 +143,12 @@ def compile_replica_final_text(
         "integrated_multimodal_description: [Shot 1]",
         # 时长由 API 的 duration 参数承载，复述进正文是冗余；它在这里只作为时间轴的
         # 缩放依据，仍体现在下方的镜头时间戳里。
-        "全片人物身份、服装和配饰以首帧为准，后续不得恢复源人物外观。",
+        "主讲人绑定：<Picture 1> 中的主体是全片唯一主讲人身份参考；"
+        "所有分镜里的主持人、主讲人、讲解者和口播者均指首帧中的主讲人。",
+        "首帧中的主讲人，其性别、面部、发型、身形、服装和配饰只能取自 <Picture 1>；"
+        "不得恢复源视频主持人的外观、性别或音色。",
+        "陪衬人物规则：村民等其他人物保持彼此独立，不得复制 <Picture 1> 主讲人的脸、"
+        "服装或身份。",
     ]
     if source_duration < duration:
         # 放慢是节奏指令，API 参数表达不了，必须留在正文；措辞不复述目标时长。
@@ -149,7 +174,7 @@ def compile_replica_final_text(
         style_keys = tuple(key for key in style_keys if key != "pace")
     for key in style_keys:
         if shot_payload.get(key):
-            lines.append(f"{key}: {shot_payload[key]}")
+            lines.append(f"{key}: {_anchor_presenter_to_first_frame(shot_payload[key])}")
     shot_number = 1
     # 官方格式（docs/reference/minimax-h3-prompt-guide）只有真实切镜的
     # [Shot N] At MM:SS.mmm 标记（[Shot 1] 不带时间）；逐镜头起止时间、
@@ -177,17 +202,22 @@ def compile_replica_final_text(
         )
         for key in shot_keys:
             if shot.get(key):
-                lines.append(f"{key}: {shot[key]}")
+                lines.append(f"{key}: {_anchor_presenter_to_first_frame(shot[key])}")
         if index == 0 and opening_action.strip():
-            lines.append(f"用户确认的开场衔接：{opening_action.strip()}")
+            lines.append(
+                "用户确认的开场衔接："
+                f"{_anchor_presenter_to_first_frame(opening_action.strip())}"
+            )
         else:
             if shot.get("action"):
                 action_label = "动作参考（受场景替换规则约束）" if replace_scene else "动作"
-                lines.append(f"{action_label}：{shot['action']}")
+                lines.append(
+                    f"{action_label}：{_anchor_presenter_to_first_frame(shot['action'])}"
+                )
             if isinstance(shot.get("motion"), dict):
                 motion_prefix = "运动参考（受场景替换规则约束）：" if replace_scene else ""
                 lines.extend(
-                    f"{motion_prefix}{key}: {value}"
+                    f"{motion_prefix}{key}: {_anchor_presenter_to_first_frame(value)}"
                     for key, value in shot["motion"].items()
                     if value
                 )
@@ -205,7 +235,11 @@ def compile_replica_final_text(
     soundscape = (
         "按已确认首帧的最终场景适配环境音；不得恢复源场景广播或固定道具声音。"
         if replace_scene
-        else ("；".join(ambient_values) if ambient_values else "N/A")
+        else (
+            "；".join(_anchor_presenter_to_first_frame(value) for value in ambient_values)
+            if ambient_values
+            else "N/A"
+        )
     )
     lines.append(f"overall_soundscape: {soundscape}")
     music_values = list(
