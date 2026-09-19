@@ -163,6 +163,7 @@ export function navigateStudioState(
 export function createDraft(): StudioDraft {
   return {
     id: `draft-${crypto.randomUUID()}`,
+    videoName: "未命名视频",
     selectedShotId: "shot-2",
     script: {
       id: `script-${crypto.randomUUID()}`,

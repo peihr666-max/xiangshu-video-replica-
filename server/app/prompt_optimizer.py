@@ -22,6 +22,7 @@ from app.h3_prompts import (
     Issue,
     dialogue,
     digest,
+    enforce_reference_video_exclusions,
     mode_rules,
     prompt_issues,
 )
@@ -150,6 +151,8 @@ def validate_result(text: str, *, snapshot: dict[str, Any]) -> tuple[dict[str, A
         }, "NEEDS_INPUT"
     if not isinstance(prompt, str):
         raise ValueError("invalid prompt text")
+    if context["mode"] == "Ref2VA":
+        prompt = enforce_reference_video_exclusions(prompt)
     issues = prompt_issues(
         prompt,
         mode=context["mode"],

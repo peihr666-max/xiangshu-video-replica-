@@ -75,6 +75,7 @@ _MAX_REFERENCE_TOTAL = 12
 class IndependentVideoRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
     mode: IndependentMode
     prompt_text: str = Field(min_length=1, max_length=7000)
     first_frame_asset_id: str | None = Field(default=None, min_length=1)
@@ -477,6 +478,7 @@ def create_independent_batch(
         batch_id = str(uuid4())
         request_snapshot = {
             "schema_version": "independent.v1",
+            "display_name": request.display_name,
             "generation_mode": mode_upper,
             "quantity": request.quantity,
             "prompt_text": request.prompt_text,
@@ -509,17 +511,19 @@ def create_independent_batch(
                 id,
                 project_id,
                 created_by_user_id,
+                display_name,
                 idempotency_key,
                 request_hash,
                 request_snapshot_json,
                 creation_kind,
                 status
             )
-            VALUES (%s, NULL, %s, %s, %s, %s, 'independent', 'QUEUED')
+            VALUES (%s, NULL, %s, %s, %s, %s, %s, 'independent', 'QUEUED')
             """,
             (
                 batch_id,
                 actor.id,
+                request.display_name.strip() if request.display_name else "视频生成",
                 request.idempotency_key,
                 request_hash,
                 json.dumps(request_snapshot, ensure_ascii=True, sort_keys=True),

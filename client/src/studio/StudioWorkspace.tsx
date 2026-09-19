@@ -76,6 +76,7 @@ import {
   WorkbenchPage,
 } from "./MainPages";
 import { PeoplePage, PersonPage } from "./PeoplePages";
+import { constrainReferenceVideoPrompt } from "./referencePrompt";
 import {
   buildOralInput,
   createDraft,
@@ -1095,8 +1096,12 @@ export function StudioWorkspace({
         if (error) throw new Error(error);
       }
       const request = {
+        display_name: draft.videoName?.trim() || "未命名视频",
         mode,
-        prompt_text: draft.prompt,
+        prompt_text:
+          mode === "r2v"
+            ? constrainReferenceVideoPrompt(draft.prompt)
+            : draft.prompt,
         first_frame_asset_id:
           mode === "i2v" ? (draft.firstFrameId ?? null) : null,
         last_frame_asset_id:
@@ -1576,6 +1581,9 @@ export function StudioWorkspace({
         );
         if (!state.draft.prompt.trim()) {
           throw new Error("请先填写提示词");
+        }
+        if (!state.draft.videoName?.trim()) {
+          throw new Error("请先填写视频名称");
         }
         if (mode === "i2v") {
           const firstFrameId = state.draft.firstFrameId;
@@ -2208,12 +2216,26 @@ export function StudioWorkspace({
                     ? "将按提示词与参数创建视频生成任务，按秒计费，提交前请核对。"
                     : "此独立创作接口尚未接入。现有项目复刻可通过已实现的生成流程报价与提交。"}
             </Hint>
+            {generation === "视频生成" ? (
+              <label className="studio-generation-name">
+                <span>视频名称</span>
+                <input
+                  aria-label="视频名称"
+                  maxLength={120}
+                  value={state.draft.videoName ?? ""}
+                  onChange={(event) =>
+                    patchDraft({ videoName: event.target.value })
+                  }
+                  placeholder="请输入视频名称"
+                />
+              </label>
+            ) : null}
             <dl className="studio-details">
               <div>
                 <dt>作品</dt>
                 <dd>
                   {generation === "视频生成"
-                    ? state.draft.prompt.trim().slice(0, 80) || "未命名视频"
+                    ? state.draft.videoName?.trim() || "未命名视频"
                     : state.draft.script.title || "未命名创作"}
                 </dd>
               </div>
@@ -2277,7 +2299,11 @@ export function StudioWorkspace({
             ) : generation === "视频生成" ? (
               <Button
                 variant="primary"
-                disabled={videoSubmitting || !videoQuoteReady}
+                disabled={
+                  videoSubmitting ||
+                  !videoQuoteReady ||
+                  !state.draft.videoName?.trim()
+                }
                 onClick={() => void submitVideoTask()}
               >
                 {videoSubmitting ? "提交中…" : "确认费用并提交"}
@@ -2583,6 +2609,20 @@ function StudioPicker({
     videoCapabilities,
   } = useStudio();
   const readOnly = user.role === "auditor";
+  const [referenceMediaFilter, setReferenceMediaFilter] = useState<
+    "all" | "image" | "video" | "audio"
+  >("all");
+  const [referenceFileQuery, setReferenceFileQuery] = useState("");
+  const normalizedReferenceQuery = referenceFileQuery.trim().toLowerCase();
+  const matchesReferenceFilter = useCallback(
+    (asset: StudioAsset) =>
+      kind !== "reference" ||
+      ((referenceMediaFilter === "all" ||
+        asset.kind === referenceMediaFilter) &&
+        (!normalizedReferenceQuery ||
+          asset.name.toLowerCase().includes(normalizedReferenceQuery))),
+    [kind, normalizedReferenceQuery, referenceMediaFilter],
+  );
   const person = data.people.find((item) => item.id === state.draft.ipId);
   const usesCloudImages =
     kind === "reference" || kind === "first-frame" || kind === "tail-frame";
@@ -2593,6 +2633,7 @@ function StudioPicker({
             (material) =>
               (kind === "reference" || material.kind === "image") &&
               (kind !== "reference" || isReferenceAsset(material)) &&
+              matchesReferenceFilter(material) &&
               !data.assets.some((asset) => asset.id === material.id) &&
               (kind !== "reference" ||
                 !state.draft.referenceIds.includes(material.id)),
@@ -2604,6 +2645,7 @@ function StudioPicker({
       kind,
       state.draft.referenceIds,
       usesCloudImages,
+      matchesReferenceFilter,
     ],
   );
   const cloudImagePageSize = 6;
@@ -2707,7 +2749,9 @@ function StudioPicker({
   );
   const assets = [...materials, ...data.assets].filter((asset) =>
     kind === "reference"
-      ? isReferenceAsset(asset) && !state.draft.referenceIds.includes(asset.id)
+      ? isReferenceAsset(asset) &&
+        matchesReferenceFilter(asset) &&
+        !state.draft.referenceIds.includes(asset.id)
       : asset.kind === "image" &&
         !asset.composite &&
         (kind !== "avatar-photo" || asset.source === "人物库场景造型") &&
@@ -2718,7 +2762,52 @@ function StudioPicker({
   return (
     <StudioDialog title={title[kind]} onClose={onClose}>
       <p>只带入本次需要的素材，取消不会修改当前创作。</p>
-      <div className="studio-picker-grid">
+      {kind === "reference" ? (
+        <div className="studio-reference-picker-toolbar">
+          <input
+            aria-label="搜索素材文件名"
+            placeholder="输入文件名搜索"
+            type="search"
+            value={referenceFileQuery}
+            onChange={(event) => {
+              setReferenceFileQuery(event.target.value);
+              setCloudImagePage(1);
+            }}
+          />
+          <fieldset
+            className="studio-reference-picker-filters"
+            aria-label="素材类型"
+          >
+            {[
+              ["all", "全部"],
+              ["image", "图片"],
+              ["video", "视频"],
+              ["audio", "声音"],
+            ].map(([value, label]) => (
+              <Button
+                key={value}
+                variant={referenceMediaFilter === value ? "primary" : "outline"}
+                aria-pressed={referenceMediaFilter === value}
+                onClick={() => {
+                  setReferenceMediaFilter(
+                    value as "all" | "image" | "video" | "audio",
+                  );
+                  setCloudImagePage(1);
+                }}
+              >
+                {label}
+              </Button>
+            ))}
+          </fieldset>
+        </div>
+      ) : null}
+      <div
+        className={
+          kind === "reference"
+            ? "studio-picker-grid studio-picker-grid--reference"
+            : "studio-picker-grid"
+        }
+      >
         {kind === "person"
           ? data.people.map((item) => (
               <button
@@ -2871,6 +2960,12 @@ function StudioPicker({
                   </button>
                 ))}
       </div>
+      {kind === "reference" && !assets.length ? (
+        <Empty
+          title="没有符合条件的素材"
+          description="请更换素材类型或文件名关键词。"
+        />
+      ) : null}
       {usesCloudImages && cloudImageCandidates.length > cloudImagePageSize ? (
         <nav className="content-pagination" aria-label="图片素材分页">
           <Button

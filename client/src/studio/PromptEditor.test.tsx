@@ -191,6 +191,15 @@ describe("最终提示词后置", () => {
       shot_card_version_id: "shots",
     });
   });
+  it("15秒口播在60至90字之外时前置阻止合成", () => {
+    render(<FinalHarness duration={15} script={"短文案"} />);
+
+    const checklist = screen.getByRole("region", { name: "生成前检查" });
+    expect(checklist).toHaveTextContent("15 秒口播需为 60–90 字，当前为 3 字");
+    expect(
+      screen.getByRole("button", { name: "合成最终提示词" }),
+    ).toBeDisabled();
+  });
   it("口播尚未确认时只提醒，不阻止合成最终提示词", async () => {
     render(<FinalHarness />);
 

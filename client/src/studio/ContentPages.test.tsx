@@ -3634,13 +3634,11 @@ describe("V1.4 内容与运营页面", () => {
     expect(
       firstEntries.slice(0, 3).map((entry: { id: string }) => entry.id),
     ).toEqual(["image-1", "video-2", "audio-3"]);
-    // 图片允许写本机缓存，音视频只签在线预览。
+    // 首屏只读已有缓存或签在线地址，不等待 22 张原图全部下载到本机。
     const populateIds = firstEntries
       .filter((entry: { populate: boolean }) => entry.populate)
       .map((entry: { id: string }) => entry.id);
-    expect(populateIds).toHaveLength(22);
-    expect(populateIds).not.toContain("video-2");
-    expect(populateIds).not.toContain("audio-3");
+    expect(populateIds).toEqual([]);
     expect(
       await screen.findByRole("img", { name: "image-1.png" }),
     ).toHaveAttribute("src", "https://storage.test/image-1");

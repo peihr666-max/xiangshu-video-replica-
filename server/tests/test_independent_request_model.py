@@ -58,6 +58,10 @@ def test_request_defaults_reference_asset_ids_to_empty() -> None:
     assert request.reference_asset_ids == []
 
 
+def test_request_accepts_video_display_name() -> None:
+    assert _request(display_name="乡墅庭院成片").display_name == "乡墅庭院成片"
+
+
 def test_request_accepts_mixed_reference_asset_ids() -> None:
     request = _request(reference_asset_ids=["image-1", "video-1", "audio-1"])
     assert request.reference_asset_ids == ["image-1", "video-1", "audio-1"]

@@ -131,7 +131,13 @@ Scene/backdrop: uniform seamless light-gray studio backdrop with a subtle
 neutral center glow, exactly consistent across all panels.
 Style/medium: high-fidelity natural studio photography, realistic skin,
 hair, fabric, jewelry, hands, and shoes; minimal retouching; no illustration,
-no 3D render, no fashion-campaign drama.
+no 3D render, no fashion-campaign drama. Preserve natural skin microtexture,
+fine pores, faint facial asymmetry, individual hair strands, realistic fabric
+weave, and physically plausible soft highlights and shadows. The result must
+look like an unretouched photograph of a real person rather than synthetic AI
+art. Avoid waxy or plastic skin, porcelain-doll smoothness, rubbery facial
+features, CGI sheen, excessive denoising, beauty-filter skin, artificial HDR,
+and uniformly airbrushed texture.
 Composition/framing: full bodies completely visible from head to soles with
 generous safe margins in the three full-body panels; the two right panels
 crop at upper chest; identical camera height and focal length within
@@ -175,10 +181,15 @@ Wardrobe direction supplied by the user: <wardrobe>{costume_description}</wardro
 
 Replace the source outfit with the requested wardrobe while preserving the
 person. Render the requested scene consistently as the background and visual
-context in every panel. Do not add text, labels, logos, watermarks, extra
-people, duplicate limbs, or unrelated props. Avoid face drift, gender drift,
-age drift, hairstyle drift, inconsistent clothing, cropped head or shoes,
-and malformed hands.
+context in every panel. Use natural live-action photography with visible skin
+microtexture, fine pores, subtle facial asymmetry, individual hair strands,
+realistic fabric weave, physically plausible highlights, and mild optical
+imperfection. Keep retouching minimal. Do not add text, labels, logos,
+watermarks, extra people, duplicate limbs, or unrelated props. Avoid face
+drift, gender drift, age drift, hairstyle drift, inconsistent clothing,
+cropped head or shoes, malformed hands, waxy or plastic skin, porcelain-doll
+smoothness, rubbery features, CGI sheen, excessive denoising, beauty filters,
+artificial HDR, and uniformly airbrushed texture.
 """
 
 

@@ -52,6 +52,7 @@ import {
   type PublishAccountItem,
   putMaterial,
   readAnalysisPayload,
+  renameGenerationBatch,
   resolveMaterials,
   retryOralTaskArchive,
   type SimpleLibraryEntry,
@@ -799,7 +800,7 @@ export const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
   replacement: "人物置换",
 };
 
-/** MATERIAL-PERF-D（P1-3）：任务清单是否无实质变化（id/状态/进度/提交时间一致）。
+/** MATERIAL-PERF-D（P1-3）：任务清单是否无实质变化（id/名称/状态/进度/提交时间一致）。
  * 任务轮询据此在无变化时返回原 data 引用，避免每 20s 全树重渲染。 */
 export function sameTasks(a: StudioTask[], b: StudioTask[]): boolean {
   if (a.length !== b.length) return false;
@@ -808,6 +809,7 @@ export function sameTasks(a: StudioTask[], b: StudioTask[]): boolean {
     if (!other) return false;
     return (
       task.id === other.id &&
+      task.title === other.title &&
       task.status === other.status &&
       task.progress === other.progress &&
       task.submitted === other.submitted
@@ -876,6 +878,23 @@ export async function cancelStudioTask(
   }
   await cancelGenerationBatch(task.backendId || task.batchId || task.id);
   return {};
+}
+
+export async function renameStudioGenerationTask(
+  task: StudioTask,
+  displayName: string,
+): Promise<StudioTask> {
+  if (task.backendKind !== "generation_batch") {
+    throw new Error("当前任务类型不支持重命名。");
+  }
+  const name = displayName.trim();
+  if (!name) throw new Error("视频名称不能为空。");
+  return studioTaskFromBatch(
+    await renameGenerationBatch(
+      task.backendId || task.batchId || task.id,
+      name,
+    ),
+  );
 }
 
 async function loadTasks(_currentUser: CurrentUser) {

@@ -8,6 +8,7 @@ import {
   type PromptOptimizeInput,
   type PromptOptimizeResult,
 } from "../api";
+import { constrainReferenceVideoPrompt } from "./referencePrompt";
 
 type AppliedOptimization = {
   context: PromptGenerationContext;
@@ -210,9 +211,13 @@ export function usePromptOptimization(
         );
         return;
       }
+      const optimizedText =
+        context.route === "reference"
+          ? constrainReferenceVideoPrompt(result.result.prompt_text)
+          : result.result.prompt_text;
       const receipt = {
         context,
-        text: result.result.prompt_text,
+        text: optimizedText,
         optimization_task_id: result.task_id,
         context_hash: result.context_hash,
       };
@@ -221,13 +226,13 @@ export function usePromptOptimization(
         latest.current.value !== saved.input.prompt_text
       ) {
         setPending({
-          text: result.result.prompt_text,
+          text: optimizedText,
           receipt,
           key: started.key,
           sessionCurrent,
         });
         setMessage("你已修改内容，优化结果未覆盖当前文字。");
-      } else apply(result.result.prompt_text, receipt);
+      } else apply(optimizedText, receipt);
     } catch (error) {
       const status = (error as { status?: number })?.status;
       if (

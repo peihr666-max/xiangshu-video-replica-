@@ -17,6 +17,7 @@ from app.character_reference_matching import (
     recommended_body_view,
     validated_publication,
 )
+from app.simple_character import SIMPLE_CONTACT_SHEET_PROMPT, scene_contact_sheet_prompt
 from app.simple_character_routes import read_simple_library
 
 
@@ -52,6 +53,22 @@ def test_required_view_types_are_exactly_the_five_real_views() -> None:
         "LEFT_45",
         "LEFT_SIDE",
     )
+
+
+def test_five_view_prompts_require_live_action_skin_and_reject_plastic_ai_texture() -> None:
+    scene_prompt = scene_contact_sheet_prompt(
+        scene_description="乡村工地",
+        costume_description="蓝色施工马甲",
+    )
+    for prompt in (SIMPLE_CONTACT_SHEET_PROMPT, scene_prompt):
+        # 提示词按行宽折行，断言只关心措辞本身，不应被折行位置左右。
+        flat = " ".join(prompt.split())
+        assert "skin microtexture" in flat
+        assert "fine pores" in flat
+        assert "individual hair strands" in flat
+        assert "waxy or plastic skin" in flat
+        assert "CGI sheen" in flat
+        assert "beauty filter" in flat or "beauty-filter" in flat
 
 
 @pytest.mark.parametrize("legacy_views", [[], ["RIGHT_45", "RIGHT_SIDE"], ["IMPORTED_REFERENCE"]])

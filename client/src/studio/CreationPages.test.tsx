@@ -2416,6 +2416,16 @@ describe("V1.4 创作页面", () => {
         "https://signed.example/asset-video.thumb.jpg",
       ),
     );
+    fireEvent.click(videoRow);
+    const referenceCanvas = screen.getByLabelText("参考画布");
+    expect(referenceCanvas).toHaveAttribute(
+      "src",
+      "https://signed.example/asset-video.mp4",
+    );
+    expect(referenceCanvas).toHaveAttribute(
+      "poster",
+      "https://signed.example/asset-video.thumb.jpg",
+    );
     const imageRow = screen.getByRole("button", { name: "预览 乡墅外观.jpg" });
     await waitFor(() =>
       expect(imageRow.querySelector("img")).toHaveAttribute(
@@ -2571,7 +2581,10 @@ describe("V1.4 创作页面", () => {
     });
   });
 
-  it("图生视频可从剪贴板导入分镜表并提示 AI 优化", async () => {
+  it.each([
+    ["文生视频", undefined],
+    ["图生视频", "frame-1"],
+  ])("%s可从剪贴板导入分镜脚本并提示 AI 优化", async (_mode, firstFrameId) => {
     const readText = vi
       .fn()
       .mockResolvedValue(
@@ -2587,14 +2600,15 @@ describe("V1.4 创作页面", () => {
       page: "video",
       draft: {
         ...value.state.draft,
-        firstFrameId: "frame-1",
+        firstFrameId,
         prompt: "",
       },
     };
     useStudio.mockReturnValue(value);
     render(<VideoPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "导入分镜表" }));
+    expect(screen.getByLabelText("提示词")).toHaveAttribute("rows", "48");
+    fireEvent.click(screen.getByRole("button", { name: "导入分镜脚本" }));
 
     await waitFor(() => expect(readText).toHaveBeenCalledOnce());
     expect(value.patchDraft).toHaveBeenCalledWith({

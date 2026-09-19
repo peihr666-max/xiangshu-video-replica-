@@ -213,6 +213,8 @@ export type StudioScript = {
   sourceKind?: "viral" | "project" | "link" | "upload";
 };
 export type StudioDraft = {
+  /** 独立视频生成批次的用户可见名称。 */
+  videoName?: string;
   pendingRewrite?: {
     scopeKey: string;
     resultText: string;

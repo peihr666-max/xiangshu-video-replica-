@@ -2907,6 +2907,23 @@ describe("视频生成（C2 独立创作）", () => {
     expect(
       within(picker).getByRole("button", { name: /环境声/ }),
     ).toBeInTheDocument();
+    expect(
+      picker.querySelector(".studio-picker-grid--reference"),
+    ).not.toBeNull();
+
+    fireEvent.click(within(picker).getByRole("button", { name: "声音" }));
+    expect(
+      within(picker).getByRole("button", { name: /环境声/ }),
+    ).toBeInTheDocument();
+    expect(within(picker).queryByRole("button", { name: /运镜/ })).toBeNull();
+    fireEvent.change(within(picker).getByLabelText("搜索素材文件名"), {
+      target: { value: "不存在" },
+    });
+    expect(within(picker).getByText("没有符合条件的素材")).toBeInTheDocument();
+    fireEvent.change(within(picker).getByLabelText("搜索素材文件名"), {
+      target: { value: "" },
+    });
+    fireEvent.click(within(picker).getByRole("button", { name: "全部" }));
 
     // 图片已达每类上限（2/2），再选图片被拒并提示
     fireEvent.click(within(picker).getByRole("button", { name: /外立面 C/ }));
@@ -3834,11 +3851,13 @@ describe("视频生成（C2 独立创作）", () => {
       expect(api.createIndependentVideoTask).toHaveBeenCalledTimes(1),
     );
     const input = api.createIndependentVideoTask.mock.calls[0][0] as {
+      display_name: string;
       mode: string;
       prompt_text: string;
       idempotency_key: string;
     };
     expect(input.mode).toBe("t2v");
+    expect(input.display_name).toBe("未命名视频");
     expect(input.prompt_text).toBe("航拍乡墅庭院");
     expect(input.idempotency_key).toBeTruthy();
 

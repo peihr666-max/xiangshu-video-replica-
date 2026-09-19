@@ -3283,7 +3283,7 @@ function ShotTableImporter({
       disabled={disabled}
       onClick={() => void importFromClipboard()}
     >
-      <Icon name="copy" size={16} /> 导入分镜表
+      <Icon name="copy" size={16} /> 导入分镜脚本
     </Button>
   );
 }
@@ -3376,8 +3376,12 @@ function VideoMaterialUpload({
       if (kind === "video") {
         // REFERENCE-MATERIAL-PREVIEW：本机上传的视频就地抽一帧，列表立刻有图，
         // 不必等服务端首帧缩略图；失败只损失缩略图，不影响上传结果。
-        const poster = await readVideoFirstFrame(file);
-        if (poster) asset = { ...asset, poster };
+        try {
+          const poster = await readVideoFirstFrame(file);
+          if (poster) asset = { ...asset, poster };
+        } catch {
+          // 上传结果仍可直接播放；服务端批量预览会继续尝试补齐封面。
+        }
       }
       if (mountedRef.current) {
         onUploadedRef.current(asset);
@@ -3788,15 +3792,52 @@ export function VideoPage() {
   );
   const references = referenceValidation.assets;
   const referencePreviews = useReferencePreviews(references, user.id);
+  const selectedReferenceAsset =
+    references.find((asset) => asset.id === previewReferenceId) ??
+    references[0];
+  const selectedReferenceEntry = selectedReferenceAsset
+    ? referencePreviews.entries[referencePreviewAssetId(selectedReferenceAsset)]
+    : undefined;
+  const selectedReferencePreviewAsset = selectedReferenceAsset
+    ? {
+        ...selectedReferenceAsset,
+        url: selectedReferenceEntry?.mediaUrl ?? selectedReferenceAsset.url,
+        poster: selectedReferenceEntry?.poster ?? selectedReferenceAsset.poster,
+      }
+    : undefined;
   const referencePreviewDialogAsset = references.find(
     (asset) => asset.id === referencePreviewDialogId,
   );
-  const referencePreviewMedia =
-    resolvedReferencePreview?.id === referencePreviewDialogId
-      ? resolvedReferencePreview
-      : referencePreviewDialogAsset?.url
-        ? referencePreviewDialogAsset
-        : undefined;
+  const referencePreviewEntry = referencePreviewDialogAsset
+    ? referencePreviews.entries[
+        referencePreviewAssetId(referencePreviewDialogAsset)
+      ]
+    : undefined;
+  const referencePreviewMedia = !referencePreviewDialogAsset
+    ? undefined
+    : resolvedReferencePreview &&
+        resolvedReferencePreview.id === referencePreviewDialogId
+      ? {
+          ...resolvedReferencePreview,
+          poster:
+            referencePreviewEntry?.poster ?? resolvedReferencePreview.poster,
+        }
+      : referencePreviewDialogAsset.url
+        ? {
+            ...referencePreviewDialogAsset,
+            poster:
+              referencePreviewEntry?.poster ??
+              referencePreviewDialogAsset.poster,
+          }
+        : referencePreviewEntry?.mediaUrl
+          ? {
+              ...referencePreviewDialogAsset,
+              url: referencePreviewEntry.mediaUrl,
+              poster:
+                referencePreviewEntry.poster ??
+                referencePreviewDialogAsset.poster,
+            }
+          : undefined;
   useEffect(() => {
     const requestId = ++referencePreviewRequestRef.current;
     if (!referencePreviewDialogAsset) {
@@ -4299,7 +4340,7 @@ export function VideoPage() {
           )}
           <PromptEditor
             label="提示词"
-            rows={16}
+            rows={24}
             showToolbarLabel
             toolbarLabel={
               <>
@@ -4321,7 +4362,7 @@ export function VideoPage() {
                 />
                 {!referenceMode ? (
                   <ShotTableImporter
-                    disabled={readOnly || !state.draft.firstFrameId}
+                    disabled={readOnly}
                     onImport={(promptText) => {
                       setShotTableImported(true);
                       patchDraft({
@@ -4468,10 +4509,7 @@ export function VideoPage() {
           ) : referenceMode ? (
             references.length ? (
               <Media
-                asset={
-                  references.find((asset) => asset.id === previewReferenceId) ??
-                  references[0]
-                }
+                asset={selectedReferencePreviewAsset}
                 alt="参考画布"
                 className="creation-preview-media"
                 presentation="video"
