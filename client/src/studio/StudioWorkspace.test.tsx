@@ -20,6 +20,19 @@ async function findEnabledButton(name: string, container?: HTMLElement) {
   return button;
 }
 
+// LEFTOVER-ON-OPEN：云端草稿不再自动回填，回填入口是首屏这条提示上的按钮。
+const RESTORE = "恢复上次内容";
+const DISCARD = "放弃";
+
+/** 落在提示窗口内的草稿时间（TTL 见 StudioWorkspace 的 DRAFT_PROMPT_MAX_AGE_MS）。 */
+function freshUpdatedAt() {
+  return new Date(Date.now() - 60_000).toISOString();
+}
+
+async function acceptRestorePrompt() {
+  fireEvent.click(await screen.findByRole("button", { name: RESTORE }));
+}
+
 const live = vi.hoisted(() => ({
   CREATION_KIND_LABELS: {
     replica: "视频复刻",
@@ -50,6 +63,7 @@ const live = vi.hoisted(() => ({
   reloadStats: vi.fn(async (): Promise<unknown> => null),
   // C7 云端草稿：默认无草稿/空列表，具体用例再覆盖。
   loadCloudDraft: vi.fn(async (): Promise<unknown> => undefined),
+  discardCloudDraft: vi.fn(async (): Promise<void> => {}),
   loadDraftMaterials: vi.fn(async () => ({
     assets: [] as unknown[],
     unavailableIds: [] as string[],
@@ -1140,6 +1154,7 @@ describe("V1.4 workspace integration", () => {
     // 真实 setTimeout，先显式切回，防止用例间定时器状态泄漏。
     beforeEach(() => {
       vi.useRealTimers();
+      window.localStorage.clear();
     });
 
     const emptyStudioData = {
@@ -1176,9 +1191,12 @@ describe("V1.4 workspace integration", () => {
       );
     }
 
-    it("挂载时恢复云端草稿与我的文案列表", async () => {
+    it("点「恢复上次内容」后才回填云端草稿，我的文案列表照常加载", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);
-      live.loadCloudDraft.mockResolvedValue({ draft: restoredDraft() });
+      live.loadCloudDraft.mockResolvedValue({
+        draft: restoredDraft(),
+        updatedAt: freshUpdatedAt(),
+      });
       live.loadSavedScriptList.mockResolvedValue([
         {
           id: "saved-1",
@@ -1191,6 +1209,7 @@ describe("V1.4 workspace integration", () => {
       ]);
       render(<StudioWorkspace currentUser={reviewUser} />);
 
+      fireEvent.click(await screen.findByRole("button", { name: RESTORE }));
       await openCopyPage();
       // 恢复是异步 setState：等值到位，而不是等 textarea 出现。
       await waitFor(() =>
@@ -1208,6 +1227,151 @@ describe("V1.4 workspace integration", () => {
           script: expect.objectContaining({ text: "云端恢复的文案内容" }),
         }),
       );
+      // 恢复后横幅收起，不再挡着工作区。
+      expect(
+        screen.queryByRole("button", { name: RESTORE }),
+      ).not.toBeInTheDocument();
+    });
+
+    describe("LEFTOVER-ON-OPEN 恢复闸门", () => {
+      it("有云端草稿时首屏保持空白，只给出恢复提示", async () => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue({
+          draft: restoredDraft(),
+          updatedAt: freshUpdatedAt(),
+        });
+        render(<StudioWorkspace currentUser={reviewUser} />);
+
+        await screen.findByRole("button", { name: RESTORE });
+        await openCopyPage();
+        expect(screen.getByLabelText("二创文案")).toHaveValue("");
+        // 没恢复就不该去解析旧草稿引用的素材。
+        expect(live.loadDraftMaterials).not.toHaveBeenCalled();
+      });
+
+      it("点「放弃」删除云端草稿并清掉本地未保存文本", async () => {
+        window.localStorage.setItem(
+          `generation.localDraft/script/${encodeURIComponent(reviewUser.id)}/proj-a`,
+          JSON.stringify({ text: "上次的口播稿" }),
+        );
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue({
+          draft: restoredDraft(),
+          updatedAt: freshUpdatedAt(),
+        });
+        live.discardCloudDraft.mockResolvedValue(undefined);
+        render(<StudioWorkspace currentUser={reviewUser} />);
+
+        fireEvent.click(await screen.findByRole("button", { name: DISCARD }));
+
+        await waitFor(() =>
+          expect(live.discardCloudDraft).toHaveBeenCalledTimes(1),
+        );
+        expect(
+          window.localStorage.getItem(
+            `generation.localDraft/script/${encodeURIComponent(reviewUser.id)}/proj-a`,
+          ),
+        ).toBeNull();
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("button", { name: DISCARD }),
+          ).not.toBeInTheDocument(),
+        );
+        await openCopyPage();
+        expect(screen.getByLabelText("二创文案")).toHaveValue("");
+      });
+
+      it("放弃失败时保留提示并说明未清除，避免静默失败", async () => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue({
+          draft: restoredDraft(),
+          updatedAt: freshUpdatedAt(),
+        });
+        live.discardCloudDraft.mockRejectedValue(new Error("boom"));
+        render(<StudioWorkspace currentUser={reviewUser} />);
+
+        fireEvent.click(await screen.findByRole("button", { name: DISCARD }));
+
+        await screen.findByText(/未能清除上次内容/);
+        expect(
+          screen.getByRole("button", { name: DISCARD }),
+        ).toBeInTheDocument();
+      });
+
+      it("超过 7 天的旧草稿不再打扰，也不擅自删除用户内容", async () => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue({
+          draft: restoredDraft(),
+          updatedAt: new Date(
+            Date.now() - 8 * 24 * 60 * 60 * 1000,
+          ).toISOString(),
+        });
+        render(<StudioWorkspace currentUser={reviewUser} />);
+
+        await openCopyPage();
+        expect(
+          screen.queryByRole("button", { name: RESTORE }),
+        ).not.toBeInTheDocument();
+        expect(live.discardCloudDraft).not.toHaveBeenCalled();
+      });
+
+      it("审计员可恢复查看但不能放弃（服务端同样拒写）", async () => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue({
+          draft: restoredDraft(),
+          updatedAt: freshUpdatedAt(),
+        });
+        render(
+          <StudioWorkspace
+            currentUser={{ ...reviewUser, role: "auditor" as const }}
+          />,
+        );
+
+        expect(
+          await screen.findByRole("button", { name: RESTORE }),
+        ).toBeEnabled();
+        expect(screen.getByRole("button", { name: DISCARD })).toBeDisabled();
+      });
+
+      it("「从空白创作开始」同时清掉云端草稿，下次打开不再回来", async () => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        live.loadCloudDraft.mockResolvedValue(undefined);
+        live.discardCloudDraft.mockResolvedValue(undefined);
+        render(<StudioWorkspace currentUser={reviewUser} />);
+
+        fireEvent.click(await findEnabledButton("新建创作"));
+        fireEvent.click(
+          await screen.findByRole("button", { name: "从空白创作开始" }),
+        );
+
+        await waitFor(() =>
+          expect(live.discardCloudDraft).toHaveBeenCalledTimes(1),
+        );
+      });
+
+      it("原地换账号时收掉上一个账号的提示，改读新账号的草稿", async () => {
+        live.loadStudioData.mockResolvedValue(emptyStudioData);
+        const firstDraft = restoredDraft();
+        firstDraft.script.text = "甲的上次内容";
+        live.loadCloudDraft.mockResolvedValue({
+          draft: firstDraft,
+          updatedAt: freshUpdatedAt(),
+        });
+        const view = render(<StudioWorkspace currentUser={reviewUser} />);
+        await screen.findByRole("button", { name: RESTORE });
+
+        live.loadCloudDraft.mockResolvedValue(undefined);
+        view.rerender(
+          <StudioWorkspace currentUser={{ ...reviewUser, id: "user-2" }} />,
+        );
+
+        await waitFor(() =>
+          expect(
+            screen.queryByRole("button", { name: RESTORE }),
+          ).not.toBeInTheDocument(),
+        );
+        expect(live.loadCloudDraft).toHaveBeenCalledTimes(2);
+      });
     });
 
     it("编辑二创文案后防抖自动保存到云端", async () => {
@@ -1367,7 +1531,12 @@ describe("V1.4 workspace integration", () => {
         );
       });
       live.loadCloudDraft.mockImplementation(async () =>
-        storedDraft ? { draft: structuredClone(storedDraft) } : undefined,
+        storedDraft
+          ? {
+              draft: structuredClone(storedDraft),
+              updatedAt: freshUpdatedAt(),
+            }
+          : undefined,
       );
       live.loadStudioData.mockResolvedValue(emptyStudioData);
       const state = createState("copy");
@@ -1406,6 +1575,7 @@ describe("V1.4 workspace integration", () => {
         vi.useRealTimers();
         view.unmount();
         render(<StudioWorkspace currentUser={reviewUser} />);
+        await acceptRestorePrompt();
         await openCopyPage();
         await waitFor(() =>
           expect(
@@ -1955,7 +2125,10 @@ describe("V1.4 workspace integration", () => {
 
     it("审计员可读取文案但保存和确认均不发写请求", async () => {
       live.loadStudioData.mockResolvedValue(emptyStudioData);
-      live.loadCloudDraft.mockResolvedValue({ draft: restoredDraft() });
+      live.loadCloudDraft.mockResolvedValue({
+        draft: restoredDraft(),
+        updatedAt: freshUpdatedAt(),
+      });
       const auditor = {
         id: "auditor-1",
         username: "auditor-1",
@@ -1964,6 +2137,7 @@ describe("V1.4 workspace integration", () => {
       };
       render(<StudioWorkspace currentUser={auditor} />);
 
+      fireEvent.click(await screen.findByRole("button", { name: RESTORE }));
       await openCopyPage();
       await waitFor(() =>
         expect(screen.getByLabelText("二创文案")).toHaveValue(
@@ -2972,7 +3146,10 @@ describe("视频生成（C2 独立创作）", () => {
     const restored = createState("reference").draft;
     restored.prompt = "恢复草稿";
     restored.referenceIds = ["image-restored"];
-    live.loadCloudDraft.mockResolvedValue({ draft: restored });
+    live.loadCloudDraft.mockResolvedValue({
+      draft: restored,
+      updatedAt: freshUpdatedAt(),
+    });
     live.loadStudioData.mockResolvedValue(emptyStudioData);
     let resolveMaterials:
       | ((value: { assets: unknown[]; unavailableIds: string[] }) => void)
@@ -2991,6 +3168,7 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createState("reference")}
       />,
     );
+    await acceptRestorePrompt();
 
     expect(
       await screen.findByText("正在恢复草稿参考图，请稍候。"),
@@ -3029,7 +3207,10 @@ describe("视频生成（C2 独立创作）", () => {
     const restored = createState("reference").draft;
     restored.prompt = "恢复草稿";
     restored.referenceIds = ["image-restored"];
-    live.loadCloudDraft.mockResolvedValue({ draft: restored });
+    live.loadCloudDraft.mockResolvedValue({
+      draft: restored,
+      updatedAt: freshUpdatedAt(),
+    });
     live.loadStudioData.mockResolvedValue(emptyStudioData);
     live.loadDraftMaterials
       .mockRejectedValueOnce(new Error("解析接口失败"))
@@ -3052,6 +3233,7 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createState("reference")}
       />,
     );
+    await acceptRestorePrompt();
 
     expect(
       await screen.findByText("草稿参考图读取失败，请重试。"),
@@ -3080,7 +3262,10 @@ describe("视频生成（C2 独立创作）", () => {
     });
     const restored = createState("reference").draft;
     restored.referenceIds = ["image-restored"];
-    live.loadCloudDraft.mockResolvedValue({ draft: restored });
+    live.loadCloudDraft.mockResolvedValue({
+      draft: restored,
+      updatedAt: freshUpdatedAt(),
+    });
     live.loadStudioData.mockResolvedValue(emptyStudioData);
     let resolveRetry:
       | ((value: { assets: unknown[]; unavailableIds: string[] }) => void)
@@ -3099,6 +3284,7 @@ describe("视频生成（C2 独立创作）", () => {
         initialState={createState("reference")}
       />,
     );
+    await acceptRestorePrompt();
     fireEvent.click(
       await screen.findByRole("button", { name: "重试读取草稿参考图" }),
     );

@@ -299,6 +299,7 @@ function studio(
     openLive: vi.fn(),
     requestGeneration: vi.fn(),
     saveDraft: vi.fn(),
+    discardSavedDraft: vi.fn(),
     confirmFinalDraft: vi.fn(),
     extractScriptFromUpload: vi.fn(),
     refresh: vi.fn(),
