@@ -3233,7 +3233,8 @@ describe("视频复刻（模块①）", () => {
       id: "prompt-final",
       payload: { prompt_text: "最终新稿" },
     });
-    fireEvent.click(screen.getByLabelText("采用这份文案"));
+    const confirmScript = screen.queryByRole("button", { name: /^确认$/ });
+    if (confirmScript) fireEvent.click(confirmScript);
     const compression = screen.queryByLabelText(/内容压缩到/);
     if (compression) fireEvent.click(compression);
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
@@ -3284,6 +3285,31 @@ describe("视频复刻（模块①）", () => {
       expect(value.notify).toHaveBeenCalledWith("积分不足，本次需要 5 积分。"),
     );
     expect(value.openLive).toHaveBeenCalledWith("wallet");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "积分不足，本次需要 5 积分。",
+    );
+  });
+
+  it("拆解等待时展示真实运行状态而不是只有按钮忙碌", async () => {
+    const value = replicaStudio();
+    replicaApi.startVideoAnalysis.mockResolvedValueOnce({
+      id: "task-wait",
+      status: "PENDING",
+    });
+    replicaApi.waitForAnalysisTask.mockImplementationOnce((_id, update) => {
+      update({ id: "task-wait", status: "RUNNING" });
+      return new Promise(() => {});
+    });
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
+    expect(await screen.findByText(/正在分析视频画面与口播/)).toHaveTextContent(
+      "已等待",
+    );
+    expect(screen.getByText(/正在分析视频画面与口播/)).toHaveTextContent(
+      "请勿重复提交",
+    );
+    expect(replicaApi.startVideoAnalysis).toHaveBeenCalledTimes(1);
   });
 
   it("拆解的其他失败不打开钱包侧栏", async () => {

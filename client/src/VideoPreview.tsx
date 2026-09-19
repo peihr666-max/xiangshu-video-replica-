@@ -10,6 +10,7 @@ import "./video-preview.css";
 
 type Props = ComponentProps<"video"> & {
   frameRatio?: string;
+  fitContainer?: boolean;
   alt?: string;
   videoClassName?: string;
   onPosterError?: () => void;
@@ -33,6 +34,7 @@ export function VideoPreview({
   overlay,
   children,
   frameRatio = src ? undefined : "adaptive",
+  fitContainer = false,
   onLoadedMetadata,
   onAspectRatioChange,
   ...videoProps
@@ -171,7 +173,7 @@ export function VideoPreview({
     <div
       className={`video-preview ${className}`}
       style={
-        frameRatio
+        frameRatio && !fitContainer
           ? {
               aspectRatio: String(ratio),
               width: `min(100%, calc(var(--image-preview-height, 320px) * ${ratio}))`,

@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import {
+  type AnalysisTask,
   type AnalysisVersion,
   type CharacterReferenceSelection,
   capturePromptSession,
@@ -1277,6 +1278,20 @@ export function ReplicaPage() {
   const [shotSaveError, setShotSaveError] = useState("");
   const [originalScript, setOriginalScript] = useState("");
   const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisStatus, setAnalysisStatus] =
+    useState<AnalysisTask["status"]>();
+  const [analysisError, setAnalysisError] = useState("");
+  const [analysisElapsed, setAnalysisElapsed] = useState(0);
+  useEffect(() => {
+    if (!analysisBusy) return;
+    const started = Date.now();
+    setAnalysisElapsed(0);
+    const timer = window.setInterval(
+      () => setAnalysisElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [analysisBusy]);
   const [promptText, setPromptText] = useState(state.draft.prompt);
   const [finalSnapshot, setFinalSnapshot] =
     useState<FinalReplicaSnapshot | null>(() =>
@@ -1398,6 +1413,8 @@ export function ReplicaPage() {
   };
 
   const resetReplicaState = () => {
+    setAnalysisError("");
+    setAnalysisStatus(undefined);
     setShots([]);
     shotSaveOperationRef.current += 1;
     setSavingShots(false);
@@ -1688,6 +1705,8 @@ export function ReplicaPage() {
       latestDraftRef.current.projectId === projectId &&
       sessionCurrent();
     setAnalysisBusy(true);
+    setAnalysisError("");
+    setAnalysisStatus(undefined);
     setStage("analyzing");
     notify("AI 拆解进行中，离开页面后仍可恢复原任务。");
     try {
@@ -1699,7 +1718,10 @@ export function ReplicaPage() {
           : await startVideoAnalysis(projectId, assetId, undefined, force);
       if (!isCurrentAnalysis()) return;
       patchDraft({ analysisTaskId: task.id, analysisTaskStatus: task.status });
-      await waitForAnalysisTask(task.id);
+      setAnalysisStatus(task.status);
+      await waitForAnalysisTask(task.id, (updated) => {
+        if (isCurrentAnalysis()) setAnalysisStatus(updated.status);
+      });
       if (!isCurrentAnalysis()) {
         return; // 等待期间用户更换了来源视频，丢弃旧项目的拆解结果。
       }
@@ -1769,7 +1791,12 @@ export function ReplicaPage() {
           patchDraft({ analysisTaskStatus: "FAILED" });
       }
       setStage("ready");
-      notify(customerVisibleErrorMessage(cause, "AI 拆解失败，请稍后重试。"));
+      const message = customerVisibleErrorMessage(
+        cause,
+        "AI 拆解失败，请稍后重试。",
+      );
+      setAnalysisError(message);
+      notify(message);
       // 服务端已给出需要多少积分；把钱包侧栏一并打开，省掉用户自己找入口。
       if (isInsufficientCredits(cause)) openLive("wallet");
     } finally {
@@ -2014,6 +2041,24 @@ export function ReplicaPage() {
                   {restoreBusy && (
                     <Hint>正在读取已保存的分镜、文案和 Prompt…</Hint>
                   )}
+                  {analysisBusy && (
+                    <p role="status" aria-live="polite">
+                      {analysisStatus === "PENDING"
+                        ? "拆解任务已排队，等待开始"
+                        : analysisStatus === "RUNNING"
+                          ? "正在分析视频画面与口播"
+                          : analysisStatus === "SUCCEEDED"
+                            ? "拆解已完成，正在读取分镜"
+                            : "正在连接拆解服务"}
+                      {` · 已等待 ${Math.floor(analysisElapsed / 60)}分${analysisElapsed % 60}秒。`}
+                      视频拆解可能需要数分钟，请勿重复提交。
+                    </p>
+                  )}
+                  {analysisError && (
+                    <div className="creation-inline-error" role="alert">
+                      {analysisError}
+                    </div>
+                  )}
                   {restoreError && (
                     <div className="creation-inline-error" role="alert">
                       <span>{restoreError}</span>
@@ -2159,6 +2204,7 @@ export function ReplicaPage() {
                         state.draft.sourceFrameTimestampSeconds
                       }
                       showScriptPreview={false}
+                      scriptConfirmed={state.draft.script.confirmed}
                       value={promptText}
                       snapshot={finalSnapshot}
                       onPrepared={(snapshot) => {

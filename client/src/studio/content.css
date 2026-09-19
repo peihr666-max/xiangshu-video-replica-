@@ -1541,13 +1541,22 @@ span.viral-card-cover-empty.content-player-viral-poster {
   }
 }
 
-/* Video preview surfaces retain a portrait frame at every breakpoint. */
+/* Material cards are fixed-height thumbnails. */
 .content-asset--video {
-  grid-template-rows: auto 22px 18px 18px;
+  grid-template-rows: 140px 22px 18px 18px;
 }
 .content-asset--video .studio-media.video-preview {
-  height: auto;
-  aspect-ratio: 9 / 16;
+  width: 100%;
+  height: 140px;
+  max-height: 140px;
+  aspect-ratio: auto;
+  margin: 0;
+}
+.content-asset--video .studio-media.video-preview img,
+.content-asset--video .studio-media.video-preview video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .content-publish-draft-card {
   grid-template-columns: 72px minmax(0, 1fr);

@@ -1752,6 +1752,7 @@ function AssetCard({
       <Media
         asset={asset}
         alt={asset.name}
+        fitContainer
         onError={onPreviewError}
         onPlay={onPlay}
       />

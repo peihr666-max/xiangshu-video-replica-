@@ -332,7 +332,6 @@ describe("V1.4 任务详情真实成片预览", () => {
     expect(
       await screen.findByRole("heading", { name: taskA.title }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
 
     value = {
       ...value,
@@ -415,15 +414,13 @@ describe("V1.4 任务详情真实成片预览", () => {
     });
   });
 
-  it("仅在用户点击后按需加载，并只回填发起任务的结果", async () => {
+  it("打开已完成任务立即加载成片，并只回填发起任务的结果", async () => {
     const pending = deferred<StudioAsset | undefined>();
     const value = studio(taskA.id, { data: data([taskA, taskB]) });
     useStudio.mockReturnValue(value);
     loadTaskPreview.mockReturnValue(pending.promise);
     render(<TaskDetailPage />);
 
-    expect(loadTaskPreview).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     expect(loadTaskPreview).toHaveBeenCalledWith(taskA);
     expect(
       screen.getByRole("button", { name: "正在加载预览…" }),
@@ -469,7 +466,6 @@ describe("V1.4 任务详情真实成片预览", () => {
       useStudio.mockImplementation(() => value);
       loadTaskPreview.mockResolvedValue(asset);
       const view = render(<TaskDetailPage />);
-      fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
       await waitFor(() => expect(value.updateData).toHaveBeenCalledOnce());
       const update = vi.mocked(value.updateData).mock.calls[0][0];
       value = { ...value, data: update(value.data) };
@@ -536,7 +532,6 @@ describe("V1.4 任务详情真实成片预览", () => {
     useStudio.mockImplementation(() => value);
     loadTaskPreview.mockResolvedValue(direct);
     const view = render(<TaskDetailPage />);
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     await waitFor(() =>
       expect(view.container.querySelector("video")).toHaveAttribute(
         "src",
@@ -576,7 +571,6 @@ describe("V1.4 任务详情真实成片预览", () => {
       saved: true,
     });
     const view = render(<TaskDetailPage />);
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     value = {
       ...value,
       data: {
@@ -596,8 +590,6 @@ describe("V1.4 任务详情真实成片预览", () => {
         saved: false,
       });
     });
-    expect(value.updateData).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     await waitFor(() =>
       expect(view.container.querySelector("video")).toHaveAttribute(
         "src",
@@ -621,7 +613,6 @@ describe("V1.4 任务详情真实成片预览", () => {
       .mockResolvedValueOnce(asset)
       .mockResolvedValueOnce({ ...asset, url: "/signed/refreshed-result" });
     const view = render(<TaskDetailPage />);
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     const video = await waitFor(() => {
       const element = view.container.querySelector("video");
       expect(element).toHaveAttribute("src", asset.url);
@@ -644,7 +635,6 @@ describe("V1.4 任务详情真实成片预览", () => {
     loadTaskPreview.mockResolvedValue(undefined);
     render(<TaskDetailPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     expect(
       await screen.findByText("该批次暂时没有可预览的成功结果。"),
     ).toBeInTheDocument();
@@ -658,7 +648,6 @@ describe("V1.4 任务详情真实成片预览", () => {
     loadTaskPreview.mockRejectedValue(new Error("preview unavailable"));
     render(<TaskDetailPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     expect(
       await screen.findByText("预览加载失败，请重试。"),
     ).toBeInTheDocument();
@@ -674,10 +663,11 @@ describe("V1.4 任务详情真实成片预览", () => {
       updateData,
     });
     useStudio.mockImplementation(() => value);
-    loadTaskPreview.mockReturnValue(pending.promise);
+    loadTaskPreview
+      .mockReturnValueOnce(pending.promise)
+      .mockReturnValue(new Promise(() => {}));
     const view = render(<TaskDetailPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "预览成片" }));
     value = studio(taskB.id, {
       data: data([taskA, taskB]),
       updateData,

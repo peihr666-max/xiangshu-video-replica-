@@ -38,6 +38,7 @@ export function ReplicaFinalPromptControls({
   sourceDuration = 0,
   sourceFrameTimestamp,
   showScriptPreview = true,
+  scriptConfirmed,
   value,
   onChange,
   snapshot,
@@ -49,6 +50,7 @@ export function ReplicaFinalPromptControls({
   sourceDuration?: number;
   sourceFrameTimestamp?: number;
   showScriptPreview?: boolean;
+  scriptConfirmed?: boolean;
   value: string;
   onChange: (text: string) => void;
   snapshot: FinalReplicaSnapshot | null;
@@ -58,6 +60,7 @@ export function ReplicaFinalPromptControls({
 }) {
   const key = replicaInputKey(input);
   const [confirmedKey, setConfirmedKey] = useState("");
+  const confirmed = scriptConfirmed ?? confirmedKey === key;
   const [scale, setScale] = useState(false);
   const [openingAction, setOpeningAction] = useState("");
   const [busy, setBusy] = useState(false);
@@ -159,7 +162,7 @@ export function ReplicaFinalPromptControls({
     if (
       busy ||
       readOnly ||
-      confirmedKey !== key ||
+      !confirmed ||
       !input.firstFrameAssetId ||
       (requiresCompression && !scale)
     )
@@ -226,21 +229,23 @@ export function ReplicaFinalPromptControls({
   return (
     <section className="replica-final-controls" aria-label="最终提示词合成">
       {showScriptPreview ? <pre>{input.scriptText || "无口播"}</pre> : null}
-      <label>
-        <input
-          type="checkbox"
-          disabled={readOnly || busy}
-          checked={confirmedKey === key}
-          onChange={(event) => {
-            setConfirmedKey(event.target.checked ? key : "");
-            if (!event.target.checked) {
-              operation.current += 1;
-              onPrepared(null);
-            }
-          }}
-        />
-        {input.scriptText.trim() ? "采用这份文案" : "本视频无口播"}
-      </label>
+      {scriptConfirmed === undefined && (
+        <label>
+          <input
+            type="checkbox"
+            disabled={readOnly || busy}
+            checked={confirmedKey === key}
+            onChange={(event) => {
+              setConfirmedKey(event.target.checked ? key : "");
+              if (!event.target.checked) {
+                operation.current += 1;
+                onPrepared(null);
+              }
+            }}
+          />
+          {input.scriptText.trim() ? "采用这份文案" : "本视频无口播"}
+        </label>
+      )}
       {requiresCompression ? (
         <label>
           <input
@@ -299,7 +304,7 @@ export function ReplicaFinalPromptControls({
         disabled={
           readOnly ||
           busy ||
-          confirmedKey !== key ||
+          !confirmed ||
           !input.firstFrameAssetId ||
           (requiresCompression && !scale)
         }

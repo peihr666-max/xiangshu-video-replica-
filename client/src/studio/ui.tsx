@@ -290,11 +290,13 @@ export function Media({
   aspectRatio,
   onAspectRatioChange,
   fallback,
+  fitContainer = false,
 }: {
   presentation?: "video";
   aspectRatio?: string;
   onAspectRatioChange?: (ratio: number) => void;
   fallback?: ReactNode;
+  fitContainer?: boolean;
   onPlay?: () => void;
   asset?: StudioAsset;
   alt: string;
@@ -306,6 +308,7 @@ export function Media({
       <VideoPreview
         className={`studio-media studio-media--empty ${className}`}
         frameRatio={aspectRatio ?? "9:16"}
+        fitContainer={fitContainer}
         alt={alt}
         fallback={
           fallback ?? (
@@ -348,6 +351,7 @@ export function Media({
         frameRatio={
           aspectRatio ?? (asset.kind === "image" ? "adaptive" : undefined)
         }
+        fitContainer={fitContainer}
         className={`studio-media ${className}`}
         controls
         src={asset.kind === "video" ? asset.url : undefined}
