@@ -221,20 +221,34 @@
    - 不占云存储
 
 3. H3 生成（必须公链）：
-   a. 查 viral_media_objects（共享对象库）
-   b. 已有 → 签名 URL，reference_count += 1
-   c. 没有 → 从 TikHub 下载原视频 → 上传到 cos://viral/shared/ → 创建对象
-   d. 调 H3 API（reference_video=签名 URL）
-   e. 生成完成 → 落 projects → 客户下载成品
+   a. 查 viral_media_objects（共享对象库）：
+      - 已有 → 签名 URL，reference_count += 1（原子更新）
+      - 没有 → 进入步骤 3b
+      
+   b. 从源站下载原视频（三级降级）：
+      i. 尝试 viral_videos.play_url（最新获取的）
+      ii. 如果失效（404/过期）→ 调用 TikTok/视频号官方详情接口重新获取
+      iii. 如果所有源都失败 → 提示"该视频已下架"，记录到 viral_refresh_tasks 后台异步重试（最多 3 次）
+      
+   c. 下载成功后 → 上传到 cos://viral/shared/{hash}.mp4
+   d. 创建 viral_media_objects 记录（reference_count=1）
+   e. 调 H3 API（reference_video=签名 URL）
+   f. 生成完成 → 落 projects → 客户下载成品
 
 4. H3 引用 expires_at = now() + 7 天，到期自动 reference_count -= 1
 ```
+
+**并发安全机制**：
+- **同一视频的重复请求**：通过 `FOR UPDATE` SQL 行级锁保证只有一个线程执行步骤 b-c-d，后续请求等待完成后直接加计数（避免重复上传）
+- **不同视频的并行 H3**：PostgreSQL 原生支持多行并发更新（不同 content_hash 互不影响）
+- **实际瓶颈**：H3 API 服务商的 QPS 限制（建议全局限流如 20QPS），而非数据库或 COS 带宽
 
 **关键设计**：
 - **优先用本地缓存** → 避免重复下载
 - **Gemini/GPT-Image-2 直传** → 不占云存储
 - **H3 共享对象库** → 跨客户复用，摊薄成本
-- **引用计数 + 过期** → 自动清理未复用对象
+- **三级降级策略** → 应对 TikTok/视频号视频下架导致的播放链接失效
+- **引用计数原子操作** → PostgreSQL FOR UPDATE 锁保证并发安全
 
 #### 流程 7：用户主动"同步到云"（可选）
 
@@ -260,7 +274,7 @@
 ALTER TABLE viral_videos ADD COLUMN is_featured integer NOT NULL DEFAULT 0;
 ALTER TABLE viral_videos ADD COLUMN featured_source text CHECK(featured_source IN ('user','admin'));
 ALTER TABLE viral_videos ADD COLUMN featured_by_user_id text REFERENCES users(id);
-ALTER TABLE viral_videos ADD COLUMN featured_by_admin_id text;  -- 管理员 ID（如果有 admins 表）
+ALTER TABLE viral_videos ADD COLUMN featured_by_admin_id text;  -- 如果复用 users 表（role='admin'），则使用此字段引用 users.id
 ALTER TABLE viral_videos ADD COLUMN featured_at timestamptz;
 ALTER TABLE viral_videos ADD COLUMN featured_count integer NOT NULL DEFAULT 0;
 ALTER TABLE viral_videos ADD COLUMN featured_storage_uri text;  -- cos://viral/featured/...
@@ -321,8 +335,9 @@ CREATE INDEX idx_viral_media_references_expires ON viral_media_references(expire
 
 #### 废弃 `viral_media_preparations` 表
 
-- 迁移数据到 `viral_media_objects` 后废弃
-- 或改为"临时下载任务"表（只存 H3 触发时的一次性下载状态）
+- **数据迁移**：将现有记录的 storage_uri、size_bytes 等字段复制到 `viral_media_objects`
+- **废弃策略**：数据迁移完成后标记为 deprecated（不立即 DROP），保留 30 天供回滚使用
+- **最终清理**：30 天无异常 → DROP TABLE viral_media_preparations
 
 #### 桌面端本地 SQLite（不在服务端）
 
@@ -343,22 +358,31 @@ CREATE INDEX idx_local_cache_accessed ON local_viral_cache(last_accessed_at);
 ```
 
 **自动清理策略**：
-- 保留最近 N 条（可配置，默认 100）
-- 超过时删除最久未访问的（`last_accessed_at` 最早）
+- **保留规则**：最多保留最近 100 条（N ∈ [50, 500]，可配置）
+- **触发条件**：插入新记录时检查计数 → 超过 N 条时删除 `ORDER BY last_accessed_at ASC LIMIT 10`
+- **批量删除**：每次删 10 条而非逐条删，避免频繁 I/O
 
 ### 3.4 计费模型
 
-| 计费项 | 触发 | 承担方 | 单价 | 备注 |
-|---|---|---|---|---|
-| `viral_search` | **每次搜索**（不管缓存） | 客户直付 | ¥0.10/次 | 简化逻辑，保证平台收入 |
-| `viral_featured_upload` | 用户添加精选 | **免费** | ¥0 | 鼓励 UGC，转码成本平台承担 |
-| `viral_data`（保留） | 管理员批采集精选池 | 平台承担 | ¥0 | 运营投入 |
-| `viral_gemini_analyze` | 视频拆解 | 客户直付 | 现状 | 桌面端直传，无云存储费 |
-| `viral_gpt_image` | 首帧置换 | 客户直付 | 现状 | 桌面端直传，无云存储费 |
-| `viral_h3_generate` | H3 视频生成 | 客户直付 | 现状 | 含公链签名 URL |
-| `viral_shared_storage` | H3 共享对象库 | **平台承担** | ¥0 | 规模红利 |
-| `viral_featured_storage` | 精选池低分辨率版 | **平台承担** | ¥0 | 运营投入 |
-| `viral_cloud_storage` | 客户主动同步私有对象 | 客户直付 | ¥0.5/GB·月 | 含 CDN 流量，可主动删除 |
+#### 定价策略
+
+| 计费项 | 触发 | 承担方 | 单价 | 配置方式 | 备注 |
+|---|---|---|---|---|---|
+| `viral_search` | **一次前端搜索请求**（不管返回多少条视频） | 客户直付 | ¥0.10/次 | 后台配置（billing_catalog.py） | 按关键词请求次数计，非按返回视频条数 |
+| `viral_featured_upload` | 用户添加精选 | **免费** | ¥0 | N/A | 鼓励 UGC，转码成本平台承担 |
+| `viral_data`（保留） | 管理员批采集精选池 | 平台承担 | ¥0 | N/A | 运营投入 |
+| `viral_gemini_analyze` | 视频拆解 | 客户直付 | 现状 | 后台配置 | 桌面端直传，无云存储费 |
+| `viral_gpt_image` | 首帧置换 | 客户直付 | 现状 | 后台配置 | 桌面端直传，无云存储费 |
+| `viral_h3_generate` | H3 视频生成 | 客户直付 | 现状 | 后台配置 | 含公链签名 URL |
+| `viral_shared_storage` | H3 共享对象库 | **平台承担** | ¥0 | N/A | 规模红利，跨客户复用 |
+| `viral_featured_storage` | 精选池低分辨率版 | **平台承担** | ¥0 | N/A | 运营投入 |
+| `viral_cloud_storage` | 客户主动同步私有对象 | 客户直付 | ¥0.5/GB·月 | 后台配置 | 含 CDN 流量，可主动删除停止计费 |
+
+**计费粒度说明**：
+- `viral_search` 按"一次前端搜索请求"计费（¥0.10/次）
+  - 用户输入一个关键词 → 后端调用 TikHub API → 返回 10-30 条视频结果 → **只扣 1 次费**
+  - 不管返回多少条视频，单次关键词搜索就是一次计费单元
+  - 原因：第三方 API（TikHub）按一次 HTTP 请求计费，与返回结果数量无关；平台加收 100% 毛利作为服务利润
 
 **关键设计**：
 - **每次搜索必扣费**（不管缓存）→ 简化逻辑，保证平台稳定收入
@@ -368,10 +392,16 @@ CREATE INDEX idx_local_cache_accessed ON local_viral_cache(last_accessed_at);
 - **客户私有对象存储费客户承担**（按用量公平计费）
 
 **平台盈利点**：
-- `viral_search` 加价转售（TikHub 成本 ¥0.05 → 售价 ¥0.10，毛利 50%）
+- `viral_search` 加价转售（TikHub 成本 ¥0.05 → 售价 ¥0.10，毛利 100%）
 - `viral_h3_generate` 加价转售（现状）
 - `viral_gemini_analyze` / `viral_gpt_image` 加价转售（现状）
-- `viral_cloud_storage` 加价转售（COS 成本 ¥0.12/GB·月 → 售价 ¥0.5/GB·月，毛利 76%）
+- `viral_cloud_storage` 加价转售（COS 成本 ¥0.12/GB·月 → 售价 ¥0.5/GB·月，毛利 317%）
+
+**并发能力说明**：
+- **多管理账号并发搜索**：PostgreSQL 行级锁机制确保同一视频的引用计数更新不会冲突
+- **同一视频的重复 H3 请求**：通过 FOR UPDATE 加锁 + 查询缓存，第二个及以后的请求会等待第一个完成后再加计数，避免重复上传
+- **不同视频的并发 H3**：完全并行，PostgreSQL 原生支持多行并发更新（不同 content_hash 互不影响）
+- **实际瓶颈**：H3 API 服务商的 QPS 限制（建议设置全局限流，如 20QPS），而非数据库或 COS 带宽
 
 ---
 
@@ -536,40 +566,40 @@ CREATE INDEX idx_local_cache_accessed ON local_viral_cache(last_accessed_at);
 
 | 项目 | 计算 | 年成本 |
 |---|---|---|
-| **云存储** | 100 客户 × 10 次/周 × 10 条 × 10 MB × 52 周 = 52 GB | ¥75（¥0.12/GB·月 × 12） |
-| **流量** | 100 客户 × 10 次/周 × 10 条 × 10 MB × 52 周 = 52 GB | ¥26（¥0.5/GB × 52） |
-| **TikHub API** | 100 客户 × 10 次/周 × 52 周 = 52000 次 | ¥2600（¥0.05/次） |
-| **总计** | | **¥2701/年** |
+| **云存储** | 100 客户 × 每周搜索 10 次 × 每次返回 10 条 × 10MB/条 × 52 周 = 52 GB | ¥75（¥0.12/GB·月 × 12） |
+| **流量** | 同云存储计算 = 52 GB | ¥26（¥0.5/GB × 52） |
+| **TikHub API** | 100 客户 × 每周搜索 10 次 × 52 周 = 52,000 次请求 | ¥2,600（¥0.05/次） |
+| **总计** | | **¥2,701/年** |
 
 ### 6.3 方案 A 成本（100 客户）
 
 | 项目 | 计算 | 年成本 |
 |---|---|---|
-| **精选池云存储** | 15 条/周 × 3 MB × 52 周 = 2.3 GB | ¥3.3（¥0.12/GB·月 × 12） |
-| **H3 共享对象库** | 100 客户 × 5 次/月 × 10 MB × 12 月 × 30%（未命中）= 18 GB | ¥26（¥0.12/GB·月 × 12） |
-| **精选池流量** | 100 客户 × 10 次/周 × 3 MB × 52 周 = 15.6 GB | ¥7.8（¥0.5/GB × 52） |
-| **TikHub API** | 100 客户 × 10 次/周 × 52 周 = 52000 次 | ¥2600（¥0.05/次） |
-| **总计** | | **¥2637/年** |
+| **精选池云存储** | 15 条/周 × 3MB/条（480p） × 52 周 = 2.3 GB | ¥3.3（¥0.12/GB·月 × 12） |
+| **H3 共享对象库** | 100 客户 × 每月 5 次 H3 × 10MB/条 × 12 月 × 30% 未命中 = 18 GB | ¥26（¥0.12/GB·月 × 12） |
+| **精选池流量** | 100 客户 × 每周浏览 10 次 × 3MB/条（480p） × 52 周 = 15.6 GB | ¥7.8（¥0.5/GB × 52） |
+| **TikHub API** | 100 客户 × 每周搜索 10 次 × 52 周 = 52,000 次请求 | ¥2,600（¥0.05/次） |
+| **总计** | | **¥2,637/年** |
 
-**节省**：¥64/年（2.4%）—— 100 客户时节省不明显
+**节省**：¥64/年（2.4%）—— 100 客户时节省不明显（因为 API 成本占比 96%）
 
 ### 6.4 方案 A 成本（1000 客户）
 
 | 项目 | 计算 | 年成本 |
 |---|---|---|
-| **精选池云存储** | 15 条/周 × 3 MB × 52 周 = 2.3 GB | ¥3.3 |
-| **H3 共享对象库** | 1000 客户 × 5 次/月 × 10 MB × 12 月 × 30% = 180 GB | ¥260 |
-| **精选池流量** | 1000 客户 × 10 次/周 × 3 MB × 52 周 = 156 GB | ¥78 |
-| **TikHub API** | 1000 客户 × 10 次/周 × 52 周 = 520000 次 | ¥26000 |
-| **总计** | | **¥26341/年** |
+| **精选池云存储** | 15 条/周 × 3MB/条（480p） × 52 周 = 2.3 GB | ¥3.3 |
+| **H3 共享对象库** | 1000 客户 × 每月 5 次 H3 × 10MB/条 × 12 月 × 30% 未命中 = 180 GB | ¥260 |
+| **精选池流量** | 1000 客户 × 每周浏览 10 次 × 3MB/条（480p） × 52 周 = 156 GB | ¥78 |
+| **TikHub API** | 1000 客户 × 每周搜索 10 次 × 52 周 = 520,000 次请求 | ¥26,000 |
+| **总计** | | **¥26,341/年** |
 
 **现状成本（1000 客户）**：
-- 云存储：520 GB → ¥750
-- 流量：520 GB → ¥260
-- TikHub API：520000 次 → ¥26000
-- **总计**：¥27010/年
+- 云存储：1000 客户 × 每周 10 次 × 10 条 × 10MB × 52 周 = 520 GB → ¥750
+- 流量：同云存储 = 520 GB → ¥260
+- TikHub API：1000 客户 × 每周 10 次 × 52 周 = 520,000 次请求 → ¥26,000
+- **总计**：¥27,010/年
 
-**节省**：¥669/年（2.5%）—— 1000 客户时节省仍不明显
+**节省**：¥669/年（2.5%）—— 规模扩大后节省仍有限，但盈利模型更健康
 
 ### 6.5 关键洞察
 
@@ -606,7 +636,7 @@ CREATE INDEX idx_local_cache_accessed ON local_viral_cache(last_accessed_at);
 
 - `20260913T1600_shared_viral_media.py`：现有共享媒体迁移
 - `20260915T1600_viral_copy_cache.py`：现有口播稿缓存迁移
-- **新增**：`20260920T0000_viral_cost_optimization.py`（本方案迁移）
+- **新增**：`20260920T1200_viral_cost_optimization.py`（本方案迁移，带版本号和具体时间）
 
 ### 7.3 计费项配置
 
