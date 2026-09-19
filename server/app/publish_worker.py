@@ -6,10 +6,11 @@ from storage, upload, platform transcode wait, create). That work runs in its
 own process instead of the generation worker's serial loop so a slow or hung
 platform call never stalls H3 polling or oral tasks.
 
-Each round claims at most one account probe (phase 1, ``app.publish``) and at
-most one publish record (phase 2, ``app.publish_records``). Claim and finalize
-each get their own short transaction; the platform I/O happens inside the
-adapters with no database transaction open. The heavy vendor/adapter imports
+Each round claims at most one legacy account probe (phase 1, ``app.publish``),
+at most one QR-login account health probe (phase 1b, ``app.publish_browser``)
+and at most one publish record (phase 2, ``app.publish_records``). Claim and
+finalize each get their own short transaction; the platform I/O happens inside
+the adapters with no database transaction open. The heavy vendor/adapter imports
 are function-local so this module can also be imported for tests without
 Node/curl_cffi present.
 """
@@ -39,6 +40,12 @@ from app.publish import (
     claim_account_verify_work,
     finalize_account_verify,
 )
+from app.publish_browser import (
+    BrowserProbeLease,
+    BrowserProbeLeaseLostError,
+    claim_browser_probe_work,
+    finalize_browser_probe,
+)
 from app.publish_records import PublishWork, claim_publish_work, finalize_publish_work
 from app.publishers.base import PublishResult
 from app.settings import fernet_from_environment
@@ -48,8 +55,11 @@ logger = logging.getLogger(__name__)
 
 
 def _dispatch_probe(
-    platform: str, cookie: str, security_sdk: str | None
+    platform: str, cookie: str, security_sdk: str | dict[str, Any] | None
 ) -> tuple[bool, str | None]:
+    # security_sdk 只抖音用得上：账号巡检传入解密后的 JSON 字符串，
+    # 浏览器登录态探测传入 credentials_for_platform 解出的 dict；两者
+    # douyin_adapter.probe_douyin(SecuritySdk = str | dict | None) 都接受。
     if platform == "douyin":
         from app.publishers import douyin_adapter
 
@@ -130,6 +140,25 @@ def _perform_publish(
     return outcome.result, outcome.mode
 
 
+def _perform_browser_probe(lease: BrowserProbeLease, key: Any) -> tuple[bool, str | None]:
+    """Decrypt a QR-login account's state and probe its cookie; never raises."""
+    import json
+
+    from app.publish_credentials import credentials_for_platform
+
+    try:
+        storage = json.loads(key.decrypt(lease.storage_state_enc.encode("ascii")))
+        if not isinstance(storage, dict):
+            raise ValueError("storage state is not an object")
+    except Exception as exc:  # noqa: BLE001 - credential boundary
+        logger.warning("browser probe credential decode failed: %s", type(exc).__name__)
+        return False, "登录态材料无法读取，请重新扫码连接账号"
+    credentials = credentials_for_platform(lease.platform, storage)
+    if not credentials.cookie:
+        return False, "登录态材料无法读取，请重新扫码连接账号"
+    return _dispatch_probe(lease.platform, credentials.cookie, credentials.security_sdk)
+
+
 def run_publish_round(
     open_txn: Callable[[], AbstractContextManager[BusinessConnection]],
     *,
@@ -171,6 +200,17 @@ def run_publish_round(
                 finalize_account_verify(conn, lease=lease, ok=ok, message=message)
         except PublishLeaseLostError:
             logger.warning("account verify finalize lost lease: %s", lease.record_id)
+
+    with open_txn() as conn:
+        probe_lease = claim_browser_probe_work(conn, worker_id=worker_id)
+    if probe_lease is not None:
+        processed += 1
+        ok, message = _perform_browser_probe(probe_lease, key)
+        try:
+            with open_txn() as conn:
+                finalize_browser_probe(conn, lease=probe_lease, ok=ok, message=message)
+        except BrowserProbeLeaseLostError:
+            logger.warning("browser probe finalize lost lease: %s", probe_lease.record_id)
 
     with open_txn() as conn:
         work = claim_publish_work(conn, worker_id=worker_id)

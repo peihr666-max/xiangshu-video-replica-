@@ -1,9 +1,12 @@
 """Real PG ownership/encryption/cancellation; platform browser responses are fixtures."""
 
 import asyncio
+import base64
 import json
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +28,12 @@ from test_publish_accounts import (
 from app import publish_browser_engine as engine
 from app import publish_browser_routes as routes
 from app.db_pg import pg_transaction
+from app.db_portable import BusinessConnection
+from app.publish_browser import (
+    BrowserProbeLeaseLostError,
+    claim_browser_probe_work,
+    finalize_browser_probe,
+)
 from app.publish_browser_engine import BrowserEvent, login_events, parse_identity
 from app.settings import SETTINGS_KEY_ENV
 
@@ -208,6 +217,7 @@ class _EnginePage:
     def __init__(self, after_goto_url: str) -> None:
         self.url = "about:blank"
         self.after_goto_url = after_goto_url
+        self.goto_url: str | None = None
         self.frames: list[Any] = []
         self.response_handler: Any = None
 
@@ -215,17 +225,25 @@ class _EnginePage:
         assert event == "response"
         self.response_handler = handler
 
-    async def goto(self, *_: Any, **__: Any) -> None:
+    async def goto(self, url: str = "", **__: Any) -> None:
+        self.goto_url = url
         self.url = self.after_goto_url
+
+    async def screenshot(self, **_: Any) -> bytes:
+        return b"fullpage-png"
 
 
 class _EngineContext:
     def __init__(self, page: _EnginePage, request: _EngineRequest) -> None:
         self.page = page
         self.request = request
+        self.init_scripts: list[str] = []
 
     async def new_page(self) -> _EnginePage:
         return self.page
+
+    async def add_init_script(self, script: str) -> None:
+        self.init_scripts.append(script)
 
     async def storage_state(self, **_: Any) -> dict[str, Any]:
         return {"cookies": [{"name": "session", "value": "secret"}], "origins": []}
@@ -235,8 +253,11 @@ class _EngineBrowser:
     def __init__(self, context: _EngineContext) -> None:
         self.context = context
         self.closed = False
+        self.context_kwargs: dict[str, Any] = {}
+        self.launch_kwargs: dict[str, Any] = {}
 
-    async def new_context(self, **_: Any) -> _EngineContext:
+    async def new_context(self, **kwargs: Any) -> _EngineContext:
+        self.context_kwargs = kwargs
         return self.context
 
     async def close(self) -> None:
@@ -248,7 +269,8 @@ class _EnginePlaywright:
         self.chromium = self
         self.browser = browser
 
-    async def launch(self, **_: Any) -> _EngineBrowser:
+    async def launch(self, **kwargs: Any) -> _EngineBrowser:
+        self.browser.launch_kwargs = kwargs
         return self.browser
 
 
@@ -349,6 +371,58 @@ def test_douyin_probe_is_rate_limited_and_creator_backend_never_emits_qr(
     assert [event.phase for event in events] == ["confirming", "confirming", "confirming"]
     assert len(request.calls) == 2
     assert second.disposed is True
+    assert browser.closed is True
+
+
+def test_login_paths_route_only_channels_to_platform() -> None:
+    # 抖音根路径已验证能直接出码，不能被改成 /platform；仅视频号走 /platform。
+    assert engine.LOGIN_PATHS == {
+        "douyin": "",
+        "wechat_channels": "/platform",
+        "xiaohongshu": "",
+    }
+
+
+def test_wechat_channels_fullpage_fallback_streams_page_after_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, browser, _ = _install_engine(
+        monkeypatch,
+        page_url="https://channels.weixin.qq.com/platform",
+        responses=[],
+    )
+
+    async def no_qr(*_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(engine, "qr_locator", no_qr)
+
+    async def run() -> list[BrowserEvent]:
+        seen: list[BrowserEvent] = []
+        events = login_events("wechat_channels")
+        try:
+            async for event in events:
+                seen.append(event)
+                if event.phase == "qr_ready":
+                    return seen
+        finally:
+            await events.aclose()
+        return seen
+
+    seen = asyncio.run(run())
+
+    # grace 期内只报 loading；超过 grace 后用整页截图兜底成可扫图像。
+    assert [event.phase for event in seen[:-1]] == ["loading"] * 4
+    fallback = seen[-1]
+    assert fallback.phase == "qr_ready"
+    assert fallback.image == "data:image/png;base64," + base64.b64encode(b"fullpage-png").decode()
+    # 视频号 goto /platform；并注入 stealth（launch args + init script + UA/locale）。
+    page = browser.context.page
+    assert page.goto_url == "https://channels.weixin.qq.com/platform"
+    assert browser.launch_kwargs["args"] == ["--disable-blink-features=AutomationControlled"]
+    assert browser.context_kwargs["locale"] == "zh-CN"
+    assert "Chrome/" in browser.context_kwargs["user_agent"]
+    assert any("webdriver" in script for script in browser.context.init_scripts)
     assert browser.closed is True
 
 
@@ -707,3 +781,109 @@ def test_import_is_owner_scoped_and_auditor_blocked(
     )
     holder.current_actor = actor("auditor_x", role="auditor")
     assert client.post(BASE + "/accounts/import", json=payload).status_code == 403
+
+
+_PROBE_DOMAINS = {
+    "wechat_channels": ".weixin.qq.com",
+    "douyin": ".douyin.com",
+    "xiaohongshu": ".xiaohongshu.com",
+}
+
+
+def _seed_connected_browser_account(
+    client: TestClient,
+    *,
+    platform: str = "wechat_channels",
+    cookie_value: str = "wx-cookie",
+) -> None:
+    """Import one connected QR-login account carrying a real platform cookie."""
+    payload = {
+        "platform": platform,
+        "identity": {"platform_user_id": "uid-probe", "username": "巡检号"},
+        "storage_state": {
+            "cookies": [
+                {"name": "session", "value": cookie_value, "domain": _PROBE_DOMAINS[platform]}
+            ],
+            "origins": [],
+        },
+    }
+    assert client.post(BASE + "/accounts/import", json=payload).status_code == 200
+
+
+def test_browser_probe_claim_waits_for_schedule_then_reschedules_on_success(
+    client: TestClient, pg: psycopg.Connection, lane_env: str
+) -> None:
+    _seed_connected_browser_account(client)
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        # 刚扫码：next_probe_at = now+24h，尚未到期，claim 返回 None。
+        assert claim_browser_probe_work(conn, worker_id="w1") is None
+        due = datetime.now(UTC) + timedelta(hours=25)
+        lease = claim_browser_probe_work(conn, worker_id="w1", now=due)
+        assert lease is not None and lease.platform == "wechat_channels"
+        # 租约未过期时并发 claim 被 FOR UPDATE SKIP LOCKED 跳过。
+        assert claim_browser_probe_work(conn, worker_id="w2", now=due) is None
+        finalize_browser_probe(conn, lease=lease, ok=True, now=due)
+    row = pg.execute(
+        "SELECT status, probe_lease_owner, next_probe_at FROM publish_browser_accounts"
+    ).fetchone()
+    assert row[0] == "connected"
+    assert row[1] is None
+    # 成功后 next_probe_at 被推到 finalize 时刻（due）+24h，即距今 >23h。
+    assert row[2] > datetime.now(UTC) + timedelta(hours=23)
+
+
+def test_browser_probe_failure_marks_invalid_and_fences_stale_finalize(
+    client: TestClient, pg: psycopg.Connection, lane_env: str
+) -> None:
+    _seed_connected_browser_account(client)
+    due = datetime.now(UTC) + timedelta(hours=25)
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        lease = claim_browser_probe_work(conn, worker_id="w1", now=due)
+        assert lease is not None
+        finalize_browser_probe(conn, lease=lease, ok=False, message="登录态已失效", now=due)
+    # 陈旧租约重放在独立事务里被栅栏拒绝（lease_owner 已清空）。
+    with pytest.raises(BrowserProbeLeaseLostError), pg_transaction() as raw:
+        finalize_browser_probe(BusinessConnection.postgres(raw), lease=lease, ok=True, now=due)
+    row = pg.execute("SELECT status, error_message FROM publish_browser_accounts").fetchone()
+    assert row[0] == "invalid"
+    assert row[1] == "登录态已失效"
+    # invalid 账号不再被巡检 claim（需重新扫码才恢复）。
+    with pg_transaction() as raw:
+        conn = BusinessConnection.postgres(raw)
+        far = datetime.now(UTC) + timedelta(days=5)
+        assert claim_browser_probe_work(conn, worker_id="w1", now=far) is None
+
+
+def test_run_publish_round_probes_due_browser_account_and_marks_invalid(
+    client: TestClient, pg: psycopg.Connection, lane_env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_connected_browser_account(client)
+    # 把 next_probe_at 回拨成已到期，触发本轮巡检。
+    pg.execute(
+        "UPDATE publish_browser_accounts SET next_probe_at = clock_timestamp() - interval '1 hour'"
+    )
+    from app import publish_worker
+
+    calls: list[tuple[str, str, object]] = []
+
+    def fake_probe(platform: str, cookie: str, sdk: object) -> tuple[bool, str | None]:
+        calls.append((platform, cookie, sdk))
+        return False, "登录态已失效"
+
+    monkeypatch.setattr(publish_worker, "_dispatch_probe", fake_probe)
+    key = Fernet(os.environ[SETTINGS_KEY_ENV].encode())
+
+    @contextmanager
+    def open_txn() -> Iterator[BusinessConnection]:
+        with pg_transaction() as raw:
+            yield BusinessConnection.postgres(raw)
+
+    processed = publish_worker.run_publish_round(open_txn, worker_id="w-probe", fernet=key)
+    assert processed >= 1
+    # 探测用解密后的 cookie 走对应平台适配器。
+    assert calls and calls[0][0] == "wechat_channels" and "wx-cookie" in calls[0][1]
+    row = pg.execute("SELECT status, error_message FROM publish_browser_accounts").fetchone()
+    assert row[0] == "invalid"
+    assert row[1] == "登录态已失效"

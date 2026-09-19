@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -21,6 +23,11 @@ MAX_STORAGE_STATE_BYTES = 2_000_000
 _ACCOUNT_COLUMNS = (
     "id,platform,platform_user_id,username,verified_at,status,error_message,source,avatar_url"
 )
+
+# 扫码账号每 24 小时做一次登录态健康探测；探测租约 5 分钟，够一次平台探测往返。
+PROBE_INTERVAL_SECONDS = 86_400
+_PROBE_LEASE_SECONDS = 300
+_PROBE_TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 class BrowserLoginRequest(BaseModel):
@@ -124,12 +131,16 @@ def upsert_browser_account(
         raise HTTPException(422, "平台登录状态过大，请重新扫码。")
     row = conn.execute(
         "INSERT INTO publish_browser_accounts"
-        "(id,user_id,platform,platform_user_id,username,storage_state_enc,source,avatar_url) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(user_id,platform,platform_user_id) "
+        "(id,user_id,platform,platform_user_id,username,storage_state_enc,source,avatar_url,"
+        "next_probe_at) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,clock_timestamp()+make_interval(secs => %s)) "
+        "ON CONFLICT(user_id,platform,platform_user_id) "
         "DO UPDATE SET username=EXCLUDED.username,"
         "storage_state_enc=EXCLUDED.storage_state_enc,source=EXCLUDED.source,"
         "avatar_url=COALESCE(EXCLUDED.avatar_url,publish_browser_accounts.avatar_url),"
-        "status='connected',error_message=NULL,verified_at=clock_timestamp() "
+        "status='connected',error_message=NULL,verified_at=clock_timestamp(),"
+        "next_probe_at=clock_timestamp()+make_interval(secs => %s),"
+        "probe_lease_owner=NULL,probe_lease_expires_at=NULL,probe_attempt_count=0 "
         f"RETURNING {_ACCOUNT_COLUMNS}",  # noqa: S608 - fixed column literal
         (
             account_id or str(uuid4()),
@@ -140,6 +151,8 @@ def upsert_browser_account(
             fernet.encrypt(raw).decode("ascii"),
             source,
             avatar_url,
+            PROBE_INTERVAL_SECONDS,
+            PROBE_INTERVAL_SECONDS,
         ),
     ).fetchone()
     return account_response(row)
@@ -269,3 +282,119 @@ def delete_browser_account(conn: BusinessConnection, owner: str, account_id: str
         != 1
     ):
         raise HTTPException(404, "发布账号不存在。")
+
+
+class BrowserProbeLeaseLostError(RuntimeError):
+    """Raised when a fenced probe write-back no longer owns its lease."""
+
+
+@dataclass
+class BrowserProbeLease:
+    record_id: str
+    platform: str
+    storage_state_enc: str
+    lease_token: str
+    attempt_count: int
+
+
+def _probe_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def claim_browser_probe_work(
+    conn: BusinessConnection,
+    *,
+    worker_id: str,
+    lease_seconds: int = _PROBE_LEASE_SECONDS,
+    now: datetime | None = None,
+) -> BrowserProbeLease | None:
+    """Claim one connected browser account whose 24h health probe is due.
+
+    Mirrors the legacy ``publish_accounts`` verify CAS: ``FOR UPDATE SKIP
+    LOCKED`` picks a candidate, then a fenced ``UPDATE`` re-checks the same
+    predicate so concurrent workers serialize instead of double-claiming. Only
+    ``connected`` accounts are probed; an ``invalid`` account waits for a re-scan.
+    """
+    moment = now or _probe_now()
+    now_text = moment.strftime(_PROBE_TIME_FORMAT)
+    expires_text = (moment + timedelta(seconds=lease_seconds)).strftime(_PROBE_TIME_FORMAT)
+    with conn:
+        row = conn.execute(
+            """
+            SELECT id, platform, storage_state_enc
+            FROM publish_browser_accounts
+            WHERE status = 'connected'
+              AND (next_probe_at IS NULL OR next_probe_at <= %s)
+              AND (probe_lease_expires_at IS NULL OR probe_lease_expires_at <= %s)
+            ORDER BY next_probe_at NULLS FIRST, id
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+            """,
+            (now_text, now_text),
+        ).fetchone()
+        if row is None:
+            return None
+        lease_token = uuid4().hex
+        claimed = conn.execute(
+            """
+            UPDATE publish_browser_accounts
+            SET probe_lease_owner = %s, probe_lease_expires_at = %s,
+                probe_attempt_count = probe_attempt_count + 1
+            WHERE id = %s AND status = 'connected'
+              AND (next_probe_at IS NULL OR next_probe_at <= %s)
+              AND (probe_lease_expires_at IS NULL OR probe_lease_expires_at <= %s)
+            RETURNING probe_attempt_count
+            """,
+            (lease_token, expires_text, str(row["id"]), now_text, now_text),
+        ).fetchone()
+        if claimed is None:
+            return None
+        return BrowserProbeLease(
+            record_id=str(row["id"]),
+            platform=str(row["platform"]),
+            storage_state_enc=str(row["storage_state_enc"]),
+            lease_token=lease_token,
+            attempt_count=int(claimed["probe_attempt_count"]),
+        )
+
+
+def finalize_browser_probe(
+    conn: BusinessConnection,
+    *,
+    lease: BrowserProbeLease,
+    ok: bool,
+    message: str | None = None,
+    interval_seconds: int = PROBE_INTERVAL_SECONDS,
+    now: datetime | None = None,
+) -> None:
+    """Fenced write-back: schedule the next probe, flip status on failure.
+
+    On success the account stays ``connected`` and its next probe is pushed
+    ``interval_seconds`` out; on failure it becomes ``invalid`` (surfacing a
+    re-scan prompt in the UI) but is still rescheduled so a later recovery is
+    possible only via a fresh scan, not another probe of a dead cookie.
+    """
+    moment = now or _probe_now()
+    next_text = (moment + timedelta(seconds=interval_seconds)).strftime(_PROBE_TIME_FORMAT)
+    with conn:
+        cursor = conn.execute(
+            """
+            UPDATE publish_browser_accounts
+            SET status = %s,
+                error_message = %s,
+                next_probe_at = %s,
+                probe_lease_owner = NULL,
+                probe_lease_expires_at = NULL
+            WHERE id = %s AND probe_lease_owner = %s AND probe_attempt_count = %s
+            """,
+            (
+                "connected" if ok else "invalid",
+                None if ok else (message or "登录态已失效，请重新扫码"),
+                next_text,
+                lease.record_id,
+                lease.lease_token,
+                lease.attempt_count,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise BrowserProbeLeaseLostError("browser account probe lease was lost")
