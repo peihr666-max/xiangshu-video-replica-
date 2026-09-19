@@ -20,6 +20,43 @@ export type FinalReplicaSnapshot = {
   shotCardVersionId: string;
 };
 
+export type ReplicaPreflightCheck = {
+  id: string;
+  label: string;
+  passed: boolean;
+  reason: string;
+};
+
+export function ReplicaPreflightChecklist({
+  checks,
+}: {
+  checks: ReplicaPreflightCheck[];
+}) {
+  const incomplete = checks.filter((check) => !check.passed).length;
+  return (
+    <section className="replica-preflight" aria-label="生成前检查">
+      <div className="replica-preflight__summary" aria-live="polite">
+        <strong>生成前检查</strong>
+        <span>{incomplete ? `还需完成 ${incomplete} 项` : "全部通过"}</span>
+      </div>
+      <ul>
+        {checks.map((check) => (
+          <li
+            className={check.passed ? "is-passed" : "is-blocked"}
+            key={check.id}
+          >
+            <span aria-hidden="true">{check.passed ? "✓" : "!"}</span>
+            <span>
+              <strong>{check.label}</strong>
+              <small>{check.passed ? "已完成" : check.reason}</small>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function replicaInputKey(input: {
   projectId: string;
   scriptText: string;
@@ -45,6 +82,7 @@ export function ReplicaFinalPromptControls({
   onPrepared,
   readOnly = false,
   restoreEnabled = true,
+  upstreamChecks = [],
 }: {
   input: Parameters<typeof replicaInputKey>[0];
   sourceDuration?: number;
@@ -57,6 +95,7 @@ export function ReplicaFinalPromptControls({
   onPrepared: (snapshot: FinalReplicaSnapshot | null) => void;
   readOnly?: boolean;
   restoreEnabled?: boolean;
+  upstreamChecks?: ReplicaPreflightCheck[];
 }) {
   const key = replicaInputKey(input);
   const [confirmedKey, setConfirmedKey] = useState("");
@@ -96,6 +135,51 @@ export function ReplicaFinalPromptControls({
     sourceFrameTimestamp === undefined ||
     sourceFrameTimestamp < 0 ||
     sourceFrameTimestamp > 0.25;
+  const preflightChecks: ReplicaPreflightCheck[] = [
+    ...upstreamChecks,
+    {
+      id: "project",
+      label: "来源视频",
+      passed: Boolean(input.projectId),
+      reason: "请先上传或选择来源视频。",
+    },
+    {
+      id: "shot-version",
+      label: "拆解分镜",
+      passed: Boolean(input.shotCardVersionId),
+      reason: "请先完成视频拆解并保存有效分镜。",
+    },
+    {
+      id: "first-frame",
+      label: "首帧选择",
+      passed: Boolean(input.firstFrameAssetId),
+      reason: "请先完成首帧置换并选定图片。",
+    },
+    {
+      id: "script-confirmed",
+      label: "口播文案",
+      passed: confirmed,
+      reason: input.scriptText.trim()
+        ? "请在口播文案区域点击“确认”。"
+        : "请确认本视频无口播。",
+    },
+    {
+      id: "timeline",
+      label: "视频时长",
+      passed: !requiresCompression || scale,
+      reason: `源视频长于 ${input.duration} 秒，请确认压缩时间线。`,
+    },
+    {
+      id: "opening-action",
+      label: "开场衔接",
+      passed: !requiresOpeningAction || Boolean(openingAction.trim()),
+      reason:
+        sourceFrameTimestamp === undefined || sourceFrameTimestamp < 0
+          ? "首帧时间点未知，请说明如何从该画面开始。"
+          : "所选首帧不是视频开头，请填写开场衔接。",
+    },
+  ];
+  const blockingChecks = preflightChecks.filter((check) => !check.passed);
   const preparedCallback = useRef(onPrepared);
   preparedCallback.current = onPrepared;
   useEffect(() => {
@@ -159,14 +243,7 @@ export function ReplicaFinalPromptControls({
     restoreEnabled,
   ]);
   async function compose() {
-    if (
-      busy ||
-      readOnly ||
-      !confirmed ||
-      !input.firstFrameAssetId ||
-      (requiresCompression && !scale)
-    )
-      return;
+    if (busy || readOnly || blockingChecks.length > 0) return;
     operation.current += 1;
     setPending(null);
     setBusy(true);
@@ -228,6 +305,7 @@ export function ReplicaFinalPromptControls({
   }
   return (
     <section className="replica-final-controls" aria-label="最终提示词合成">
+      <ReplicaPreflightChecklist checks={preflightChecks} />
       {showScriptPreview ? <pre>{input.scriptText || "无口播"}</pre> : null}
       {scriptConfirmed === undefined && (
         <label>
@@ -301,13 +379,7 @@ export function ReplicaFinalPromptControls({
       )}
       <button
         type="button"
-        disabled={
-          readOnly ||
-          busy ||
-          !confirmed ||
-          !input.firstFrameAssetId ||
-          (requiresCompression && !scale)
-        }
+        disabled={readOnly || busy || blockingChecks.length > 0}
         onClick={() => void compose()}
       >
         {busy ? "正在合成…" : "合成最终提示词"}

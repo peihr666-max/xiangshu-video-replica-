@@ -1042,6 +1042,66 @@
   white-space: pre-wrap;
 }
 
+.replica-preflight {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--studio-line, #2b2b2b);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--studio-panel, #111) 92%, transparent);
+}
+
+.replica-preflight__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.replica-preflight__summary span {
+  color: var(--studio-muted, #a9a9a9);
+  font-size: var(--font-label);
+}
+
+.replica-preflight ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.replica-preflight li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--studio-bg, #090909);
+}
+
+.replica-preflight li > span:last-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.replica-preflight li small {
+  color: var(--studio-muted, #a9a9a9);
+  overflow-wrap: anywhere;
+}
+
+.replica-preflight li.is-passed > span:first-child {
+  color: #4ecb71;
+}
+
+.replica-preflight li.is-blocked > span:first-child,
+.replica-preflight li.is-blocked small {
+  color: var(--studio-gold, #f3b431);
+}
+
 .creation-shot-row {
   display: flex;
   gap: 12px;

@@ -2985,8 +2985,13 @@ async function pollAnalysisTask(taskId: string): Promise<AnalysisTask> {
   const deadline = Date.now() + 20 * 60_000;
   while (Date.now() < deadline) {
     const task = await getAnalysisTask(taskId);
-    for (const observer of analysisTaskObservers.get(taskId) ?? [])
-      observer(task);
+    for (const observer of analysisTaskObservers.get(taskId) ?? []) {
+      try {
+        observer(task);
+      } catch {
+        // A UI status callback must not interrupt polling shared by all callers.
+      }
+    }
     if (task.status === "SUCCEEDED") {
       return task;
     }

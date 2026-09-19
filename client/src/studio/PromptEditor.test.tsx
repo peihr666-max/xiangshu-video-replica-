@@ -77,7 +77,7 @@ function FinalHarness({
   frame = "frame",
   duration = 4,
   sourceDuration = 4,
-  sourceFrameTimestamp,
+  sourceFrameTimestamp = 0,
   restoreEnabled = true,
 }: {
   script?: string;
@@ -236,8 +236,25 @@ describe("最终提示词后置", () => {
   // 未知当成 0（视频开头），于是该必填时输入框折叠进高级设置，用户点合成必然撞 409
   // 却看不到修正入口。草稿里的时间戳没有恢复路径，未知是常态而非边缘情况。
   it("时间戳未知时按服务端口径要求开场衔接，不折叠进高级设置", () => {
-    render(<FinalHarness />);
+    render(<FinalHarness sourceFrameTimestamp={-1} />);
     expect(screen.getByLabelText("开场衔接")).toBeInTheDocument();
+  });
+
+  it("执行前逐项显示缺失原因，并在补齐前不调用服务端", () => {
+    render(<FinalHarness frame="" sourceFrameTimestamp={-1} />);
+
+    const checklist = screen.getByRole("region", { name: "生成前检查" });
+    expect(checklist).toHaveTextContent("首帧选择");
+    expect(checklist).toHaveTextContent("请先完成首帧置换并选定图片");
+    expect(checklist).toHaveTextContent("口播文案");
+    expect(checklist).toHaveTextContent("请在口播文案区域点击“确认”");
+    expect(checklist).toHaveTextContent("开场衔接");
+    expect(checklist).toHaveTextContent("首帧时间点未知");
+    expect(
+      screen.getByRole("button", { name: "合成最终提示词" }),
+    ).toBeDisabled();
+    expect(api.script).not.toHaveBeenCalled();
+    expect(api.compile).not.toHaveBeenCalled();
   });
 
   it("服务端判定缺开场衔接时，把输入框显示出来而不是只报错", async () => {

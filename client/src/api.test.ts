@@ -3198,6 +3198,31 @@ describe("startVideoAnalysis", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("reports analysis status without allowing a UI callback to stop polling", async () => {
+    vi.useFakeTimers();
+    const running = { id: "analysis-task-status", status: "RUNNING" };
+    const succeeded = {
+      id: "analysis-task-status",
+      status: "SUCCEEDED",
+      result_version_id: "analysis-version-status",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => running })
+      .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
+    vi.stubGlobal("fetch", fetchMock);
+    const observer = vi.fn().mockImplementationOnce(() => {
+      throw new Error("unmounted UI");
+    });
+
+    const result = waitForAnalysisTask("analysis-task-status", observer);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(result).resolves.toEqual(succeeded);
+    expect(observer).toHaveBeenNthCalledWith(1, running);
+    expect(observer).toHaveBeenNthCalledWith(2, succeeded);
+  });
+
   it("enqueues source-frame extraction and shares its durable poller", async () => {
     vi.useFakeTimers();
     const queued = {
