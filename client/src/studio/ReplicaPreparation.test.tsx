@@ -69,6 +69,20 @@ beforeEach(() => {
     result: { rewritten_text: "AI 新口播" },
   });
 });
+it("在口播文案区域确认，编辑后须重新确认", () => {
+  render(<Harness />);
+  const panel = screen
+    .getByLabelText("口播文案")
+    .closest(".creation-replica-narration");
+  const confirm = screen.getByRole("button", { name: /^确认$/ });
+  expect(panel).toContainElement(confirm);
+  fireEvent.click(confirm);
+  expect(screen.getByRole("button", { name: "已确认" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("口播文案"), {
+    target: { value: "编辑后新文案" },
+  });
+  expect(screen.getByRole("button", { name: /^确认$/ })).toBeEnabled();
+});
 it("AI 改写覆盖唯一文案框并支持撤销", async () => {
   render(<Harness />);
   expect(screen.getByLabelText("口播文案")).toHaveAttribute("rows", "10");

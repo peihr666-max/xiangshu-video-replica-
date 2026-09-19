@@ -393,6 +393,10 @@ export type AnalysisTask = {
 };
 
 const analysisTaskWaiters = new Map<string, Promise<AnalysisTask>>();
+const analysisTaskObservers = new Map<
+  string,
+  Set<(task: AnalysisTask) => void>
+>();
 export type AnalysisProvider = "apilio_gemini" | "fake_gemini";
 
 export type ShotMotion = {
@@ -2952,16 +2956,25 @@ export async function getAnalysisTask(taskId: string): Promise<AnalysisTask> {
 
 export async function waitForAnalysisTask(
   taskId: string,
+  onUpdate?: (task: AnalysisTask) => void,
 ): Promise<AnalysisTask> {
+  const observers = analysisTaskObservers.get(taskId) ?? new Set();
+  analysisTaskObservers.set(taskId, observers);
+  if (onUpdate) observers.add(onUpdate);
   const existing = analysisTaskWaiters.get(taskId);
   if (existing) {
-    return existing;
+    try {
+      return await existing;
+    } finally {
+      if (onUpdate) observers.delete(onUpdate);
+    }
   }
   const waiter = pollAnalysisTask(taskId);
   analysisTaskWaiters.set(taskId, waiter);
   const clear = () => {
     if (analysisTaskWaiters.get(taskId) === waiter) {
       analysisTaskWaiters.delete(taskId);
+      analysisTaskObservers.delete(taskId);
     }
   };
   void waiter.then(clear, clear);
@@ -2972,6 +2985,13 @@ async function pollAnalysisTask(taskId: string): Promise<AnalysisTask> {
   const deadline = Date.now() + 20 * 60_000;
   while (Date.now() < deadline) {
     const task = await getAnalysisTask(taskId);
+    for (const observer of analysisTaskObservers.get(taskId) ?? []) {
+      try {
+        observer(task);
+      } catch {
+        // A UI status callback must not interrupt polling shared by all callers.
+      }
+    }
     if (task.status === "SUCCEEDED") {
       return task;
     }
@@ -5269,6 +5289,7 @@ async function requestApiJson<T>(
     error.status = response.status;
     error.code = details.code;
     error.retryable = details.retryable;
+    error.requestId = response.headers?.get?.("X-Request-Id") ?? undefined;
     throw error;
   }
   return (await response.json()) as T;
@@ -5343,6 +5364,27 @@ function generationRequestError(error: unknown, errorPrefix: string): Error {
     mapped.code = code;
     return mapped;
   }
+  if (status === 422 && error instanceof Error) {
+    const requestId = (error as RequestError).requestId;
+    const message =
+      code || error.message !== `${errorPrefix}（422）`
+        ? error.message
+        : `${errorPrefix}：参数校验未通过，请核对文案、首帧、时长和画幅（HTTP 422）`;
+    const diagnostic = [
+      code ? `错误代码：${code}` : "",
+      requestId && !message.includes(requestId) ? `问题编号：${requestId}` : "",
+    ]
+      .filter(Boolean)
+      .join("；");
+    return Object.assign(
+      new Error(`${message}${diagnostic ? `。${diagnostic}` : ""}`),
+      {
+        status,
+        code,
+        requestId,
+      },
+    );
+  }
   const statusMessage =
     status === 401
       ? "登录已失效，请重新进入工作台"
@@ -5350,13 +5392,11 @@ function generationRequestError(error: unknown, errorPrefix: string): Error {
         ? "当前账号无权执行此操作"
         : status === 409
           ? "上游内容已变化，请重新确认后再试"
-          : status === 422
-            ? "生成参数无效，请检查后重试"
-            : status === 429
-              ? "请求过于频繁，请稍后重试"
-              : status !== undefined && status >= 500
-                ? "生成服务暂不可用，请稍后重试"
-                : null;
+          : status === 429
+            ? "请求过于频繁，请稍后重试"
+            : status !== undefined && status >= 500
+              ? "生成服务暂不可用，请稍后重试"
+              : null;
   if (statusMessage) {
     const mapped = new Error(statusMessage) as RequestError;
     mapped.status = status;
@@ -5525,6 +5565,69 @@ async function responseErrorDetails(
 ): Promise<{ message: string; code?: string; retryable?: boolean }> {
   try {
     const payload: unknown = await response.json();
+    if (
+      response.status === 422 &&
+      isRecord(payload) &&
+      Array.isArray(payload.detail)
+    ) {
+      const fields: Record<string, string> = {
+        text: "口播文案",
+        full_text: "口播文案",
+        script_text: "口播文案",
+        opening_action: "开场衔接",
+        ratio: "画幅",
+        resolution: "分辨率",
+        output_duration_seconds: "视频时长",
+        duration_seconds: "视频时长",
+        first_frame_asset_id: "已选首帧",
+        script_version_id: "已确认文案",
+        shot_card_version_id: "分镜版本",
+        timeline_policy: "时长压缩确认",
+        prompt_text: "提示词",
+        source: "文案来源",
+        quantity: "生成数量",
+      };
+      const details = payload.detail
+        .filter(isRecord)
+        .slice(0, 5)
+        .map((item) => {
+          const loc = Array.isArray(item.loc) ? item.loc : [];
+          const field = [...loc]
+            .reverse()
+            .find((part) => typeof part === "string" && fields[part]);
+          const label = typeof field === "string" ? fields[field] : "提交参数";
+          const ctx = isRecord(item.ctx) ? item.ctx : {};
+          const limit = (key: string) =>
+            typeof ctx[key] === "number" ? ctx[key] : undefined;
+          const reason =
+            item.type === "missing"
+              ? "不能为空，请补充后重试"
+              : item.type === "string_too_long" &&
+                  limit("max_length") !== undefined
+                ? `最多 ${limit("max_length")} 个字符`
+                : item.type === "string_too_short" &&
+                    limit("min_length") !== undefined
+                  ? `至少 ${limit("min_length")} 个字符`
+                  : item.type === "greater_than_equal" &&
+                      limit("ge") !== undefined
+                    ? `不能小于 ${limit("ge")}`
+                    : item.type === "less_than_equal" &&
+                        limit("le") !== undefined
+                      ? `不能大于 ${limit("le")}`
+                      : item.type === "literal_error" || item.type === "enum"
+                        ? "请选择支持的选项"
+                        : item.type === "extra_forbidden"
+                          ? "客户端与服务端版本不匹配，请更新后重试"
+                          : "格式不正确，请检查后重试";
+          // Never echo Pydantic's input/context text: it can contain user content.
+          return `${label}：${reason}`;
+        });
+      if (details.length)
+        return {
+          message: `${errorPrefix}：${details.join("；")}`,
+          code: "VALIDATION_ERROR",
+        };
+    }
     if (isRecord(payload) && isRecord(payload.detail)) {
       const message = payload.detail.message;
       const code =

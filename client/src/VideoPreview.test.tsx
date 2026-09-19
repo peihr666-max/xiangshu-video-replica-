@@ -7,6 +7,14 @@ import { VideoPreview } from "./VideoPreview";
 afterEach(() => vi.restoreAllMocks());
 
 describe("VideoPreview", () => {
+  it("lets fixed thumbnail cards control the preview dimensions", () => {
+    const { container } = render(
+      <Media alt="素材预览" fitContainer aspectRatio="adaptive" />,
+    );
+
+    expect(container.firstElementChild).not.toHaveAttribute("style");
+  });
+
   it("does not label old decoded dimensions as a newly selected source", () => {
     vi.spyOn(HTMLVideoElement.prototype, "readyState", "get").mockReturnValue(
       4,

@@ -910,6 +910,7 @@ def _load_simple_library_entries(
             if latest is not None
             and row["version_id"] == latest["version_id"]
             and row["asset_id"] is not None
+            and row["view_type"] in REQUIRED_CHARACTER_VIEW_TYPES
         )
         entries.append(
             SimpleLibraryEntry(

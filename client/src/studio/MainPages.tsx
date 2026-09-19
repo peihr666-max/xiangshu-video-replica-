@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   type CustomerProfile,
   createViralImportTask,
@@ -1438,6 +1438,80 @@ export function TaskDetailPage() {
     !(detailLoad.key === detailContextKey && detailLoad.status === "error");
   const detailHasError =
     detailLoad.key === detailContextKey && detailLoad.status === "error";
+  // Task-list polling contains persisted IDs only. Keep a loaded direct preview
+  // in its user/task context so refreshing the list cannot unmount playback.
+  const cachedPreview =
+    previewLoad.key === previewContextKey ? previewLoad.asset : undefined;
+  const result =
+    (cachedPreview && (!task?.resultId || cachedPreview.id === task?.resultId)
+      ? cachedPreview
+      : undefined) ?? data.assets.find((asset) => asset.id === task?.resultId);
+  currentPreviewUrlRef.current = result?.url;
+  const previewStatus =
+    previewLoad.key === previewContextKey ? previewLoad.status : "idle";
+  const previewResult = useCallback(async () => {
+    if (!task || !taskIsVerified || review || task.status !== "completed")
+      return;
+    const requestedTask = task;
+    const requestedContext = previewContextKey;
+    const requestId = ++previewRequestRef.current;
+    setPreviewLoad({ key: requestedContext, status: "loading" });
+    try {
+      const asset = await loadTaskPreview(requestedTask);
+      if (
+        requestId !== previewRequestRef.current ||
+        previewContextRef.current !== requestedContext
+      )
+        return;
+      if (!asset) {
+        setPreviewLoad({ key: requestedContext, status: "empty" });
+        return;
+      }
+      // A poll may have announced an archived/replaced asset while the old
+      // signing request was in flight. Do not overwrite that physical ID.
+      if (
+        currentResultIdRef.current &&
+        currentResultIdRef.current !== requestedTask.resultId &&
+        currentResultIdRef.current !== asset.id
+      ) {
+        setPreviewLoad({ key: requestedContext, status: "idle" });
+        return;
+      }
+      updateData((current) => ({
+        ...current,
+        assets: current.assets.some((item) => item.id === asset.id)
+          ? current.assets.map((item) => (item.id === asset.id ? asset : item))
+          : [...current.assets, asset],
+        tasks: current.tasks.map((item) =>
+          item.id === requestedTask.id ? { ...item, resultId: asset.id } : item,
+        ),
+      }));
+      setPreviewLoad({ key: requestedContext, status: "ready", asset });
+    } catch {
+      if (
+        requestId === previewRequestRef.current &&
+        previewContextRef.current === requestedContext
+      )
+        setPreviewLoad({ key: requestedContext, status: "error" });
+    }
+  }, [task, taskIsVerified, review, previewContextKey, updateData]);
+  useEffect(() => {
+    if (
+      !review &&
+      taskIsVerified &&
+      task?.status === "completed" &&
+      !result?.url &&
+      previewStatus === "idle"
+    )
+      void previewResult();
+  }, [
+    review,
+    taskIsVerified,
+    task?.status,
+    result?.url,
+    previewStatus,
+    previewResult,
+  ]);
   if (!task || !taskIsVerified || detailIsLoading || detailHasError)
     return (
       <Empty
@@ -1464,17 +1538,6 @@ export function TaskDetailPage() {
         }
       />
     );
-  // Task-list polling contains persisted IDs only. Keep a loaded direct preview
-  // in its user/task context so refreshing the list cannot unmount playback.
-  const cachedPreview =
-    previewLoad.key === previewContextKey ? previewLoad.asset : undefined;
-  const result =
-    (cachedPreview && (!task.resultId || cachedPreview.id === task.resultId)
-      ? cachedPreview
-      : undefined) ?? data.assets.find((asset) => asset.id === task.resultId);
-  currentPreviewUrlRef.current = result?.url;
-  const previewStatus =
-    previewLoad.key === previewContextKey ? previewLoad.status : "idle";
   const person = data.people.find((item) => item.id === task.ipId);
   const info = [
     ["任务类型", task.type],
@@ -1528,50 +1591,6 @@ export function TaskDetailPage() {
       },
     );
     if (!review) notify("已创建新的创作草稿，请核对正文与素材后重新确认。");
-  };
-  const previewResult = async () => {
-    const requestedTask = task;
-    const requestedContext = previewContextKey;
-    const requestId = ++previewRequestRef.current;
-    setPreviewLoad({ key: requestedContext, status: "loading" });
-    try {
-      const asset = await loadTaskPreview(requestedTask);
-      if (
-        requestId !== previewRequestRef.current ||
-        previewContextRef.current !== requestedContext
-      )
-        return;
-      if (!asset) {
-        setPreviewLoad({ key: requestedContext, status: "empty" });
-        return;
-      }
-      // A poll may have announced an archived/replaced asset while the old
-      // signing request was in flight. Do not overwrite that physical ID.
-      if (
-        currentResultIdRef.current &&
-        currentResultIdRef.current !== requestedTask.resultId &&
-        currentResultIdRef.current !== asset.id
-      ) {
-        setPreviewLoad({ key: requestedContext, status: "idle" });
-        return;
-      }
-      updateData((current) => ({
-        ...current,
-        assets: current.assets.some((item) => item.id === asset.id)
-          ? current.assets.map((item) => (item.id === asset.id ? asset : item))
-          : [...current.assets, asset],
-        tasks: current.tasks.map((item) =>
-          item.id === requestedTask.id ? { ...item, resultId: asset.id } : item,
-        ),
-      }));
-      setPreviewLoad({ key: requestedContext, status: "ready", asset });
-    } catch {
-      if (
-        requestId === previewRequestRef.current &&
-        previewContextRef.current === requestedContext
-      )
-        setPreviewLoad({ key: requestedContext, status: "error" });
-    }
   };
   const saveResult = async () => {
     if (!result || result.saved || actionBusy) return;

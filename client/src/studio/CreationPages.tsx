@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import {
+  type AnalysisTask,
   type AnalysisVersion,
   type CharacterReferenceSelection,
   capturePromptSession,
@@ -20,6 +21,7 @@ import {
   getLatestScriptVersion,
   getMaterialBatchPreviews,
   getScriptRewriteTask,
+  type H3Mode,
   listUserSavedPrompts,
   type Project,
   type ProjectMainCharacter,
@@ -42,7 +44,11 @@ import {
 import { CharacterSelection } from "../CharacterSelection";
 import { FirstFrameSelection } from "../FirstFrameSelection";
 import { isInsufficientCredits } from "../insufficientCredits";
-import { ShotCardEditor } from "../ShotCardEditor";
+import {
+  formatShotCardsForClipboard,
+  promptTextFromShotTableClipboard,
+  ShotCardEditor,
+} from "../ShotCardEditor";
 import { SourceFrameSelection } from "../SourceFrameSelection";
 import { CreationNavigation } from "./CreationNavigation";
 import { useStudio } from "./context";
@@ -60,6 +66,8 @@ import {
   type FinalReplicaSnapshot,
   PromptEditor,
   ReplicaFinalPromptControls,
+  type ReplicaPreflightCheck,
+  ReplicaPreflightChecklist,
   replicaInputKey,
 } from "./PromptEditor";
 import { ReplicaNarration } from "./ReplicaPreparation";
@@ -1277,6 +1285,20 @@ export function ReplicaPage() {
   const [shotSaveError, setShotSaveError] = useState("");
   const [originalScript, setOriginalScript] = useState("");
   const [analysisBusy, setAnalysisBusy] = useState(false);
+  const [analysisStatus, setAnalysisStatus] =
+    useState<AnalysisTask["status"]>();
+  const [analysisError, setAnalysisError] = useState("");
+  const [analysisElapsed, setAnalysisElapsed] = useState(0);
+  useEffect(() => {
+    if (!analysisBusy) return;
+    const started = Date.now();
+    setAnalysisElapsed(0);
+    const timer = window.setInterval(
+      () => setAnalysisElapsed(Math.floor((Date.now() - started) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [analysisBusy]);
   const [promptText, setPromptText] = useState(state.draft.prompt);
   const [finalSnapshot, setFinalSnapshot] =
     useState<FinalReplicaSnapshot | null>(() =>
@@ -1398,6 +1420,8 @@ export function ReplicaPage() {
   };
 
   const resetReplicaState = () => {
+    setAnalysisError("");
+    setAnalysisStatus(undefined);
     setShots([]);
     shotSaveOperationRef.current += 1;
     setSavingShots(false);
@@ -1688,6 +1712,8 @@ export function ReplicaPage() {
       latestDraftRef.current.projectId === projectId &&
       sessionCurrent();
     setAnalysisBusy(true);
+    setAnalysisError("");
+    setAnalysisStatus(undefined);
     setStage("analyzing");
     notify("AI 拆解进行中，离开页面后仍可恢复原任务。");
     try {
@@ -1699,7 +1725,10 @@ export function ReplicaPage() {
           : await startVideoAnalysis(projectId, assetId, undefined, force);
       if (!isCurrentAnalysis()) return;
       patchDraft({ analysisTaskId: task.id, analysisTaskStatus: task.status });
-      await waitForAnalysisTask(task.id);
+      setAnalysisStatus(task.status);
+      await waitForAnalysisTask(task.id, (updated) => {
+        if (isCurrentAnalysis()) setAnalysisStatus(updated.status);
+      });
       if (!isCurrentAnalysis()) {
         return; // 等待期间用户更换了来源视频，丢弃旧项目的拆解结果。
       }
@@ -1769,7 +1798,12 @@ export function ReplicaPage() {
           patchDraft({ analysisTaskStatus: "FAILED" });
       }
       setStage("ready");
-      notify(customerVisibleErrorMessage(cause, "AI 拆解失败，请稍后重试。"));
+      const message = customerVisibleErrorMessage(
+        cause,
+        "AI 拆解失败，请稍后重试。",
+      );
+      setAnalysisError(message);
+      notify(message);
       // 服务端已给出需要多少积分；把钱包侧栏一并打开，省掉用户自己找入口。
       if (isInsufficientCredits(cause)) openLive("wallet");
     } finally {
@@ -1907,6 +1941,77 @@ export function ReplicaPage() {
     (duration, shot) => Math.max(duration, shot.end_time),
     0,
   );
+  const analysisCheck: ReplicaPreflightCheck = {
+    id: "analysis-ready",
+    label: "AI 视频拆解",
+    blocking: false,
+    passed: hasShots && !analysisBusy && !analysisError && !restoreError,
+    reason: analysisBusy
+      ? "视频仍在拆解，请等待分镜读取完成。"
+      : analysisError || restoreError
+        ? "拆解结果暂不可用，请按上方错误提示重试。"
+        : "尚未生成可用分镜，请先完成 AI 视频拆解。",
+  };
+  const shotSaveCheck: ReplicaPreflightCheck = {
+    id: "shot-edits-saved",
+    label: "分镜保存",
+    blocking: false,
+    passed:
+      Boolean(shotCardVersionId) &&
+      !shotsDirty &&
+      !savingShots &&
+      !shotSaveError,
+    reason: savingShots
+      ? "正在保存分镜，请稍候。"
+      : shotSaveError ||
+        (shotsDirty
+          ? "分镜有未保存修改，请先点击“保存为自定义”。"
+          : "尚无有效分镜版本，请先完成视频拆解。"),
+  };
+  const workflowChecks: ReplicaPreflightCheck[] = [
+    {
+      id: "workflow-source",
+      label: "来源视频",
+      passed: Boolean(replicaProjectId && state.draft.sourceAssetId),
+      reason: "请先上传参考视频或选择已有项目。",
+    },
+    analysisCheck,
+    shotSaveCheck,
+    {
+      id: "workflow-first-frame",
+      label: "首帧选择",
+      passed: Boolean(state.draft.firstFrameId),
+      reason: "请完成首帧置换并选定一张图片。",
+    },
+    {
+      id: "workflow-script",
+      label: "口播文案",
+      passed: state.draft.script.confirmed,
+      reason: state.draft.script.text.trim()
+        ? "请在口播文案区域点击“确认”。"
+        : "请确认本视频无口播。",
+    },
+    {
+      id: "workflow-final",
+      label: "最终提示词",
+      passed: finalReady,
+      reason: "前置项目完成后，请合成并核对最终提示词。",
+    },
+  ];
+  const copyShotTable = async () => {
+    if (!displayShots.length) {
+      notify("暂无可复制的分镜表。");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(
+        formatShotCardsForClipboard(displayShots),
+      );
+      notify("分镜表已复制，可直接粘贴到 Excel 或在线表格。");
+    } catch {
+      notify("复制分镜表失败，请检查剪贴板权限后重试。");
+    }
+  };
   // 「首帧未就绪」在面板内（有文案没首帧）和面板外（两者都没有）两处出现：
   // 分支结构不同、位置也不同，共用一份文案，免得两处措辞各自漂移。
   const missingFirstFrameHint = (
@@ -2014,6 +2119,24 @@ export function ReplicaPage() {
                   {restoreBusy && (
                     <Hint>正在读取已保存的分镜、文案和 Prompt…</Hint>
                   )}
+                  {analysisBusy && (
+                    <p role="status" aria-live="polite">
+                      {analysisStatus === "PENDING"
+                        ? "拆解任务已排队，等待开始"
+                        : analysisStatus === "RUNNING"
+                          ? "正在分析视频画面与口播"
+                          : analysisStatus === "SUCCEEDED"
+                            ? "拆解已完成，正在读取分镜"
+                            : "正在连接拆解服务"}
+                      {` · 已等待 ${Math.floor(analysisElapsed / 60)}分${analysisElapsed % 60}秒。`}
+                      视频拆解可能需要数分钟，请勿重复提交。
+                    </p>
+                  )}
+                  {analysisError && (
+                    <div className="creation-inline-error" role="alert">
+                      {analysisError}
+                    </div>
+                  )}
                   {restoreError && (
                     <div className="creation-inline-error" role="alert">
                       <span>{restoreError}</span>
@@ -2038,6 +2161,13 @@ export function ReplicaPage() {
                       {!shotsDirty && shotCardVersionId ? (
                         <small>已保存为自定义 ✓</small>
                       ) : null}
+                      <Button
+                        disabled={displayShots.length === 0}
+                        onClick={() => void copyShotTable()}
+                        variant="outline"
+                      >
+                        复制分镜表
+                      </Button>
                       <Button
                         disabled={readOnly || savingShots || !shotsDirty}
                         onClick={() => void saveShotEdits()}
@@ -2074,6 +2204,9 @@ export function ReplicaPage() {
         </section>
         <section className="creation-workflow-section">
           <h2>3 文案与生成</h2>
+          {!replicaProjectId || !state.draft.firstFrameId ? (
+            <ReplicaPreflightChecklist checks={workflowChecks} />
+          ) : null}
           {/* 门禁按项目判定：拆解未完成时也要挂载口播文案占位，否则用户看不到还差哪一步。 */}
           {!replicaProjectId ? (
             <Hint>先完成视频拆解，再确认首帧与文案。</Hint>
@@ -2159,6 +2292,8 @@ export function ReplicaPage() {
                         state.draft.sourceFrameTimestampSeconds
                       }
                       showScriptPreview={false}
+                      scriptConfirmed={state.draft.script.confirmed}
+                      upstreamChecks={[analysisCheck, shotSaveCheck]}
                       value={promptText}
                       snapshot={finalSnapshot}
                       onPrepared={(snapshot) => {
@@ -3073,6 +3208,43 @@ function SavedPromptImporter({
   );
 }
 
+function ShotTableImporter({
+  disabled = false,
+  onImport,
+}: {
+  disabled?: boolean;
+  onImport: (promptText: string) => void;
+}) {
+  const { notify } = useStudio();
+  const importFromClipboard = async () => {
+    if (disabled) return;
+    try {
+      if (!navigator.clipboard?.readText)
+        throw new Error("当前环境不支持读取剪贴板");
+      const result = promptTextFromShotTableClipboard(
+        await navigator.clipboard.readText(),
+      );
+      if (!result.ok) {
+        notify(result.error);
+        return;
+      }
+      onImport(result.promptText);
+      notify("分镜表已导入，请点击“AI 优化”。");
+    } catch {
+      notify("无法读取剪贴板，请检查剪贴板权限后重试。");
+    }
+  };
+  return (
+    <Button
+      variant="quiet"
+      disabled={disabled}
+      onClick={() => void importFromClipboard()}
+    >
+      <Icon name="copy" size={16} /> 导入分镜表
+    </Button>
+  );
+}
+
 type UploadKind = "image" | "video" | "audio";
 
 const UPLOAD_ACCEPT: Record<UploadKind, string[]> = {
@@ -3403,6 +3575,18 @@ function useReferencePreviews(assets: StudioAsset[], userId: string) {
   return { entries, retry };
 }
 
+const PROMPT_MODE_LABELS: Record<H3Mode, string> = {
+  T2VA: "文生视频",
+  I2VA: "首帧生视频",
+  FL2VA: "首尾帧生视频",
+  L2VA: "尾帧生视频",
+  Ref2VA: "参考生视频",
+};
+
+function promptModeLabel(mode: H3Mode | undefined): string {
+  return mode ? `${PROMPT_MODE_LABELS[mode]}（${mode}）` : "未记录";
+}
+
 export function VideoPage() {
   const {
     state,
@@ -3431,6 +3615,7 @@ export function VideoPage() {
     useState<StudioAsset>();
   const [referencePreviewLoading, setReferencePreviewLoading] = useState(false);
   const [referencePreviewError, setReferencePreviewError] = useState("");
+  const [shotTableImported, setShotTableImported] = useState(false);
   const referencePreviewRequestRef = useRef(0);
   const referencePreviewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const closeReferencePreview = () => {
@@ -3440,6 +3625,19 @@ export function VideoPage() {
     );
   };
   const referenceMode = state.page === "reference";
+  const currentPromptMode: H3Mode = referenceMode
+    ? "Ref2VA"
+    : state.draft.firstFrameId && state.draft.tailFrameId
+      ? "FL2VA"
+      : state.draft.firstFrameId
+        ? "I2VA"
+        : state.draft.tailFrameId
+          ? "L2VA"
+          : "T2VA";
+  const importedPromptMode = state.draft.importedPromptContext?.mode;
+  const importedModeMismatch = Boolean(
+    importedPromptMode && importedPromptMode !== currentPromptMode,
+  );
   const storedFirstFrame =
     findAsset(data.assets, state.draft.firstFrameId) ??
     findAsset(data.materials, state.draft.firstFrameId);
@@ -4066,24 +4264,58 @@ export function VideoPage() {
               </>
             }
             toolbarStart={
-              <SavedPromptImporter
-                onImport={(promptText, context) =>
-                  patchDraft({
-                    prompt: promptText,
-                    importedPromptContext: context,
-                    promptBindingsStale:
-                      /<(Picture|Video|Audio)\s+\d+>|@\d+/.test(promptText),
-                  })
-                }
-              />
+              <>
+                <SavedPromptImporter
+                  onImport={(promptText, context) => {
+                    setShotTableImported(false);
+                    patchDraft({
+                      prompt: promptText,
+                      importedPromptContext: context,
+                      promptBindingsStale:
+                        /<(Picture|Video|Audio)\s+\d+>|@\d+/.test(promptText),
+                    });
+                  }}
+                />
+                {!referenceMode ? (
+                  <ShotTableImporter
+                    disabled={readOnly || !state.draft.firstFrameId}
+                    onImport={(promptText) => {
+                      setShotTableImported(true);
+                      patchDraft({
+                        prompt: promptText,
+                        promptEdited: true,
+                        importedPromptContext: undefined,
+                        promptBindingsStale: false,
+                      });
+                    }}
+                  />
+                ) : null}
+              </>
             }
             value={state.draft.prompt}
             readOnly={readOnly}
             optimizationDisabled={review}
-            scope={`${user.id}:${state.page}`}
-            onChange={(text) =>
-              patchDraft({ prompt: text, promptEdited: true })
+            optimizationActionLabel={
+              importedModeMismatch
+                ? "按当前素材 AI 转换"
+                : shotTableImported
+                  ? "AI 优化"
+                  : undefined
             }
+            scope={`${user.id}:${state.page}`}
+            onChange={(text) => {
+              if (
+                /^(?:integrated_multimodal_description|subject_definitions)\s*:/m.test(
+                  text,
+                )
+              )
+                setShotTableImported(false);
+              patchDraft({
+                prompt: text,
+                promptEdited: true,
+                importedPromptContext: undefined,
+              });
+            }}
             placeholder="描述镜头、场景、运动与光线"
             context={{
               route: referenceMode ? "reference" : "text_image",
@@ -4107,23 +4339,29 @@ export function VideoPage() {
           />
           {state.draft.promptBindingsStale && (
             <div role="alert">
-              参考素材已变化，请核对提示词的素材编号。
+              {importedModeMismatch
+                ? "导入模板与当前生成模式不同，请点击上方“按当前素材 AI 转换”；转换完成后会自动更新素材引用。"
+                : "参考素材已变化，请核对提示词的素材编号。"}
               <Button
                 onClick={() => patchDraft({ promptBindingsStale: false })}
                 disabled={readOnly}
               >
-                已核对当前素材绑定
+                我已手动核对
               </Button>
             </div>
           )}
           {state.draft.importedPromptContext && (
-            <small>
-              模板模式：{state.draft.importedPromptContext.mode ?? "未记录"}。
-              {(state.draft.importedPromptContext.generation_assets ?? [])
-                .map((asset) => `${asset.label}：${asset.purpose}`)
-                .join("；")}
-              请按当前素材重新核对引用。
-            </small>
+            <div className="creation-prompt-import-context" role="status">
+              <strong>
+                导入模板：{promptModeLabel(importedPromptMode)}；当前模式：
+                {promptModeLabel(currentPromptMode)}。
+              </strong>
+              <span>
+                {importedModeMismatch
+                  ? "模板素材类型与当前选择不同，需要重新绑定。可使用上方 AI 转换，或手动修改后核对。"
+                  : "请核对模板中的素材编号是否与当前列表顺序一致。"}
+              </span>
+            </div>
           )}
         </Panel>
 

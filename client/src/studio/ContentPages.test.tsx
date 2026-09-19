@@ -2969,6 +2969,41 @@ describe("V1.4 内容与运营页面", () => {
     });
   });
 
+  it("素材图片固定在卡片缩略图区并保留完整名称与状态", () => {
+    const value = studio();
+    value.state = { ...value.state, page: "materials" };
+    value.data.assets = [
+      {
+        id: "portrait-1",
+        name: "乡墅工程师施工现场人物竖版场景形象图.png",
+        kind: "image",
+        url: "/portrait.png",
+        group: "场景形象照",
+        source: "人物库",
+        saved: true,
+      },
+    ];
+    useStudio.mockReturnValue(value);
+
+    const rendered = render(<MaterialsPage />);
+
+    const card = screen.getByRole("button", {
+      name: "选择素材 乡墅工程师施工现场人物竖版场景形象图.png",
+    });
+    expect(card).toHaveClass("content-asset--image");
+    expect(card.querySelector(".studio-media")).not.toHaveAttribute("style");
+    expect(card.querySelector("strong")).toHaveAttribute(
+      "title",
+      "乡墅工程师施工现场人物竖版场景形象图.png",
+    );
+    expect(card.querySelector(".content-asset__status")).toHaveTextContent(
+      "永久保存",
+    );
+    expect(
+      rendered.container.querySelector(".content-asset__kind"),
+    ).toHaveTextContent("图片");
+  });
+
   it("五视图按套展示正面封面，切换视角后首帧使用对应单图", async () => {
     listMaterials.mockResolvedValue({
       items: [

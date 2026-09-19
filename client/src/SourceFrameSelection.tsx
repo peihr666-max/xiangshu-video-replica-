@@ -488,7 +488,9 @@ export function SourceFrameSelection({
       <div className="source-frame-summary">
         <div>
           <h3 id="source-frame-title">原视频画面</h3>
-          <p>优先使用开场画面，也可自行更换。</p>
+          <p>
+            选择人物清晰、无遮挡的画面；开头有字幕、贴纸或多人遮挡时，可改用后段画面。
+          </p>
         </div>
         <span
           className={
@@ -599,7 +601,9 @@ export function SourceFrameSelection({
           <div className="source-frame-advanced__body">
             {!readOnly ? (
               <div className="source-frame-toolbar">
-                <p>选一张清晰、无遮挡的画面。</p>
+                <p>
+                  后段画面也能作为人物与构图参考；确认后请在最终提示词中填写开场衔接。
+                </p>
                 <button
                   className="secondary-button"
                   disabled={isSubmitting || !referenceAssetId}
@@ -685,7 +689,12 @@ export function SourceFrameSelection({
                         ? " · 推荐"
                         : ""}
                     </strong>
-                    <small>{candidate.timestamp_seconds.toFixed(1)} 秒</small>
+                    <small>
+                      {candidate.timestamp_seconds.toFixed(1)} 秒
+                      {candidate.timestamp_seconds <= 0.25
+                        ? " · 开场画面"
+                        : " · 后段画面，需补开场衔接"}
+                    </small>
                   </span>
                 </label>
               ))}

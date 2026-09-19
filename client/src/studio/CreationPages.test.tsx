@@ -2525,6 +2525,91 @@ describe("V1.4 创作页面", () => {
     expect(within(library).queryByText(/参考图 1\/8/)).toBeNull();
   });
 
+  it("参考生视频导入首帧模板时给出可执行的转换入口", () => {
+    const value = studio({
+      videoCapabilities: referenceCapabilities,
+    });
+    value.state = {
+      ...value.state,
+      page: "reference",
+      draft: {
+        ...value.state.draft,
+        prompt: "用@2的人物替换视频@1中的主要角色",
+        referenceIds: ["reference-1"],
+        promptBindingsStale: true,
+        importedPromptContext: {
+          route: "text_image",
+          duration_seconds: 8,
+          mode: "I2VA",
+          generation_assets: [{ label: "<Picture 1>", purpose: "first_frame" }],
+        },
+      },
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    expect(
+      screen.getByRole("button", { name: "AI 优化提示词" }),
+    ).toHaveTextContent("按当前素材 AI 转换");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "导入模板与当前生成模式不同",
+    );
+    expect(
+      screen.getByText(
+        /导入模板：首帧生视频（I2VA）；当前模式：参考生视频（Ref2VA）/,
+      ),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("提示词"), {
+      target: { value: "手动改写后的参考提示词" },
+    });
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      prompt: "手动改写后的参考提示词",
+      promptEdited: true,
+      importedPromptContext: undefined,
+    });
+  });
+
+  it("图生视频可从剪贴板导入分镜表并提示 AI 优化", async () => {
+    const readText = vi
+      .fn()
+      .mockResolvedValue(
+        "镜头编号\t开始(秒)\t结束(秒)\t动作\n镜头 1\t0\t4\t人物走向镜头",
+      );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText },
+    });
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "video",
+      draft: {
+        ...value.state.draft,
+        firstFrameId: "frame-1",
+        prompt: "",
+      },
+    };
+    useStudio.mockReturnValue(value);
+    render(<VideoPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "导入分镜表" }));
+
+    await waitFor(() => expect(readText).toHaveBeenCalledOnce());
+    expect(value.patchDraft).toHaveBeenCalledWith({
+      prompt: expect.stringMatching(/分镜表[\s\S]+H3[\s\S]+镜头 1\t0\t4/),
+      promptEdited: true,
+      importedPromptContext: undefined,
+      promptBindingsStale: false,
+    });
+    expect(
+      screen.getByRole("button", { name: "AI 优化提示词" }),
+    ).toHaveTextContent("AI 优化");
+    expect(value.notify).toHaveBeenCalledWith(
+      "分镜表已导入，请点击“AI 优化”。",
+    );
+  });
+
   it("本机上传视频后立即用本地首帧作为缩略图", async () => {
     replicaLive.readVideoDuration.mockResolvedValue(10);
     replicaLive.readVideoFirstFrame.mockResolvedValue(
@@ -3160,6 +3245,26 @@ describe("视频复刻（模块①）", () => {
     transition: "切镜",
   };
 
+  it("项目缺失时即使草稿残留首帧也持续显示前置检查", () => {
+    const value = studio({ review: false });
+    value.state = {
+      ...value.state,
+      page: "replica",
+      draft: {
+        ...value.state.draft,
+        projectId: undefined,
+        firstFrameId: "frame-1",
+      },
+    };
+    useStudio.mockReturnValue(value);
+
+    render(<ReplicaPage />);
+
+    const checklist = screen.getByRole("region", { name: "生成前检查" });
+    expect(checklist).toHaveTextContent("来源视频");
+    expect(checklist).toHaveTextContent("请先上传参考视频或选择已有项目");
+  });
+
   function replicaStudio(_legacyStep?: 1 | 3) {
     const value = studio({ review: false });
     value.state = {
@@ -3233,9 +3338,15 @@ describe("视频复刻（模块①）", () => {
       id: "prompt-final",
       payload: { prompt_text: "最终新稿" },
     });
-    fireEvent.click(screen.getByLabelText("采用这份文案"));
+    const confirmScript = screen.queryByRole("button", { name: /^确认$/ });
+    if (confirmScript) fireEvent.click(confirmScript);
     const compression = screen.queryByLabelText(/内容压缩到/);
     if (compression) fireEvent.click(compression);
+    const openingAction = screen.queryByLabelText("开场衔接");
+    if (openingAction)
+      fireEvent.change(openingAction, {
+        target: { value: "从当前确认首帧自然衔接到原视频动作。" },
+      });
     fireEvent.click(screen.getByRole("button", { name: "合成最终提示词" }));
     await waitFor(() =>
       expect(replicaApi.compileGenerationPrompt).toHaveBeenCalled(),
@@ -3284,6 +3395,31 @@ describe("视频复刻（模块①）", () => {
       expect(value.notify).toHaveBeenCalledWith("积分不足，本次需要 5 积分。"),
     );
     expect(value.openLive).toHaveBeenCalledWith("wallet");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "积分不足，本次需要 5 积分。",
+    );
+  });
+
+  it("拆解等待时展示真实运行状态而不是只有按钮忙碌", async () => {
+    const value = replicaStudio();
+    replicaApi.startVideoAnalysis.mockResolvedValueOnce({
+      id: "task-wait",
+      status: "PENDING",
+    });
+    replicaApi.waitForAnalysisTask.mockImplementationOnce((_id, update) => {
+      update({ id: "task-wait", status: "RUNNING" });
+      return new Promise(() => {});
+    });
+    useStudio.mockReturnValue(value);
+    render(<ReplicaPage />);
+    fireEvent.click(screen.getByRole("button", { name: "启动 AI 拆解" }));
+    expect(await screen.findByText(/正在分析视频画面与口播/)).toHaveTextContent(
+      "已等待",
+    );
+    expect(screen.getByText(/正在分析视频画面与口播/)).toHaveTextContent(
+      "请勿重复提交",
+    );
+    expect(replicaApi.startVideoAnalysis).toHaveBeenCalledTimes(1);
   });
 
   it("拆解的其他失败不打开钱包侧栏", async () => {
@@ -3940,6 +4076,26 @@ describe("视频复刻（模块①）", () => {
       screen.getByRole("button", { name: "去 AI 视频创作" }),
     ).toBeDisabled();
     expect(replicaLive.runReplicaGeneration).not.toHaveBeenCalled();
+  });
+
+  it("可以复制拆解后的完整分镜表", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const value = await openReplicaAndAnalyze();
+
+    fireEvent.click(screen.getByRole("button", { name: "复制分镜表" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+    expect(writeText.mock.calls[0]?.[0]).toContain(
+      "镜头编号\t开始(秒)\t结束(秒)",
+    );
+    expect(writeText.mock.calls[0]?.[0]).toContain("s1\t0\t8");
+    expect(value.notify).toHaveBeenCalledWith(
+      "分镜表已复制，可直接粘贴到 Excel 或在线表格。",
+    );
   });
 
   it("编辑后的 Prompt 可保存为用户自定义提示词", async () => {

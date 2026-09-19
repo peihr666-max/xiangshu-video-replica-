@@ -2467,7 +2467,10 @@ describe("generation workflow API", () => {
     [401, "登录已失效，请重新进入工作台"],
     [403, "当前账号无权执行此操作"],
     [409, "上游内容已变化，请重新确认后再试"],
-    [422, "生成参数无效，请检查后重试"],
+    [
+      422,
+      "保存口播稿失败：参数校验未通过，请核对文案、首帧、时长和画幅（HTTP 422）",
+    ],
     [429, "请求过于频繁，请稍后重试"],
     [500, "生成服务暂不可用，请稍后重试"],
   ])("maps generation HTTP %s to a Chinese error", async (status, message) => {
@@ -2512,6 +2515,65 @@ describe("generation workflow API", () => {
     ).rejects.toThrow(
       "参考视频/音频每段须为2–15秒；缺少时长的历史素材请重新上传后选取。",
     );
+  });
+
+  it("参数校验错误指出具体字段和约束，不泄露提交内容", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        headers: new Headers({ "X-Request-Id": "request-invalid-input" }),
+        json: async () => ({
+          detail: [
+            {
+              loc: ["body", "opening_action"],
+              type: "string_too_long",
+              ctx: { max_length: 1000 },
+              input: "private script",
+            },
+            {
+              loc: ["body", "ratio"],
+              type: "literal_error",
+              input: "private value",
+            },
+          ],
+        }),
+      }),
+    );
+    const error = await createScriptVersion("project-1", {
+      source: "custom",
+      text: "口播稿",
+      shot_card_version_id: "shot-1",
+    }).catch((cause: Error) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("开场衔接：最多 1000 个字符");
+    expect((error as Error).message).toContain("画幅：请选择支持的选项");
+    expect((error as Error).message).toContain("request-invalid-input");
+    expect((error as Error).message).not.toContain("private");
+  });
+
+  it("保留业务参数拒绝的具体原因及错误编号", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          detail: {
+            code: "SCRIPT_TEXT_REQUIRED",
+            message: "口播文案不能为空，请填写后重新确认。",
+          },
+        }),
+      }),
+    );
+    await expect(
+      createScriptVersion("project-1", {
+        source: "custom",
+        text: "",
+        shot_card_version_id: "shot-1",
+      }),
+    ).rejects.toThrow("口播文案不能为空，请填写后重新确认。");
   });
 
   it("maps generation timeout and offline failures to Chinese errors", async () => {
@@ -3136,6 +3198,31 @@ describe("startVideoAnalysis", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("reports analysis status without allowing a UI callback to stop polling", async () => {
+    vi.useFakeTimers();
+    const running = { id: "analysis-task-status", status: "RUNNING" };
+    const succeeded = {
+      id: "analysis-task-status",
+      status: "SUCCEEDED",
+      result_version_id: "analysis-version-status",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => running })
+      .mockResolvedValueOnce({ ok: true, json: async () => succeeded });
+    vi.stubGlobal("fetch", fetchMock);
+    const observer = vi.fn().mockImplementationOnce(() => {
+      throw new Error("unmounted UI");
+    });
+
+    const result = waitForAnalysisTask("analysis-task-status", observer);
+    await vi.advanceTimersByTimeAsync(1_500);
+
+    await expect(result).resolves.toEqual(succeeded);
+    expect(observer).toHaveBeenNthCalledWith(1, running);
+    expect(observer).toHaveBeenNthCalledWith(2, succeeded);
+  });
+
   it("enqueues source-frame extraction and shares its durable poller", async () => {
     vi.useFakeTimers();
     const queued = {
@@ -3400,7 +3487,7 @@ describe("startVideoAnalysis", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(startVideoAnalysis("project-1", "asset-1")).rejects.toThrow(
-      /参考视频不满足拆解要求/,
+      /视频时长：格式不正确/,
     );
   });
 

@@ -60,6 +60,102 @@ const SHOT_TEXT_FIELDS = [
   { key: "transition", label: "转场" },
 ] as const;
 
+const CLIPBOARD_HEADERS = [
+  "镜头编号",
+  "开始(秒)",
+  "结束(秒)",
+  "景别",
+  "构图",
+  "运镜",
+  "主体",
+  "动作",
+  "人物与镜头运动",
+  "场景",
+  "原口播",
+  "转场",
+];
+
+function clipboardCell(value: unknown): string {
+  return String(value ?? "")
+    .replace(/[\t\r\n]+/g, " ")
+    .trim();
+}
+
+function optionLabel<T extends string>(
+  options: Array<{ value: T; label: string }>,
+  value: T,
+): string {
+  return options.find((option) => option.value === value)?.label ?? value;
+}
+
+function motionClipboardText(motion: ShotMotion | null | undefined): string {
+  if (!motion) return "";
+  return [
+    `人物：${optionLabel(SUBJECT_MOTION_STATE_OPTIONS, motion.subject_motion_state)}`,
+    `方向：${optionLabel(SUBJECT_DIRECTION_OPTIONS, motion.subject_direction)}`,
+    `位移：${motion.subject_displacement}`,
+    `手部：${motion.hand_action}`,
+    `镜头：${optionLabel(MOTION_CAMERA_OPTIONS, motion.camera_motion)}`,
+    `相对运动：${motion.relative_motion}`,
+  ].join("；");
+}
+
+/** 制表符格式可直接粘贴到 Excel、飞书表格和常见文档表格。 */
+export function formatShotCardsForClipboard(shots: ShotCard[]): string {
+  const rows = shots.map((shot) => [
+    shot.shot_id,
+    shot.start_time,
+    shot.end_time,
+    shot.shot_type,
+    shot.composition,
+    shot.camera_motion,
+    shot.subject,
+    shot.action,
+    motionClipboardText(shot.motion),
+    shot.scene,
+    shot.spoken_text,
+    shot.transition,
+  ]);
+  return [CLIPBOARD_HEADERS, ...rows]
+    .map((row) => row.map(clipboardCell).join("\t"))
+    .join("\n");
+}
+
+export type ShotTableImportResult =
+  | { ok: true; promptText: string }
+  | { ok: false; error: string };
+
+export function promptTextFromShotTableClipboard(
+  clipboardText: string,
+): ShotTableImportResult {
+  const normalized = clipboardText.replace(/^\uFEFF/, "").trim();
+  if (!normalized) return { ok: false, error: "剪贴板中没有可导入的分镜表。" };
+  const lines = normalized.split(/\r?\n/);
+  const firstLine = lines[0] ?? "";
+  const headers = firstLine.split("\t").map((value) => value.trim());
+  const required = ["镜头编号", "开始(秒)", "结束(秒)"];
+  if (!required.every((header) => headers.includes(header))) {
+    return {
+      ok: false,
+      error: "未识别到分镜表表头，请先使用拆解页面的“复制分镜表”按钮。",
+    };
+  }
+  if (!lines.slice(1).some((line) => line.trim())) {
+    return { ok: false, error: "分镜表中没有可导入的镜头数据。" };
+  }
+  const promptText = [
+    "以下内容是拆解后的分镜表。请保留镜头顺序、时间、主体动作、原口播和转场，并转换为当前视频模式要求的 H3 提示词格式：",
+    normalized,
+  ].join("\n\n");
+  if (Array.from(promptText).length > 7000) {
+    return {
+      ok: false,
+      error: "分镜表超过 7000 字，请删减镜头描述后再导入。",
+    };
+  }
+  return { ok: true, promptText };
+}
+
 export function ShotCardEditor({
   shots,
   readOnly = false,

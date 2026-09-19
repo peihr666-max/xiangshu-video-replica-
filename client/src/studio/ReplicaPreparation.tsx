@@ -170,6 +170,21 @@ export function ReplicaNarration() {
       />
       <div className="creation-panel-title-row">
         {message && <Hint>{message}</Hint>}
+        <Button
+          variant="primary"
+          disabled={
+            readOnly ||
+            review ||
+            busy ||
+            !draft.projectId ||
+            draft.script.confirmed
+          }
+          onClick={() =>
+            patchDraft({ script: { ...draft.script, confirmed: true } })
+          }
+        >
+          {draft.script.confirmed ? "已确认" : "确认"}
+        </Button>
         {undo?.key === key && undo.after === draft.script.text && (
           <Button
             variant="quiet"
