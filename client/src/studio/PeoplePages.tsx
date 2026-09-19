@@ -12,6 +12,9 @@ import {
   createOralConsent,
   createOralVoiceClone,
   customerVisibleErrorMessage,
+  deleteOralAvatar,
+  deleteOralVoice,
+  downloadMaterialAsset,
   putMaterial,
   refreshOralAvatar,
   refreshOralVoice,
@@ -28,7 +31,12 @@ import {
   VOICE_CLONE_ACCEPT,
   validateOralAudioFile,
 } from "./live";
-import type { StudioPage, StudioPerson } from "./types";
+import type {
+  StudioAvatar,
+  StudioPage,
+  StudioPerson,
+  StudioVoice,
+} from "./types";
 import {
   Button,
   Empty,
@@ -920,14 +928,23 @@ function PhotosPanel({ person }: { person: StudioPerson }) {
 }
 
 function AvatarPanel({ person }: { person: StudioPerson }) {
-  const { data, review, navigate, patchDraft, notify, refresh, user } =
-    useStudio();
+  const {
+    data,
+    review,
+    navigate,
+    patchDraft,
+    updateData,
+    notify,
+    refresh,
+    user,
+  } = useStudio();
   const readOnly = user.role === "auditor";
   const [title, setTitle] = useState(`${person.name}视频分身`);
   const [busy, setBusy] = useState(false);
   const [creating, setCreating] = useState(false);
   const [consentedSourceId, setConsentedSourceId] = useState<string>();
   const [error, setError] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<StudioAvatar>();
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [uploadedVideo, setUploadedVideo] = useState<UploadedOralSource>();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1086,6 +1103,49 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
       setCreating(true);
     }
   };
+  const downloadAvatar = async (avatar: StudioAvatar) => {
+    try {
+      await downloadMaterialAsset(avatar.imageId, `${avatar.name}-源视频.mp4`);
+    } catch (cause) {
+      notify(customerVisibleErrorMessage(cause, "口播分身源视频下载失败"));
+    }
+  };
+  const deleteClone = async (avatar: StudioAvatar) => {
+    if (readOnly || busy) return;
+    const operation = ++operationRef.current;
+    setBusy(true);
+    setError(undefined);
+    try {
+      if (!review) await deleteOralAvatar(avatar.id);
+      if (!isCurrent(operation)) return;
+      setPendingDelete(undefined);
+      if (review) {
+        updateData((current) => ({
+          ...current,
+          people: current.people.map((item) =>
+            item.id !== person.id
+              ? item
+              : {
+                  ...item,
+                  avatars: item.avatars.filter(
+                    (candidate) => candidate.id !== avatar.id,
+                  ),
+                },
+          ),
+        }));
+      } else {
+        refresh();
+      }
+      notify("口播分身已删除");
+    } catch (cause) {
+      if (!isCurrent(operation)) return;
+      const message = customerVisibleErrorMessage(cause, "删除口播分身失败");
+      setError(message);
+      notify(message);
+    } finally {
+      if (isCurrent(operation)) setBusy(false);
+    }
+  };
   const manageVoice = () =>
     navigate("person-voices", {
       selectedPersonId: person.id,
@@ -1139,6 +1199,22 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
                     }}
                   >
                     使用此分身
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void downloadAvatar(avatar)}
+                  >
+                    <Icon name="download" size={16} />
+                    下载源视频
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    disabled={readOnly || busy}
+                    onClick={() => setPendingDelete(avatar)}
+                  >
+                    <Icon name="close" size={16} />
+                    删除
                   </Button>
                 </div>
               </div>
@@ -1375,6 +1451,39 @@ function AvatarPanel({ person }: { person: StudioPerson }) {
           </div>
         </StudioDialog>
       ) : null}
+      {pendingDelete ? (
+        <StudioDialog
+          title="删除口播分身"
+          onClose={() => setPendingDelete(undefined)}
+        >
+          <div className="oral-upload-panel">
+            <p className="oral-dialog-intro">
+              确定删除「{pendingDelete.name}
+              」吗？删除后将不再出现在分身列表，源视频素材会保留。
+            </p>
+            {error ? (
+              <p className="oral-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <div className="oral-dialog-actions">
+              <Button
+                variant="quiet"
+                onClick={() => setPendingDelete(undefined)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                disabled={busy}
+                onClick={() => void deleteClone(pendingDelete)}
+              >
+                {busy ? "删除中…" : "确认删除"}
+              </Button>
+            </div>
+          </div>
+        </StudioDialog>
+      ) : null}
     </div>
   );
 }
@@ -1398,6 +1507,7 @@ function VoicePanel({ person }: { person: StudioPerson }) {
   const [creating, setCreating] = useState(false);
   const [consentedSourceId, setConsentedSourceId] = useState<string>();
   const [error, setError] = useState<string>();
+  const [pendingDelete, setPendingDelete] = useState<StudioVoice>();
   const [uploadProgress, setUploadProgress] = useState<number>();
   const [uploadedAudio, setUploadedAudio] = useState<UploadedOralSource>();
   const uploadInputRef = useRef<HTMLInputElement>(null);
@@ -1687,6 +1797,52 @@ function VoicePanel({ person }: { person: StudioPerson }) {
       if (mountedRef.current) setBusy(false);
     }
   };
+  const downloadVoice = async (voice: StudioVoice) => {
+    if (!voice.demoAssetId) {
+      notify("试听样例尚未就绪，暂无法下载");
+      return;
+    }
+    try {
+      await downloadMaterialAsset(voice.demoAssetId, `${voice.name}-试听.mp3`);
+    } catch (cause) {
+      notify(customerVisibleErrorMessage(cause, "声音试听样例下载失败"));
+    }
+  };
+  const deleteClone = async (voice: StudioVoice) => {
+    if (readOnly || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      if (!review) await deleteOralVoice(voice.id);
+      if (!mountedRef.current) return;
+      setPendingDelete(undefined);
+      if (review) {
+        updateData((data) => ({
+          ...data,
+          people: data.people.map((item) =>
+            item.id !== person.id
+              ? item
+              : {
+                  ...item,
+                  voices: item.voices.filter(
+                    (candidate) => candidate.id !== voice.id,
+                  ),
+                },
+          ),
+        }));
+      } else {
+        refresh();
+      }
+      notify("声音已删除");
+    } catch (cause) {
+      if (!mountedRef.current) return;
+      const message = customerVisibleErrorMessage(cause, "删除声音失败");
+      setError(message);
+      notify(message);
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
   return (
     <div className="oral-voice-page">
       <header className="oral-voice-heading">
@@ -1792,6 +1948,27 @@ function VoicePanel({ person }: { person: StudioPerson }) {
                       </Button>
                     ) : null
                   ) : null}
+                  {voice.demoAssetId ? (
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void downloadVoice(voice)}
+                    >
+                      <Icon name="download" size={16} />
+                      下载试听
+                    </Button>
+                  ) : null}
+                  {voice.status === "PENDING" ||
+                  voice.status === "RUNNING" ? null : (
+                    <Button
+                      variant="quiet"
+                      disabled={readOnly || busy}
+                      onClick={() => setPendingDelete(voice)}
+                    >
+                      <Icon name="close" size={16} />
+                      删除
+                    </Button>
+                  )}
                 </div>
               </div>
             </article>
@@ -1963,6 +2140,39 @@ function VoicePanel({ person }: { person: StudioPerson }) {
               会提取音轨。 时长 5–180 秒（3 分钟），上限 20
               MB；试听确认后即可用于口播。
             </Hint>
+          </div>
+        </StudioDialog>
+      ) : null}
+      {pendingDelete ? (
+        <StudioDialog
+          title="删除声音"
+          onClose={() => setPendingDelete(undefined)}
+        >
+          <div className="oral-upload-panel">
+            <p className="oral-dialog-intro">
+              确定删除「{pendingDelete.name}
+              」吗？删除后将不再出现在声音列表，声音样本素材会保留。
+            </p>
+            {error ? (
+              <p className="oral-error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            <div className="oral-dialog-actions">
+              <Button
+                variant="quiet"
+                onClick={() => setPendingDelete(undefined)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                disabled={busy}
+                onClick={() => void deleteClone(pendingDelete)}
+              >
+                {busy ? "删除中…" : "确认删除"}
+              </Button>
+            </div>
           </div>
         </StudioDialog>
       ) : null}

@@ -28,7 +28,11 @@ EXPORTS_TABLE = "activation_code_exports"
 ACTIVATIONS_TABLE = "activation_code_activations"
 EVENTS_TABLE = "activation_code_events"
 
+<<<<<<< HEAD
 _HEAD_REVISION = "20260919T1000_browser_account_probe"
+=======
+_HEAD_REVISION = "20260919T1000_oral_soft_delete"
+>>>>>>> origin/feat/asset-download-and-oral-delete-20260919
 
 
 def _pg_dsn() -> str:

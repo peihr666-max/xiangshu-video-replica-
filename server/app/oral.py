@@ -62,6 +62,14 @@ class OralTaskNotFoundError(OralDomainError):
     """The requested task is absent from the current actor's scope."""
 
 
+class OralResourceNotFoundError(OralDomainError):
+    """The addressed clone is absent from the current actor's scope (404)."""
+
+
+class OralResourceInUseError(OralDomainError):
+    """The clone cannot be deleted yet: still cloning or has live tasks (409)."""
+
+
 def oral_unit_price_fen(conn: BusinessConnection) -> int:
     """Retail equivalent per second. Missing tariffs are free, query errors propagate."""
     from decimal import ROUND_CEILING, Decimal
@@ -1329,7 +1337,7 @@ def list_avatars(
     rows = conn.execute(
         """
         SELECT * FROM oral_avatars
-        WHERE identity_id = %s AND owner_user_id = %s
+        WHERE identity_id = %s AND owner_user_id = %s AND deleted_at IS NULL
         ORDER BY created_at DESC
         """,
         (identity_id, actor.id),
@@ -1341,7 +1349,7 @@ def read_avatar_clone(
     conn: BusinessConnection, *, actor: CurrentUser, avatar_id: str
 ) -> dict[str, Any]:
     row = conn.execute(
-        "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
+        "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s AND deleted_at IS NULL",
         (avatar_id, actor.id),
     ).fetchone()
     if row is None:
@@ -1355,7 +1363,7 @@ def list_voices(
     rows = conn.execute(
         """
         SELECT * FROM oral_voices
-        WHERE identity_id = %s AND owner_user_id = %s
+        WHERE identity_id = %s AND owner_user_id = %s AND deleted_at IS NULL
         ORDER BY created_at DESC
         """,
         (identity_id, actor.id),
@@ -1367,12 +1375,176 @@ def read_voice_clone(
     conn: BusinessConnection, *, actor: CurrentUser, voice_id: str
 ) -> dict[str, Any]:
     row = conn.execute(
-        "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s",
+        "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s AND deleted_at IS NULL",
         (voice_id, actor.id),
     ).fetchone()
     if row is None:
         raise OralDomainError("声音克隆任务不存在")
     return dict(row)
+
+
+# --------------------------------------------------------------------------- #
+# Soft delete for clone records.
+#
+# ``oral_tasks.avatar_id`` / ``voice_id`` are ON DELETE RESTRICT, so a hard
+# delete would fail whenever any task ever referenced the clone. The upstream
+# vendor exposes no delete endpoint either, so deletion is a *local* soft hide:
+# we stamp ``deleted_at`` / ``deleted_by_user_id`` and every owner-facing read
+# filters ``deleted_at IS NULL``. The row (and its source/demo assets) survive
+# for audit and billing history; admins can still see it.
+#
+# A clone is only deletable once it is no longer in flight (its own status is
+# terminal and its vendor submission has settled) and no live oral task still
+# references it — otherwise the worker could resurrect or bill against a clone
+# the user believes is gone.
+# --------------------------------------------------------------------------- #
+
+_ACTIVE_CLONE_STATUSES = frozenset({"PENDING", "RUNNING"})
+_ACTIVE_SUBMISSION_STATES = frozenset({"LOCAL_PENDING", "SUBMITTING", "SUBMISSION_UNKNOWN"})
+_TERMINAL_TASK_STATUSES_SQL = "('SUCCEEDED', 'FAILED', 'CANCELLED')"
+
+
+def _guard_clone_deletable(record: dict[str, Any], *, label: str) -> None:
+    if str(record["status"]) in _ACTIVE_CLONE_STATUSES:
+        raise OralResourceInUseError(f"{label}正在制作中，请等待完成或失败后再删除")
+    if str(record.get("submission_state") or "") in _ACTIVE_SUBMISSION_STATES:
+        raise OralResourceInUseError(f"{label}提交尚未确认，请稍后刷新状态再删除")
+
+
+def _guard_no_active_oral_tasks(
+    conn: BusinessConnection,
+    *,
+    fk_column: str,
+    resource_id: str,
+    owner_id: str,
+    label: str,
+) -> None:
+    if fk_column not in ("avatar_id", "voice_id"):
+        raise AssertionError("unreachable: fk_column must be an internal literal")
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM oral_tasks "
+        f"WHERE {fk_column} = %s AND owner_user_id = %s "
+        f"AND status NOT IN {_TERMINAL_TASK_STATUSES_SQL}",
+        (resource_id, owner_id),
+    ).fetchone()
+    if row is not None and int(row["n"]) > 0:
+        raise OralResourceInUseError(f"{label}仍被进行中的口播任务使用，请等待任务完成后再删除")
+
+
+def delete_avatar_clone(
+    conn: BusinessConnection,
+    *,
+    avatar_id: str,
+    actor: CurrentUser,
+) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.avatar.delete",
+        entity_type="oral_avatar",
+        entity_id=avatar_id,
+    )
+    row = conn.execute(
+        "SELECT * FROM oral_avatars WHERE id = %s AND owner_user_id = %s AND deleted_at IS NULL",
+        (avatar_id, actor.id),
+    ).fetchone()
+    if row is None:
+        raise OralResourceNotFoundError("口播分身不存在或已删除")
+    record = dict(row)
+    _guard_clone_deletable(record, label="口播分身")
+    _guard_no_active_oral_tasks(
+        conn,
+        fk_column="avatar_id",
+        resource_id=avatar_id,
+        owner_id=actor.id,
+        label="口播分身",
+    )
+    deleted_at = datetime.now(UTC).isoformat()
+    with conn:
+        updated = conn.execute(
+            """
+            UPDATE oral_avatars
+            SET deleted_at = %s, deleted_by_user_id = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND owner_user_id = %s AND deleted_at IS NULL
+            """,
+            (deleted_at, actor.id, avatar_id, actor.id),
+        )
+        if updated.rowcount != 1:
+            concurrent = conn.execute(
+                "SELECT deleted_at FROM oral_avatars WHERE id = %s AND owner_user_id = %s",
+                (avatar_id, actor.id),
+            ).fetchone()
+            if concurrent is not None and concurrent["deleted_at"]:
+                return {"id": avatar_id, "deleted_at": str(concurrent["deleted_at"])}
+            raise OralConflictError("口播分身删除状态已变化，请刷新后重试")
+        write_audit(
+            conn,
+            actor=actor,
+            action="oral.avatar.delete",
+            entity_type="oral_avatar",
+            entity_id=avatar_id,
+            metadata={"identity_id": str(record["identity_id"])},
+            commit=False,
+        )
+    return {"id": avatar_id, "deleted_at": deleted_at}
+
+
+def delete_voice_clone(
+    conn: BusinessConnection,
+    *,
+    voice_id: str,
+    actor: CurrentUser,
+) -> dict[str, Any]:
+    require_not_auditor(
+        conn,
+        actor=actor,
+        action="oral.voice.delete",
+        entity_type="oral_voice",
+        entity_id=voice_id,
+    )
+    row = conn.execute(
+        "SELECT * FROM oral_voices WHERE id = %s AND owner_user_id = %s AND deleted_at IS NULL",
+        (voice_id, actor.id),
+    ).fetchone()
+    if row is None:
+        raise OralResourceNotFoundError("声音克隆不存在或已删除")
+    record = dict(row)
+    _guard_clone_deletable(record, label="声音")
+    _guard_no_active_oral_tasks(
+        conn,
+        fk_column="voice_id",
+        resource_id=voice_id,
+        owner_id=actor.id,
+        label="声音",
+    )
+    deleted_at = datetime.now(UTC).isoformat()
+    with conn:
+        updated = conn.execute(
+            """
+            UPDATE oral_voices
+            SET deleted_at = %s, deleted_by_user_id = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND owner_user_id = %s AND deleted_at IS NULL
+            """,
+            (deleted_at, actor.id, voice_id, actor.id),
+        )
+        if updated.rowcount != 1:
+            concurrent = conn.execute(
+                "SELECT deleted_at FROM oral_voices WHERE id = %s AND owner_user_id = %s",
+                (voice_id, actor.id),
+            ).fetchone()
+            if concurrent is not None and concurrent["deleted_at"]:
+                return {"id": voice_id, "deleted_at": str(concurrent["deleted_at"])}
+            raise OralConflictError("声音删除状态已变化，请刷新后重试")
+        write_audit(
+            conn,
+            actor=actor,
+            action="oral.voice.delete",
+            entity_type="oral_voice",
+            entity_id=voice_id,
+            metadata={"identity_id": str(record["identity_id"])},
+            commit=False,
+        )
+    return {"id": voice_id, "deleted_at": deleted_at}
 
 
 def list_oral_tasks(

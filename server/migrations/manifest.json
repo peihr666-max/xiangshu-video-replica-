@@ -5,7 +5,11 @@
       "001_core"
     ],
     "heads": [
+<<<<<<< HEAD
       "20260919T1000_browser_account_probe"
+=======
+      "20260919T1000_oral_soft_delete"
+>>>>>>> origin/feat/asset-download-and-oral-delete-20260919
     ],
     "parents": {
       "001_core": null,
@@ -112,7 +116,11 @@
       "20260916T2000_prompt_optimization_receipts": "20260916T1400_content_objects",
       "20260917T1000_publish_records": "20260916T2000_prompt_optimization_receipts",
       "20260918T1200_publish_account_avatar": "20260917T1000_publish_records",
+<<<<<<< HEAD
       "20260919T1000_browser_account_probe": "20260918T1200_publish_account_avatar"
+=======
+      "20260919T1000_oral_soft_delete": "20260918T1200_publish_account_avatar"
+>>>>>>> origin/feat/asset-download-and-oral-delete-20260919
     },
     "revision_count": 102
   },
@@ -533,9 +541,15 @@
       "file": "versions/20260918T1200_publish_account_avatar.py",
       "sha256": "611889e506e11161b6ca0489b4b94400987b3f1c58f59dfd25f9895a934b6787"
     },
+<<<<<<< HEAD
     "20260919T1000_browser_account_probe": {
       "file": "versions/20260919T1000_browser_account_probe.py",
       "sha256": "f896ecb25e85af081468d591014057233aca189f8ae3c1dbfd60bdeb52d18eb6"
+=======
+    "20260919T1000_oral_soft_delete": {
+      "file": "versions/20260919T1000_oral_soft_delete.py",
+      "sha256": "2f78158af56ab059103b8e06470181fff4f8b87a5c4c31c02b6511e92f0eebe3"
+>>>>>>> origin/feat/asset-download-and-oral-delete-20260919
     }
   },
   "task": "MIGRATION-GUARD-20260912"

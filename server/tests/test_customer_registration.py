@@ -56,7 +56,11 @@ CW076_DB_NAME = "cw076_registration_test"
 CW076_MIGRATION_DB_NAME = "cw076_migration_test"
 
 REGISTER_PATH = "/api/customer/register"
+<<<<<<< HEAD
 HEAD_REVISION = "20260919T1000_browser_account_probe"
+=======
+HEAD_REVISION = "20260919T1000_oral_soft_delete"
+>>>>>>> origin/feat/asset-download-and-oral-delete-20260919
 PRIOR_REVISION = "20260912T1353_customer_discounts"
 
 # A policy-valid password (>= MIN_PASSWORD_LENGTH, not blank). Never a secret.
