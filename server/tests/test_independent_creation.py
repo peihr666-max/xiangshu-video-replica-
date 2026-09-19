@@ -576,6 +576,7 @@ def test_extended_modes_open_after_verification(scene: str) -> None:
         IndependentVideoRequest(
             mode="t2v",
             prompt_text="清晨山间别墅的延时摄影",
+            ratio="16:9",
             output_duration_seconds=6,
             quantity=1,
             idempotency_key="t2v-open",
@@ -1090,6 +1091,7 @@ def test_t2v_and_r2v_tasks_run_through_worker_with_protocol_payload(scene: str) 
         IndependentVideoRequest(
             mode="t2v",
             prompt_text="清晨山间别墅的延时摄影",
+            ratio="16:9",
             output_duration_seconds=6,
             quantity=1,
             idempotency_key="t2v-worker",

@@ -2345,6 +2345,11 @@ def create_generation_batch(
         request_snapshot["prompt_version_id"] = prompt_version_id
         task_prompt_snapshot = {
             **prompt_snapshot,
+            # 复刻流恒为图生视频（首帧已确认）。内联提示词路径不经 compile，
+            # snapshot 会缺 first_frame_uri，导致 worker 误判为纯文本并以
+            # adaptive 触发供应商契约失败；这里用已确认首帧的 storage_uri 兜底。
+            "first_frame_uri": prompt_snapshot.get("first_frame_uri")
+            or str(first_frame["storage_uri"]),
             "output_duration_seconds": request.output_duration_seconds,
             "resolution": request.resolution,
             "ratio": request.ratio,
