@@ -13,14 +13,28 @@ const NARRATION_COMPLETENESS_RULE =
 const SOURCE_VIDEO_EXCLUSION_RULE =
   "源视频排除：源视频只用于人物动作、镜头运动、节奏、构图和空间互动参考；不得复制、恢复、改写或近义复述源视频中的口播、对白、旁白、原说话人音色，以及字幕、标题、贴纸、水印、Logo、账号名、界面文字或其他可读文字。只有当前确认文案可以作为台词。";
 
-const FIRST_FRAME_PRESENTER_RULES = [
+const NO_NARRATION_MARKER = "无口播，不添加台词或人声旁白。";
+
+const PRESENTER_IDENTITY_RULES = [
   "主讲人绑定：<Picture 1> 中的主体是全片唯一主讲人身份参考；所有分镜里的主持人、主讲人、讲解者和口播者均指首帧中的主讲人。",
   "首帧中的主讲人，其性别、面部、发型、身形、服装和配饰只能取自 <Picture 1>；不得恢复源视频主持人的外观、性别或音色。",
   MULTI_PERSON_ROLE_RULE,
-  VOICE_CONSISTENCY_RULE,
-  NARRATION_COMPLETENESS_RULE,
-  SOURCE_VIDEO_EXCLUSION_RULE,
-].join("\n");
+];
+
+/**
+ * 无口播的提示词里补写配音和口播规则，会和正文的「无口播」自相矛盾，
+ * 因此这两条只在确实有确认文案时下发。
+ */
+function firstFramePresenterRules(prompt: string): string {
+  const narrationRules = prompt.includes(NO_NARRATION_MARKER)
+    ? []
+    : [VOICE_CONSISTENCY_RULE, NARRATION_COMPLETENESS_RULE];
+  return [
+    ...PRESENTER_IDENTITY_RULES,
+    ...narrationRules,
+    SOURCE_VIDEO_EXCLUSION_RULE,
+  ].join("\n");
+}
 
 const PRESENTER_ROLE_PATTERN =
   /(?:女性|男性|女|男)?(?:主持人|主讲人|讲解员|出镜人)/g;
@@ -41,10 +55,11 @@ export function anchorReplicaPromptToFirstFrame(prompt: string): string {
     return prompt;
   }
 
+  const silent = prompt.includes(NO_NARRATION_MARKER);
   const hasPresenterAnchor = prompt.includes("主讲人绑定：<Picture 1>");
   const hasMultiPersonRule = prompt.includes("多人场景角色分层：");
-  const hasVoiceRule = prompt.includes("配音一致性：");
-  const hasNarrationRule = prompt.includes("口播完整性：");
+  const hasVoiceRule = silent || prompt.includes("配音一致性：");
+  const hasNarrationRule = silent || prompt.includes("口播完整性：");
   const hasSourceExclusionRule = prompt.includes("源视频排除：");
   const sanitizedPrompt = hasPresenterAnchor
     ? prompt
@@ -83,17 +98,15 @@ export function anchorReplicaPromptToFirstFrame(prompt: string): string {
     .replace(VOICE_GENDER_PATTERN, "与首帧主讲人一致的声线")
     .replaceAll(protectedRole, "首帧中的主讲人");
 
+  const presenterRules = firstFramePresenterRules(prompt);
   if (anchored.includes(LEGACY_ALL_PEOPLE_ANCHOR)) {
-    return anchored.replace(
-      LEGACY_ALL_PEOPLE_ANCHOR,
-      FIRST_FRAME_PRESENTER_RULES,
-    );
+    return anchored.replace(LEGACY_ALL_PEOPLE_ANCHOR, presenterRules);
   }
 
   if (anchored.includes(sectionStart)) {
     anchored = anchored.replace(
       sectionStart,
-      `${sectionStart}\n${FIRST_FRAME_PRESENTER_RULES}`,
+      `${sectionStart}\n${presenterRules}`,
     );
   }
   return anchored;

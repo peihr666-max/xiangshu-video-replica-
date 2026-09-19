@@ -71,6 +71,22 @@ describe("anchorReplicaPromptToFirstFrame", () => {
     expect(anchored.match(/主讲人绑定：/g)).toHaveLength(1);
   });
 
+  it("keeps a silent prompt silent instead of demanding a full read-through", () => {
+    const prompt = [
+      "integrated_multimodal_description: [Shot 1]",
+      "全片人物身份、服装和配饰以首帧为准，后续不得恢复源人物外观。",
+      "无口播，不添加台词或人声旁白。",
+      "non_diegetic_music: N/A",
+    ].join("\n");
+
+    const anchored = anchorReplicaPromptToFirstFrame(prompt);
+
+    expect(anchored).toContain("多人场景角色分层：");
+    expect(anchored).toContain("源视频排除：");
+    expect(anchored).not.toContain("配音一致性：");
+    expect(anchored).not.toContain("口播完整性：");
+  });
+
   it("counts spoken characters without Chinese punctuation or whitespace", () => {
     expect(countNarrationCharacters("宅基地，依法处理！\n不能漏句。")).toBe(11);
   });

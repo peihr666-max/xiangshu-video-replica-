@@ -210,7 +210,8 @@ def test_replaced_scene_prompt_uses_confirmed_first_frame_environment() -> None:
     assert "动作：人物抬手指向源视频售楼部沙盘" not in text
     assert "运动参考（受场景替换规则约束）：relative_motion: 人物绕过源沙盘后靠近镜头" in text
     assert "源售楼部广播" not in text
-    assert "overall_soundscape: 按已确认首帧的最终场景适配环境音" in text
+    assert "overall_soundscape: 按已确认首帧的最终场景适配非语义环境音" in text
+    assert "不得恢复源场景广播、固定道具声音或任何源人声" in text
 
 
 def test_confirmed_first_frame_sources_preserve_scene_replacement_flag(monkeypatch) -> None:
@@ -284,6 +285,28 @@ def test_longer_target_automatically_scales_timeline_to_full_duration() -> None:
     assert "人物动作、镜头运动和口播间隔等比放慢" in text
     assert "目标时长" not in text
     assert "pace: 快节奏" not in text
+
+
+def test_silent_prompt_drops_narration_rules_that_contradict_no_voice_over() -> None:
+    """没有确认文案时，正文已经写明「无口播」，再要求「确认文案必须全部读出」是自相矛盾。"""
+    from app.h3_prompts import compile_replica_final_text
+
+    text = compile_replica_final_text(
+        shot_payload={"shots": [{"start_time": 0, "end_time": 4}]},
+        script_text="",
+        duration=4,
+        source_duration=4,
+        timeline_policy="preserve",
+        source_frame_time=0,
+    )
+
+    assert "无口播，不添加台词或人声旁白。" in text
+    assert "口播完整性：" not in text
+    assert "配音一致性：" not in text
+    assert "多人场景角色分层：" in text
+    assert "源视频排除：" in text
+    # 背景人声改由音景一条统一兜住，去掉配音规则不会放开源人声。
+    assert "不得复用源视频的人声、对白、口播、旁白或原说话人音色" in text
 
 
 def test_customer_duration_options_match_what_the_provider_accepts() -> None:

@@ -61,12 +61,14 @@ def test_five_view_prompts_require_live_action_skin_and_reject_plastic_ai_textur
         costume_description="蓝色施工马甲",
     )
     for prompt in (SIMPLE_CONTACT_SHEET_PROMPT, scene_prompt):
-        assert "skin microtexture" in prompt
-        assert "fine pores" in prompt
-        assert "individual hair strands" in prompt
-        assert "waxy or plastic skin" in prompt
-        assert "CGI sheen" in prompt
-        assert "beauty filter" in prompt or "beauty-filter" in prompt
+        # 提示词按行宽折行，断言只关心措辞本身，不应被折行位置左右。
+        flat = " ".join(prompt.split())
+        assert "skin microtexture" in flat
+        assert "fine pores" in flat
+        assert "individual hair strands" in flat
+        assert "waxy or plastic skin" in flat
+        assert "CGI sheen" in flat
+        assert "beauty filter" in flat or "beauty-filter" in flat
 
 
 @pytest.mark.parametrize("legacy_views", [[], ["RIGHT_45", "RIGHT_SIDE"], ["IMPORTED_REFERENCE"]])
