@@ -414,3 +414,78 @@ def test_copy_resolution_rejects_audio_only_media() -> None:
         )
     assert result.value.status_code == 422
     assert result.value.code == "VIRAL_LINK_MEDIA_MISSING"
+
+
+# ── 15 秒上限：ffprobe 实测二次校验与链接解析入口拦截 ────────────────────
+
+
+def test_link_preflight_rejects_video_over_duration_limit() -> None:
+    """视频实测时长超过 15 秒上限时，ffprobe 校验阶段必须明确报错。"""
+
+    class Probe:
+        def probe(self, content: bytes, *, filename: str) -> VideoMetadata:
+            return VideoMetadata(duration_seconds=81.0)
+
+    with pytest.raises(ViralLinkError) as result:
+        validate_resolved_media_content(
+            b"\x00\x00\x00\x18ftypisom",
+            kind="video",
+            content_type="video/mp4",
+            probe=Probe(),
+        )
+    assert result.value.status_code == 422
+    assert result.value.code == "VIRAL_LINK_MEDIA_DURATION_EXCEEDED"
+    assert "15" in result.value.message
+
+
+def test_link_preflight_allows_long_audio_sample() -> None:
+    """口播声音样本（audio）不受 15 秒视频上限约束，不得误拦。"""
+
+    class Probe:
+        def probe(self, content: bytes, *, filename: str) -> VideoMetadata:
+            return VideoMetadata(duration_seconds=81.0)
+
+    validate_resolved_media_content(
+        b"\x00\x00\x00\x18ftypM4A ",
+        kind="audio",
+        content_type="audio/mp4",
+        probe=Probe(),
+    )
+
+
+def test_preflight_rejects_resolved_link_over_duration_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """链接解析已返回超长时长时，应在下载媒体前拦截，不浪费带宽。"""
+    fetched: list[bool] = []
+
+    class Pipeline:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def fetch(self, *args: Any, **kwargs: Any) -> ViralMediaResult:
+            fetched.append(True)
+            raise AssertionError("超长视频应在下载媒体前被拦截")
+
+    monkeypatch.setattr(viral_import_routes, "ViralMediaPipeline", Pipeline)
+    resolved = ResolvedViralLink(
+        platform="douyin",
+        video_id="7672703482771972081",
+        title="long video",
+        author="",
+        cover_url=None,
+        video_url="https://media.example/video.mp4",
+        audio_url=None,
+        duration_ms=81083,
+        source_description="",
+    )
+    with pytest.raises(ViralLinkError) as result:
+        viral_import_routes.preflight_resolved_media(
+            resolved,
+            purpose="copy",
+            storage=None,  # type: ignore[arg-type]
+        )
+    assert result.value.status_code == 422
+    assert result.value.code == "VIRAL_LINK_DURATION_EXCEEDED"
+    assert "15" in result.value.message
+    assert fetched == []

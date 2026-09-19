@@ -318,6 +318,58 @@ def test_gateway_aweme_id_outside_range_is_rejected() -> None:
     assert result.value.code == "VIRAL_LINK_NATIVE_ID_INVALID"
 
 
+# ── 时长解析：douyidou 把时长放在 data.other.duration（毫秒），需嵌套兜底 ──────
+
+
+def test_douyidou_duration_falls_back_to_nested_other_field() -> None:
+    """顶层时长键缺失时，须兜底读取 data.other.duration（毫秒），否则拆解报“时长不可用”。"""
+
+    class NestedDurationTransport(DouyidouHttpTransport):
+        def request(self, url: str, *, headers: Any) -> bytes:
+            return json.dumps(
+                {
+                    "code": 0,
+                    "data": {
+                        "aweme_id": _DOUYIN_ID,
+                        "video": [f"https://media.example/{_DOUYIN_ID}.mp4"],
+                        "other": {"duration": 81083},
+                    },
+                }
+            ).encode()
+
+    client = DouyidouLinkClient(
+        app_id="test", app_secret="test", transport=NestedDurationTransport()
+    )
+    resolved = client.resolve(
+        f"https://www.douyin.com/jingxuan?modal_id={_DOUYIN_ID}", purpose="copy"
+    )
+    assert resolved.duration_ms == 81083
+
+
+def test_douyidou_top_level_duration_takes_priority_over_nested() -> None:
+    """顶层时长优先于 other.duration 兜底，嵌套值不得覆盖更精确的顶层值。"""
+
+    class BothDurationTransport(DouyidouHttpTransport):
+        def request(self, url: str, *, headers: Any) -> bytes:
+            return json.dumps(
+                {
+                    "code": 0,
+                    "data": {
+                        "aweme_id": _DOUYIN_ID,
+                        "video": [f"https://media.example/{_DOUYIN_ID}.mp4"],
+                        "duration": 5,
+                        "other": {"duration": 81083},
+                    },
+                }
+            ).encode()
+
+    client = DouyidouLinkClient(app_id="test", app_secret="test", transport=BothDurationTransport())
+    resolved = client.resolve(
+        f"https://www.douyin.com/jingxuan?modal_id={_DOUYIN_ID}", purpose="copy"
+    )
+    assert resolved.duration_ms == 5000
+
+
 def test_unused_import_guard() -> None:
     # 占位防止未来误删 Any 导入；保持与既有测试文件风格一致。
     payload: dict[str, Any] = {}

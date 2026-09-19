@@ -246,3 +246,20 @@ def test_real_analysis_rejects_local_asset_before_creating_task(monkeypatch):
         )
     assert failure.value.detail["code"] == "ANALYSIS_VIDEO_URL_UNAVAILABLE"
     enqueue.assert_not_called()
+
+
+def test_analysis_duration_rejects_reference_video_over_limit() -> None:
+    """参考视频实测时长超过 15 秒上限时，拆解入口必须明确报错而非静默失败。"""
+    import json
+
+    conn = Mock()
+    conn.execute.return_value.fetchone.return_value = {
+        "metadata_json": json.dumps({"duration_seconds": 81.0})
+    }
+    with pytest.raises(HTTPException) as failure:
+        analysis_routes.analysis_duration_for_asset(
+            conn, asset_id="asset-1", requested_duration=None
+        )
+    assert failure.value.status_code == 422
+    assert failure.value.detail["code"] == "ANALYSIS_DURATION_EXCEEDED"
+    assert "15" in failure.value.detail["message"]

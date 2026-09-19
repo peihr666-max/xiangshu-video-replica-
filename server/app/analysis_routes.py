@@ -667,6 +667,17 @@ def analysis_duration_for_asset(
                 "message": "Reference video duration is unavailable; upload it again.",
             },
         )
+    if measured_duration > MAX_ANALYSIS_DURATION_SECONDS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ANALYSIS_DURATION_EXCEEDED",
+                "message": (
+                    f"参考视频时长 {round(measured_duration)} 秒，超过 15 秒上限，"
+                    "无法拆解；请上传 15 秒以内的视频。"
+                ),
+            },
+        )
     if requested_duration is not None and abs(measured_duration - requested_duration) > 1.0:
         raise HTTPException(
             status_code=400,
