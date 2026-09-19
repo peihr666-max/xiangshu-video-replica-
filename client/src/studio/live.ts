@@ -51,6 +51,7 @@ import {
   type PublishAccountItem,
   putMaterial,
   readAnalysisPayload,
+  renameGenerationBatch,
   resolveMaterials,
   retryOralTaskArchive,
   type SimpleLibraryEntry,
@@ -875,6 +876,23 @@ export async function cancelStudioTask(
   }
   await cancelGenerationBatch(task.backendId || task.batchId || task.id);
   return {};
+}
+
+export async function renameStudioGenerationTask(
+  task: StudioTask,
+  displayName: string,
+): Promise<StudioTask> {
+  if (task.backendKind !== "generation_batch") {
+    throw new Error("当前任务类型不支持重命名。");
+  }
+  const name = displayName.trim();
+  if (!name) throw new Error("视频名称不能为空。");
+  return studioTaskFromBatch(
+    await renameGenerationBatch(
+      task.backendId || task.batchId || task.id,
+      name,
+    ),
+  );
 }
 
 async function loadTasks(_currentUser: CurrentUser) {

@@ -1806,6 +1806,7 @@ export async function getIndependentCapabilities(): Promise<IndependentCapabilit
 }
 
 export type IndependentVideoTaskInput = {
+  display_name: string;
   mode: "t2v" | "i2v" | "l2v" | "r2v";
   prompt_text: string;
   first_frame_asset_id?: string | null;

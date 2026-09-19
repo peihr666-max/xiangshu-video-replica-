@@ -2415,6 +2415,16 @@ describe("V1.4 创作页面", () => {
         "https://signed.example/asset-video.thumb.jpg",
       ),
     );
+    fireEvent.click(videoRow);
+    const referenceCanvas = screen.getByLabelText("参考画布");
+    expect(referenceCanvas).toHaveAttribute(
+      "src",
+      "https://signed.example/asset-video.mp4",
+    );
+    expect(referenceCanvas).toHaveAttribute(
+      "poster",
+      "https://signed.example/asset-video.thumb.jpg",
+    );
     const imageRow = screen.getByRole("button", { name: "预览 乡墅外观.jpg" });
     await waitFor(() =>
       expect(imageRow.querySelector("img")).toHaveAttribute(

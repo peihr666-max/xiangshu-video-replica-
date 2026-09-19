@@ -1244,6 +1244,19 @@ html:has(.studio-shell) {
   gap: 25px;
   color: #e7e9de;
 }
+.studio-task-name input {
+  min-width: 180px;
+  border: 1px solid #59664a;
+  border-radius: 7px;
+  background: #11140f;
+  color: #eef1e8;
+  padding: 8px 10px;
+}
+.studio-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .studio-task-name img {
   width: 86px;
   height: 77px;
@@ -1548,6 +1561,70 @@ html:has(.studio-shell) {
 .studio-picker-grid small {
   color: #97a384;
   font-size: var(--font-label);
+}
+.studio-reference-picker-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.studio-reference-picker-toolbar > input {
+  min-width: 220px;
+  flex: 1;
+  border: 1px solid #3b4431;
+  border-radius: 8px;
+  background: #11140f;
+  color: #eef1e8;
+  padding: 10px 12px;
+}
+.studio-reference-picker-filters {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.studio-generation-name {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0;
+  color: #c9cfbe;
+}
+.studio-generation-name > input {
+  border: 1px solid #3b4431;
+  border-radius: 8px;
+  background: #11140f;
+  color: #eef1e8;
+  padding: 10px 12px;
+}
+.studio-picker-grid--reference {
+  grid-template-columns: 1fr;
+}
+.studio-picker-grid--reference > button {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 14px;
+  align-items: center;
+}
+.studio-picker-grid--reference > button > :first-child {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.studio-picker-grid--reference img,
+.studio-picker-grid--reference .video-preview {
+  width: 112px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 7px;
+}
+.studio-picker-grid--reference strong,
+.studio-picker-grid--reference small {
+  grid-column: 2;
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .studio-new-options,
 .studio-search-results {

@@ -20,6 +20,7 @@ import {
   loadMoreOralTasks,
   loadStudioTaskDetail,
   loadTaskPreview,
+  renameStudioGenerationTask,
   retryStudioTask,
   saveTaskPreview,
   studioVideoFromViral,
@@ -1035,6 +1036,9 @@ export function TasksPage() {
   const [status, setStatus] = useState("all");
   const [kind, setKind] = useState("全部");
   const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameSavingId, setRenameSavingId] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState<
     "generation" | "oral" | null
   >(null);
@@ -1159,6 +1163,35 @@ export function TasksPage() {
       setCancellingId(null);
     }
   };
+  const saveTaskName = async (task: StudioTask) => {
+    if (review || renameSavingId) return;
+    const name = renameDraft.trim();
+    if (!name) {
+      notify("视频名称不能为空。");
+      return;
+    }
+    setRenameSavingId(task.id);
+    try {
+      const updated = await renameStudioGenerationTask(task, name);
+      updateData((current) => ({
+        ...current,
+        tasks: current.tasks.map((item) =>
+          item.id === task.id ? { ...item, title: updated.title } : item,
+        ),
+      }));
+      setRenamingId(null);
+      setRenameDraft("");
+      notify("视频名称已更新。");
+    } catch (cause) {
+      notify(
+        cause instanceof Error && cause.message.trim()
+          ? cause.message
+          : "重命名失败，请重试。",
+      );
+    } finally {
+      setRenameSavingId(null);
+    }
+  };
   return (
     <section className="studio-tasks-page">
       <h1>任务中心</h1>
@@ -1209,7 +1242,20 @@ export function TasksPage() {
                     ) : (
                       <Icon name="video" size={30} />
                     )}
-                    <span>{task.title}</span>
+                    {renamingId === task.id ? (
+                      <input
+                        aria-label={`重命名 ${task.title}`}
+                        maxLength={120}
+                        value={renameDraft}
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void saveTaskName(task);
+                          if (event.key === "Escape") setRenamingId(null);
+                        }}
+                      />
+                    ) : (
+                      <span>{task.title}</span>
+                    )}
                   </div>
                 </td>
                 <td>{task.type}</td>
@@ -1218,26 +1264,64 @@ export function TasksPage() {
                 </td>
                 <td>{formatTaskTime(task.submitted)}</td>
                 <td>
-                  {task.status === "queued" &&
-                  (task.backendKind !== "oral_task" ||
-                    task.backendStatus === "QUEUED") ? (
-                    <Button
-                      variant="quiet"
-                      disabled={cancellingId === task.id}
-                      onClick={() => void cancelTask(task)}
-                    >
-                      {cancellingId === task.id ? "取消中…" : "取消任务"}
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="quiet"
-                      onClick={() =>
-                        navigate("task-detail", taskDetailPatch(task, "tasks"))
-                      }
-                    >
-                      {task.status === "completed" ? "查看结果" : "查看详情"}
-                    </Button>
-                  )}
+                  <div className="studio-task-actions">
+                    {task.backendKind === "generation_batch" &&
+                    renamingId === task.id ? (
+                      <>
+                        <Button
+                          variant="quiet"
+                          disabled={
+                            renameSavingId === task.id || !renameDraft.trim()
+                          }
+                          onClick={() => void saveTaskName(task)}
+                        >
+                          {renameSavingId === task.id ? "保存中…" : "保存名称"}
+                        </Button>
+                        <Button
+                          variant="quiet"
+                          disabled={renameSavingId === task.id}
+                          onClick={() => setRenamingId(null)}
+                        >
+                          取消
+                        </Button>
+                      </>
+                    ) : (
+                      task.backendKind === "generation_batch" && (
+                        <Button
+                          variant="quiet"
+                          onClick={() => {
+                            setRenamingId(task.id);
+                            setRenameDraft(task.title);
+                          }}
+                        >
+                          重命名
+                        </Button>
+                      )
+                    )}
+                    {task.status === "queued" &&
+                    (task.backendKind !== "oral_task" ||
+                      task.backendStatus === "QUEUED") ? (
+                      <Button
+                        variant="quiet"
+                        disabled={cancellingId === task.id}
+                        onClick={() => void cancelTask(task)}
+                      >
+                        {cancellingId === task.id ? "取消中…" : "取消任务"}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="quiet"
+                        onClick={() =>
+                          navigate(
+                            "task-detail",
+                            taskDetailPatch(task, "tasks"),
+                          )
+                        }
+                      >
+                        {task.status === "completed" ? "查看结果" : "查看详情"}
+                      </Button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

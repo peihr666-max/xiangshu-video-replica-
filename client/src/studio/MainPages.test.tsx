@@ -33,6 +33,7 @@ const {
   cancelStudioTask,
   downloadStudioTaskResult,
   retryStudioTask,
+  renameStudioGenerationTask,
   loadMoreGenerationTasks,
   loadMoreOralTasks,
   loadStudioTaskDetail,
@@ -76,6 +77,7 @@ const {
   cancelStudioTask: vi.fn(),
   downloadStudioTaskResult: vi.fn(),
   retryStudioTask: vi.fn(),
+  renameStudioGenerationTask: vi.fn(),
   loadMoreGenerationTasks: vi.fn(),
   loadMoreOralTasks: vi.fn(),
   loadStudioTaskDetail: vi.fn(),
@@ -112,6 +114,7 @@ vi.mock("./live", () => ({
   cancelStudioTask,
   downloadStudioTaskResult,
   retryStudioTask,
+  renameStudioGenerationTask,
   loadMoreGenerationTasks,
   loadMoreOralTasks,
   loadStudioTaskDetail,
@@ -217,6 +220,7 @@ describe("V1.4 任务详情真实成片预览", () => {
     loadTaskPreview.mockReset();
     downloadStudioTaskResult.mockReset();
     retryStudioTask.mockReset();
+    renameStudioGenerationTask.mockReset();
     loadStudioTaskDetail.mockReset();
   });
 
@@ -1873,6 +1877,39 @@ describe("V1.4 任务中心列表", () => {
     expect(screen.getByRole("tab", { name: "进行中 2" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "待处理 1" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "已完成" })).toBeInTheDocument();
+  });
+
+  it("普通视频批次支持在任务中心重命名", async () => {
+    const generationTask: StudioTask = {
+      ...doneTask,
+      id: "generation-name",
+      backendId: "generation-name",
+      backendKind: "generation_batch",
+      title: "原视频名称",
+      type: "视频生成",
+    };
+    const value = tasksPage({ data: data([generationTask]) });
+    useStudio.mockReturnValue(value);
+    renameStudioGenerationTask.mockResolvedValue({
+      ...generationTask,
+      title: "乡墅庭院成片",
+    });
+    render(<TasksPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    fireEvent.change(screen.getByLabelText("重命名 原视频名称"), {
+      target: { value: "乡墅庭院成片" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存名称" }));
+
+    await waitFor(() =>
+      expect(renameStudioGenerationTask).toHaveBeenCalledWith(
+        generationTask,
+        "乡墅庭院成片",
+      ),
+    );
+    expect(value.updateData).toHaveBeenCalled();
+    expect(value.notify).toHaveBeenCalledWith("视频名称已更新。");
   });
 
   it("普通批次和口播任务使用独立历史游标且按 id 去重追加", async () => {
