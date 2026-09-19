@@ -15,6 +15,7 @@ import {
   createVideoUploadIntent,
   defaultBatchProvider,
   deletePublishAccount,
+  deleteStudioDraft,
   downloadMaterialAsset,
   type GenerationBatch,
   type GenerationBatchInput,
@@ -1325,6 +1326,8 @@ export async function reloadStats(): Promise<StudioStats | null> {
 /** 云端草稿恢复结果：草稿 + 我的文案列表。 */
 export type CloudDraftRestore = {
   draft: StudioDraft;
+  /** 服务端记录的最后更新时间，恢复提示据此判断草稿是否已经太旧。 */
+  updatedAt: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1399,7 +1402,26 @@ export async function loadCloudDraft(): Promise<CloudDraftRestore | undefined> {
   const draft = draftFromPayload(record.payload);
   if (!draft) return undefined;
   draft.script.confirmed = record.script_confirmed;
-  return { draft };
+  return { draft, updatedAt: record.updated_at };
+}
+
+/** 放弃云端工作草稿。草稿已不存在（404）也算放弃成功——用户要的是「这次
+ * 别再给我恢复」，服务端那行在不在不影响结论；其余错误抛给调用方提示，
+ * 否则会出现「点了放弃、下次打开又回来」的静默失败。 */
+export async function discardCloudDraft(): Promise<void> {
+  try {
+    await deleteStudioDraft("copy" satisfies StudioDraftKind);
+  } catch (cause: unknown) {
+    if (
+      cause &&
+      typeof cause === "object" &&
+      "status" in cause &&
+      (cause as { status?: number }).status === 404
+    ) {
+      return;
+    }
+    throw cause;
+  }
 }
 
 /** 云端草稿自动保存（last-write-wins）。整个 StudioDraft 序列化上送，

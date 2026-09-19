@@ -38,6 +38,7 @@ export function CustomerWelcomePage({ onLogin }: { onLogin(): void }) {
       openLive: onLogin,
       requestGeneration: onLogin,
       saveDraft: onLogin,
+      discardSavedDraft: onLogin,
       confirmFinalDraft: onLogin,
       extractScriptFromUpload: onLogin,
       refresh: onLogin,

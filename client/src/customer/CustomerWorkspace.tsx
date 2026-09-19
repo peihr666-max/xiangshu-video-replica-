@@ -19,6 +19,7 @@ import {
   customerUnbindDevice,
   customerUpdateProfile,
 } from "../api";
+import { clearAccountResidue } from "../studio/draftResidue";
 import { StudioWorkspace } from "../studio/StudioWorkspace";
 import { customerToCurrentUser } from "./customerToCurrentUser";
 import type {
@@ -316,6 +317,14 @@ export function CustomerWorkspace({
     }
   }
 
+  /** 登出先清本账号的本地创作残留与页间缓存：进程不重启就换账号时，
+   * 模块级缓存和 localStorage 都会原样串进下一个人的工作区。
+   * 清理是本地的、失败也不影响登出本身，所以放在等待服务端释放之前。 */
+  async function handleLogout(): Promise<CustomerLogoutOutcome> {
+    clearAccountResidue(user.userId);
+    return onLogout();
+  }
+
   return (
     <div className="customer-workspace">
       {currentCredential ? (
@@ -330,7 +339,7 @@ export function CustomerWorkspace({
               void handleDismissPairing(pairingId),
             onProfileUpdated: setProfile,
             onRefreshProfile: () => loadProfile(),
-            onLogout,
+            onLogout: handleLogout,
             onRefreshDevices: loadDevices,
             onResetActivationCode: handleResetActivationCode,
             onUnbind: (deviceId) => void handleUnbind(deviceId),

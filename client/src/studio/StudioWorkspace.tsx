@@ -46,8 +46,11 @@ import {
 } from "./CreationPages";
 import { createCloudDraftQueue } from "./cloudDraftQueue";
 import { StudioContext, useStudio } from "./context";
+import { clearCreationDraftResidue } from "./draftResidue";
 import { LiveWorkspacePanel } from "./LiveWorkspacePanel";
 import {
+  type CloudDraftRestore,
+  discardCloudDraft,
   extractScriptFromUpload as extractScriptFromUploadLive,
   loadCloudDraft,
   loadDraftMaterials,
@@ -128,6 +131,29 @@ type WalletSummary = Pick<
   StudioAccountSummary,
   "walletStatus" | "availableCredits"
 >;
+
+// LEFTOVER-ON-OPEN：太旧的草稿连问都不问——上个月的半截活儿弹出来只是噪音。
+// 超时只是不再提示，绝不静默删除：那是用户的内容，删除必须由用户点。
+const DRAFT_PROMPT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 草稿是否新到值得打断用户。时间戳解析不出来时按「值得」处理：
+ * 宁可多问一次，也不要把还热乎的草稿悄悄藏起来。 */
+function shouldPromptRestore(restore: CloudDraftRestore): boolean {
+  const savedAt = Date.parse(restore.updatedAt);
+  if (Number.isNaN(savedAt)) return true;
+  return Date.now() - savedAt <= DRAFT_PROMPT_MAX_AGE_MS;
+}
+
+function formatDraftSavedAt(updatedAt: string): string {
+  const savedAt = Date.parse(updatedAt);
+  if (Number.isNaN(savedAt)) return "";
+  return new Date(savedAt).toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 // 侧边栏折叠是设备级偏好：仅存本地，不上服务端。
 const SIDEBAR_COLLAPSED_KEY = "studio.sidebar.collapsed";
@@ -392,6 +418,11 @@ export function StudioWorkspace({
   const videoSubmissionRef = useRef<SubmissionEnvelope | null>(null);
   const currentUserRoleRef = useRef(currentUser.role);
   const permissionGenerationRef = useRef(0);
+  // LEFTOVER-ON-OPEN：读回来但还没回填的上次草稿，等用户决定恢复还是放弃。
+  const [pendingRestore, setPendingRestore] =
+    useState<CloudDraftRestore | null>(null);
+  const [discardBusy, setDiscardBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState("");
   if (currentUserRoleRef.current !== currentUser.role) {
     currentUserRoleRef.current = currentUser.role;
     permissionGenerationRef.current += 1;
@@ -653,22 +684,27 @@ export function StudioWorkspace({
     void restoreDraftAssets(draft);
   }, [restoreDraftAssets]);
 
-  // 挂载时恢复云端草稿与我的文案；失败静默（只读路径，不阻塞工作区）。
+  // 挂载时读云端草稿与我的文案；失败静默（只读路径，不阻塞工作区）。
+  // LEFTOVER-ON-OPEN：草稿只挂成一条可拒绝的提示，绝不直接回填。以前这里
+  // 直接 setState 覆盖 draft，于是每次打开软件都带着上次的项目、来源视频和
+  // 分镜进来——复刻页拿到 projectId 就自动把上次的拆解结果拉回来，用户永远
+  // 看不到干净的首屏，也没有任何入口能把它清掉。
+  // biome-ignore lint/correctness/useExhaustiveDependencies: loadCloudDraft 读的是「当前会话那个账号」的草稿，依赖是语义上的而非语法上的——换账号必须重读，否则提示里挂的还是上一个人的内容。
   useEffect(() => {
     if (review) return;
     let active = true;
+    // 换账号要连提示一起换：留着上一个账号的待恢复草稿，就等于给下一个人
+    // 一个能把别人内容读进工作区的按钮。
+    setPendingRestore(null);
+    setRestoreError("");
     void loadCloudDraft()
       .then(async (restore) => {
         const saved = await loadSavedScriptList().catch(() => []);
         if (!active) return;
         if (saved.length)
           setState((previous) => ({ ...previous, savedScripts: saved }));
-        if (restore && !draftTouchedRef.current) {
-          latestDraftRef.current = restore.draft;
-          setState((previous) => ({ ...previous, draft: restore.draft }));
-          notify("已恢复上次云端草稿，请核对内容并确认终稿。");
-          void restoreDraftAssets(restore.draft);
-        }
+        if (restore && !draftTouchedRef.current && shouldPromptRestore(restore))
+          setPendingRestore(restore);
       })
       .catch(() => {});
     return () => {
@@ -676,7 +712,65 @@ export function StudioWorkspace({
       referenceAssetsRequestRef.current += 1;
       window.clearTimeout(draftSaveTimerRef.current);
     };
-  }, [review, notify, restoreDraftAssets]);
+  }, [review, currentUser.id]);
+
+  /** 已排队/在途的自动保存必须先作废，否则删掉云端那行之后，
+   * 迟到的一次 PUT 会把同一份旧草稿原样写回来。 */
+  const cancelPendingDraftSave = useCallback(() => {
+    window.clearTimeout(draftSaveTimerRef.current);
+    draftSaveTimerRef.current = undefined;
+    saveOperationRef.current += 1;
+  }, []);
+
+  /** 放弃上次内容：云端那一行与本地未保存文本一起清。 */
+  const discardStoredDraft = useCallback(async () => {
+    cancelPendingDraftSave();
+    await discardCloudDraft();
+    clearCreationDraftResidue(currentUser.id);
+  }, [cancelPendingDraftSave, currentUser.id]);
+
+  /** 页面级重来入口（复刻页「开始新的复刻」等）用的放弃：即发即忘，
+   * 失败只提示，不阻塞页面自己的清空动作。 */
+  const discardSavedDraft = () => {
+    if (review || currentUserRoleRef.current === "auditor") return;
+    draftTouchedRef.current = false;
+    setPendingRestore(null);
+    void discardStoredDraft().catch(() => {
+      if (mountedRef.current) notify("云端上次内容未能清除，请稍后重试。");
+    });
+  };
+
+  const acceptPendingRestore = () => {
+    const restore = pendingRestore;
+    if (!restore) return;
+    setPendingRestore(null);
+    setRestoreError("");
+    latestDraftRef.current = restore.draft;
+    setState((previous) => ({ ...previous, draft: restore.draft }));
+    notify("已恢复上次云端草稿，请核对内容并确认终稿。");
+    void restoreDraftAssets(restore.draft);
+  };
+
+  // 放弃只删「上次存下的那份」，不动用户这次已经敲进去的内容——
+  // 提示还挂着时用户完全可能已经开始写新的了。
+  const discardPendingRestore = () => {
+    if (currentUserRoleRef.current === "auditor" || discardBusy) return;
+    setDiscardBusy(true);
+    setRestoreError("");
+    void discardStoredDraft()
+      .then(() => {
+        if (!mountedRef.current) return;
+        setPendingRestore(null);
+        notify("上次内容已清除，这次从空白开始。");
+      })
+      .catch(() => {
+        if (mountedRef.current)
+          setRestoreError("未能清除上次内容，请检查网络后重试。");
+      })
+      .finally(() => {
+        if (mountedRef.current) setDiscardBusy(false);
+      });
+  };
   // 自动保存始终跟随最新草稿：导入项目、任务快照回填等不经 patchDraft 的
   // 路径也在这里并入追踪。
   useEffect(() => {
@@ -1804,10 +1898,14 @@ export function StudioWorkspace({
     openLive,
     requestGeneration,
     saveDraft,
+    discardSavedDraft,
     confirmFinalDraft,
     extractScriptFromUpload,
     refresh,
   };
+  const savedAtLabel = pendingRestore
+    ? formatDraftSavedAt(pendingRestore.updatedAt)
+    : "";
   const activeNav = state.page.startsWith("person-")
     ? "people"
     : state.page === "viral-detail"
@@ -1975,6 +2073,31 @@ export function StudioWorkspace({
             </button>
           </div>
           <div className="studio-stage">
+            {pendingRestore && (
+              <div className="studio-restore-prompt" role="status">
+                <Icon name="info" />
+                <span>
+                  上次还有没做完的创作
+                  {savedAtLabel && `（保存于 ${savedAtLabel}）`}
+                  。不恢复就从空白开始。
+                </span>
+                <Button variant="outline" onClick={acceptPendingRestore}>
+                  恢复上次内容
+                </Button>
+                <Button
+                  variant="quiet"
+                  disabled={currentUser.role === "auditor" || discardBusy}
+                  onClick={discardPendingRestore}
+                >
+                  {discardBusy ? "清除中…" : "放弃"}
+                </Button>
+              </div>
+            )}
+            {restoreError && (
+              <p className="studio-restore-error" role="alert">
+                {restoreError}
+              </p>
+            )}
             {data.errors.length > 0 && (
               <div className="studio-errors" role="alert">
                 {data.errors.join("；")}
@@ -2055,6 +2178,14 @@ export function StudioWorkspace({
               variant="quiet"
               onClick={() => {
                 setState((previous) => ({ ...previous, draft: createDraft() }));
+                // 只清内存的话，云端那一行会在下次打开时把旧内容原样带回来。
+                draftTouchedRef.current = false;
+                setPendingRestore(null);
+                if (currentUserRoleRef.current !== "auditor")
+                  void discardStoredDraft().catch(() => {
+                    if (mountedRef.current)
+                      notify("云端上次内容未能清除，请稍后重试。");
+                  });
                 navigate("workbench");
                 setNewCreation(false);
               }}
