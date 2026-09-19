@@ -1471,6 +1471,38 @@ html:has(.studio-shell) {
   margin: 55px 0 18px;
   font-size: var(--font-body);
 }
+/* 上次未完成创作的恢复提示：首屏第一条，恢复与放弃都在这里收口。 */
+.studio-restore-prompt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid #3f5c48;
+  border-radius: 7px;
+  background: #18211b;
+  color: #cfe0d4;
+  margin: 55px 0 18px;
+  font-size: var(--font-body);
+}
+/* 顶上已有恢复提示时错开外边距，避免两条中间空出一大截。 */
+.studio-restore-prompt + .studio-errors,
+.studio-restore-prompt ~ .studio-restore-error {
+  margin-top: 0;
+}
+.studio-restore-prompt span {
+  flex: 1;
+  min-width: 220px;
+}
+.studio-restore-error {
+  padding: 8px 14px;
+  border: 1px solid #7a3b3b;
+  border-radius: 7px;
+  background: #241a1a;
+  color: #e2b4b4;
+  margin: 0 0 18px;
+  font-size: var(--font-body);
+}
 .studio-dialog {
   position: fixed;
   inset: 0;

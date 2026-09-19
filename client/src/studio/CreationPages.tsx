@@ -1228,6 +1228,7 @@ export function ReplicaPage() {
     state,
     data,
     review,
+    discardSavedDraft,
     patchDraft,
     updateData,
     navigate,
@@ -1409,6 +1410,41 @@ export function ReplicaPage() {
     compiledPromptRef.current = false;
     applyFinalSnapshot(null);
     analysisProjectRef.current = undefined;
+  };
+
+  // 重来出路（LEFTOVER-ON-OPEN）：绑上项目后，空态的渲染条件
+  // `stage === "source" && !project` 就再也满足不了了——project 是从草稿的
+  // projectId 推出来的，页面此前没有任何入口能解开这个绑定，用户想重新开始
+  // 只能「更换来源视频」（得先有个新文件）。这里把绑定连同云端存的上次内容
+  // 一起清掉，页面才真的回到起点。
+  const startFreshReplica = () => {
+    if (readOnly || analysisBusy) return;
+    restoreOperationRef.current += 1;
+    restoredProjectIdRef.current = undefined;
+    restoreSuppressedRef.current = false;
+    setRestoreBusy(false);
+    setRestoreError("");
+    resetReplicaState();
+    setPromptText("");
+    promptTextRef.current = "";
+    promptEditedRef.current = false;
+    promptTypedThisMountRef.current = false;
+    setStage("source");
+    patchDraft({
+      projectId: undefined,
+      sourceId: undefined,
+      sourceAssetId: undefined,
+      firstFrameId: undefined,
+      firstFrameSelectionVersionId: undefined,
+      analysisTaskId: undefined,
+      analysisTaskStatus: undefined,
+      prompt: "",
+      promptEdited: false,
+      script: createDraft().script,
+      scriptEdited: false,
+    });
+    discardSavedDraft();
+    notify("已清空本次复刻，上传新的参考视频即可重新开始。");
   };
 
   const restoreSavedProject = useCallback(
@@ -2009,6 +2045,13 @@ export function ReplicaPage() {
                       onClick={() => uploadInputRef.current?.click()}
                     >
                       更换来源视频
+                    </Button>
+                    <Button
+                      disabled={readOnly || analysisBusy}
+                      variant="quiet"
+                      onClick={startFreshReplica}
+                    >
+                      开始新的复刻
                     </Button>
                   </div>
                   {restoreBusy && (

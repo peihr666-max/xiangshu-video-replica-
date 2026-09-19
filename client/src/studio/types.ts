@@ -367,6 +367,9 @@ export type StudioContextValue = {
   ) => void;
   requestGeneration: (kind: StudioTask["type"]) => void;
   saveDraft: () => void;
+  /** 放弃云端存着的「上次内容」（含本地未保存文本）。重来入口必须调它，
+   * 只清内存的话下次打开软件旧内容又会被恢复回来。 */
+  discardSavedDraft: () => void;
   /** 确认终稿：云端保存成功后置 confirmed；项目已有分镜时再同步项目脚本。 */
   confirmFinalDraft: () => void;
   /** 上传来源视频 → 提取文案（script-from-audio）→ 回填草稿并跳文案工坊。 */

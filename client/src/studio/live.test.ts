@@ -40,6 +40,7 @@ const api = vi.hoisted(() => ({
   getLatestProjectAnalysis: vi.fn(),
   getLatestProjectShotCards: vi.fn(),
   getStudioDraft: vi.fn(),
+  deleteStudioDraft: vi.fn(),
   listStudioSavedScripts: vi.fn(),
   saveStudioSavedScript: vi.fn(),
   getStudioAnalytics: vi.fn(async () => null),
@@ -70,6 +71,7 @@ vi.mock("../api", () => api);
 
 import {
   cancelStudioTask,
+  discardCloudDraft,
   downloadStudioTaskResult,
   loadCloudDraft,
   loadDraftMaterials,
@@ -471,6 +473,44 @@ describe("真实 Studio 只读适配器", () => {
       );
     },
   );
+
+  it("把云端草稿的更新时间一并带回：恢复提示要按它判定新旧", async () => {
+    api.getStudioDraft.mockResolvedValue({
+      draft_kind: "copy",
+      payload: createDraft(),
+      script_confirmed: false,
+      revision: 5,
+      updated_at: "2026-09-07T10:00:00+08:00",
+    });
+
+    const restored = await loadCloudDraft();
+
+    expect(restored?.updatedAt).toBe("2026-09-07T10:00:00+08:00");
+  });
+
+  it("放弃云端草稿调用 DELETE", async () => {
+    api.deleteStudioDraft.mockResolvedValue(undefined);
+
+    await discardCloudDraft();
+
+    expect(api.deleteStudioDraft).toHaveBeenCalledWith("copy");
+  });
+
+  it("草稿已不存在（404）视为放弃成功，不打断调用方", async () => {
+    api.deleteStudioDraft.mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404 }),
+    );
+
+    await expect(discardCloudDraft()).resolves.toBeUndefined();
+  });
+
+  it("放弃失败（非 404）把错误抛给调用方提示", async () => {
+    api.deleteStudioDraft.mockRejectedValue(
+      Object.assign(new Error("boom"), { status: 500 }),
+    );
+
+    await expect(discardCloudDraft()).rejects.toThrow("boom");
+  });
 
   it("恢复旧模板草稿时迁移到当前真实可用的标准口播", async () => {
     api.getStudioDraft.mockResolvedValue({
