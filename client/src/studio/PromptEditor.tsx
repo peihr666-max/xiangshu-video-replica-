@@ -371,7 +371,7 @@ export function ReplicaFinalPromptControls({
           <textarea
             value={openingAction}
             disabled={readOnly || busy}
-            placeholder="说明如何从这张中段画面开始"
+            placeholder="例如：以当前首帧为起点，人物保持现有姿态，镜头缓慢推进，随后自然衔接到原视频的第一个动作。"
             onChange={(event) => {
               operation.current += 1;
               setPending(null);
@@ -388,6 +388,7 @@ export function ReplicaFinalPromptControls({
             <textarea
               value={openingAction}
               disabled={readOnly || busy}
+              placeholder="例如：人物从首帧姿态自然起步，镜头跟随并衔接到原视频动作。"
               onChange={(event) => {
                 operation.current += 1;
                 setPending(null);

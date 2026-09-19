@@ -248,7 +248,10 @@ describe("最终提示词后置", () => {
   // 却看不到修正入口。草稿里的时间戳没有恢复路径，未知是常态而非边缘情况。
   it("时间戳未知时按服务端口径要求开场衔接，不折叠进高级设置", () => {
     render(<FinalHarness sourceFrameTimestamp={-1} />);
-    expect(screen.getByLabelText("开场衔接")).toBeInTheDocument();
+    expect(screen.getByLabelText("开场衔接")).toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("自然衔接到原视频"),
+    );
   });
 
   it("执行前逐项显示缺失原因，并在补齐前不调用服务端", () => {
