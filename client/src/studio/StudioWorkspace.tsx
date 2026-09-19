@@ -73,6 +73,7 @@ import {
   WorkbenchPage,
 } from "./MainPages";
 import { PeoplePage, PersonPage } from "./PeoplePages";
+import { constrainReferenceVideoPrompt } from "./referencePrompt";
 import {
   buildOralInput,
   createDraft,
@@ -1002,7 +1003,10 @@ export function StudioWorkspace({
       }
       const request = {
         mode,
-        prompt_text: draft.prompt,
+        prompt_text:
+          mode === "r2v"
+            ? constrainReferenceVideoPrompt(draft.prompt)
+            : draft.prompt,
         first_frame_asset_id:
           mode === "i2v" ? (draft.firstFrameId ?? null) : null,
         last_frame_asset_id:

@@ -16,9 +16,38 @@ MAX_PROMPT_CHARS = 7000
 Mode = Literal["T2VA", "I2VA", "FL2VA", "L2VA", "Ref2VA"]
 RULES = Path(__file__).with_name("prompt_rules")
 
-_PRESENTER_ROLE_PATTERN = re.compile(
-    r"(?:女性|男性|女|男)?(?:主持人|主讲人|讲解员|出镜人)"
+_PRESENTER_ROLE_PATTERN = re.compile(r"(?:女性|男性|女|男)?(?:主持人|主讲人|讲解员|出镜人)")
+_VOICE_GENDER_PATTERN = re.compile(r"(?:女性|男性|女|男)(?:声音|声线|嗓音|人声)")
+
+REFERENCE_VIDEO_VISUAL_ONLY_RULE = (
+    "Source-video exclusion: reference videos provide only body motion, camera motion, "
+    "timing, framing, and spatial interaction. Do not copy, recreate, paraphrase, or retain "
+    "any source-video dialogue, narration, spoken words, voice identity, subtitles, captions, "
+    "titles, stickers, watermarks, logos, UI text, or other visible text."
 )
+REFERENCE_VIDEO_DIALOGUE_RULE = (
+    "Dialogue authority: only the current user-confirmed script may be spoken. If no new script "
+    "is supplied, generate no intelligible speech. Background characters must not repeat source "
+    "speech. An independently bound Audio reference may be used only for its explicitly assigned "
+    "purpose; never recover audio from a reference video."
+)
+
+
+def enforce_reference_video_exclusions(text: str) -> str:
+    """Make Ref2VA visual-only even when an older optimizer omits the exclusion rules."""
+
+    missing = [
+        rule
+        for rule in (REFERENCE_VIDEO_VISUAL_ONLY_RULE, REFERENCE_VIDEO_DIALOGUE_RULE)
+        if rule not in text
+    ]
+    if not missing:
+        return text
+    block = "\n".join(missing)
+    soundscape = re.search(r"(?m)^overall_soundscape\s*:", text)
+    if soundscape is None:
+        return f"{text.rstrip()}\n{block}"
+    return f"{text[: soundscape.start()].rstrip()}\n{block}\n{text[soundscape.start() :]}"
 
 
 def _anchor_presenter_to_first_frame(value: object) -> str:
@@ -34,6 +63,7 @@ def _anchor_presenter_to_first_frame(value: object) -> str:
     marker = "__FIRST_FRAME_PRESENTER__"
     text = text.replace("首帧中的主讲人", marker)
     text = _PRESENTER_ROLE_PATTERN.sub(marker, text)
+    text = _VOICE_GENDER_PATTERN.sub("与首帧主讲人一致的声线", text)
     return text.replace(marker, "首帧中的主讲人")
 
 
@@ -131,6 +161,12 @@ def compile_replica_final_text(
     # Timing policy never discards a sentence. A conservative speaking estimate is
     # surfaced as a conflict rather than silently accelerating the narration.
     spoken_chars = len(re.sub(r"[\s，。！？、,.!?；;：:]", "", script_text))
+    if duration == 15 and spoken_chars and not 60 <= spoken_chars <= 90:
+        conflict(
+            "SCRIPT_LENGTH_INVALID",
+            f"15 秒口播需控制在 60–90 字，当前为 {spoken_chars} 字；"
+            "请调整文案后完整朗读，不得漏句或截断。",
+        )
     if spoken_chars > duration * 6:
         conflict("SCRIPT_DURATION_CONFLICT", "确认文案预计超过目标时长，请缩短文案或增加时长。")
     if re.search(r"</?d>|<(?:Picture|Video|Audio)\s", script_text):
@@ -147,8 +183,18 @@ def compile_replica_final_text(
         "所有分镜里的主持人、主讲人、讲解者和口播者均指首帧中的主讲人。",
         "首帧中的主讲人，其性别、面部、发型、身形、服装和配饰只能取自 <Picture 1>；"
         "不得恢复源视频主持人的外观、性别或音色。",
-        "陪衬人物规则：村民等其他人物保持彼此独立，不得复制 <Picture 1> 主讲人的脸、"
-        "服装或身份。",
+        "多人场景角色分层：<Picture 1> 主讲人是唯一主要角色；村民等人物属于背景配角，"
+        "按分镜保留人数、位置、动作和互动，面部与服装彼此不同；不得复制主讲人的脸、"
+        "服装或身份，不得互换主配角。",
+        "配音一致性：全部清晰口播只属于 <Picture 1> 主讲人；声线的性别呈现、年龄感须与"
+        "首帧人物一致，全片保持同一说话者和同一音色。主讲人未出镜时使用同一人的画外音；"
+        "背景配角只保留无明确语义的环境人声，不得朗读主讲人台词，不得出现异性声线替换、"
+        "多人同时口播或中途变声。",
+        "口播完整性：确认文案必须从第一个字到最后一个字全部读出，不得漏句、改写、重复、"
+        "合并或截断；在目标时长内通过统一语速和自然停顿完成全部内容。",
+        "源视频排除：源视频只用于人物动作、镜头运动、节奏、构图和空间互动参考；不得复制、"
+        "恢复、改写或近义复述源视频中的口播、对白、旁白、原说话人音色，以及字幕、标题、"
+        "贴纸、水印、Logo、账号名、界面文字或其他可读文字。只有当前确认文案可以作为台词。",
     ]
     if source_duration < duration:
         # 放慢是节奏指令，API 参数表达不了，必须留在正文；措辞不复述目标时长。
@@ -205,15 +251,12 @@ def compile_replica_final_text(
                 lines.append(f"{key}: {_anchor_presenter_to_first_frame(shot[key])}")
         if index == 0 and opening_action.strip():
             lines.append(
-                "用户确认的开场衔接："
-                f"{_anchor_presenter_to_first_frame(opening_action.strip())}"
+                f"用户确认的开场衔接：{_anchor_presenter_to_first_frame(opening_action.strip())}"
             )
         else:
             if shot.get("action"):
                 action_label = "动作参考（受场景替换规则约束）" if replace_scene else "动作"
-                lines.append(
-                    f"{action_label}：{_anchor_presenter_to_first_frame(shot['action'])}"
-                )
+                lines.append(f"{action_label}：{_anchor_presenter_to_first_frame(shot['action'])}")
             if isinstance(shot.get("motion"), dict):
                 motion_prefix = "运动参考（受场景替换规则约束）：" if replace_scene else ""
                 lines.extend(
@@ -227,27 +270,16 @@ def compile_replica_final_text(
         )
     else:
         lines.append("无口播，不添加台词或人声旁白。")
-    ambient_values = list(
-        dict.fromkeys(
-            str(s["ambient_sound"]) for s in shot_payload["shots"] if s.get("ambient_sound")
-        )
-    )
     soundscape = (
-        "按已确认首帧的最终场景适配环境音；不得恢复源场景广播或固定道具声音。"
+        "按已确认首帧的最终场景适配非语义环境音；不得恢复源场景广播、固定道具声音或任何源人声。"
         if replace_scene
         else (
-            "；".join(_anchor_presenter_to_first_frame(value) for value in ambient_values)
-            if ambient_values
-            else "N/A"
+            "仅生成与当前画面匹配的非语义环境音；不得复用源视频的人声、对白、"
+            "口播、旁白或原说话人音色。"
         )
     )
     lines.append(f"overall_soundscape: {soundscape}")
-    music_values = list(
-        dict.fromkeys(
-            str(s["music_style_hint"]) for s in shot_payload["shots"] if s.get("music_style_hint")
-        )
-    )
-    lines.append("non_diegetic_music: " + ("；".join(music_values) if music_values else "N/A"))
+    lines.append("non_diegetic_music: N/A")
     return "\n".join(lines)
 
 

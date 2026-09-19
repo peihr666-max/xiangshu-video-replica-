@@ -3240,7 +3240,7 @@ function ShotTableImporter({
       disabled={disabled}
       onClick={() => void importFromClipboard()}
     >
-      <Icon name="copy" size={16} /> 导入分镜表
+      <Icon name="copy" size={16} /> 导入分镜脚本
     </Button>
   );
 }
@@ -4256,7 +4256,7 @@ export function VideoPage() {
           )}
           <PromptEditor
             label="提示词"
-            rows={16}
+            rows={24}
             showToolbarLabel
             toolbarLabel={
               <>
@@ -4278,7 +4278,7 @@ export function VideoPage() {
                 />
                 {!referenceMode ? (
                   <ShotTableImporter
-                    disabled={readOnly || !state.draft.firstFrameId}
+                    disabled={readOnly}
                     onImport={(promptText) => {
                       setShotTableImported(true);
                       patchDraft({

@@ -8,7 +8,10 @@ import {
   getLatestProjectShotCards,
   type PromptGenerationContext,
 } from "../api";
-import { anchorReplicaPromptToFirstFrame } from "./promptIdentity";
+import {
+  anchorReplicaPromptToFirstFrame,
+  countNarrationCharacters,
+} from "./promptIdentity";
 import { Icon } from "./ui";
 import { usePromptOptimization } from "./usePromptOptimization";
 import "./prompt-editor.css";
@@ -154,6 +157,11 @@ export function ReplicaFinalPromptControls({
     sourceFrameTimestamp === undefined ||
     sourceFrameTimestamp < 0 ||
     sourceFrameTimestamp > 0.25;
+  const narrationCharacters = countNarrationCharacters(input.scriptText);
+  const narrationLengthValid =
+    !input.scriptText.trim() ||
+    input.duration !== 15 ||
+    (narrationCharacters >= 60 && narrationCharacters <= 90);
   const preflightChecks: ReplicaPreflightCheck[] = [
     ...upstreamChecks,
     {
@@ -182,6 +190,12 @@ export function ReplicaFinalPromptControls({
       reason: input.scriptText.trim()
         ? "请在口播文案区域点击“确认”。"
         : "请确认本视频无口播。",
+    },
+    {
+      id: "script-length",
+      label: "口播字数",
+      passed: narrationLengthValid,
+      reason: `15 秒口播需为 60–90 字，当前为 ${narrationCharacters} 字；请调整后完整朗读，不得漏句。`,
     },
     {
       id: "timeline",
