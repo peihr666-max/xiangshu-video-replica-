@@ -102,6 +102,7 @@ it("sameTasks 判定任务清单是否无实质变化（P1-3）", () => {
     false,
   );
   expect(sameTasks([task], [{ ...task, progress: 60 }])).toBe(false);
+  expect(sameTasks([task], [{ ...task, title: "已重命名视频" }])).toBe(false);
   expect(sameTasks([task], [])).toBe(false);
 });
 

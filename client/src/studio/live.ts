@@ -799,7 +799,7 @@ export const CREATION_KIND_LABELS: Record<string, StudioTask["type"]> = {
   replacement: "人物置换",
 };
 
-/** MATERIAL-PERF-D（P1-3）：任务清单是否无实质变化（id/状态/进度/提交时间一致）。
+/** MATERIAL-PERF-D（P1-3）：任务清单是否无实质变化（id/名称/状态/进度/提交时间一致）。
  * 任务轮询据此在无变化时返回原 data 引用，避免每 20s 全树重渲染。 */
 export function sameTasks(a: StudioTask[], b: StudioTask[]): boolean {
   if (a.length !== b.length) return false;
@@ -808,6 +808,7 @@ export function sameTasks(a: StudioTask[], b: StudioTask[]): boolean {
     if (!other) return false;
     return (
       task.id === other.id &&
+      task.title === other.title &&
       task.status === other.status &&
       task.progress === other.progress &&
       task.submitted === other.submitted

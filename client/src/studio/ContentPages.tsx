@@ -1993,7 +1993,8 @@ function MaterialsPageContent() {
   );
 
   // MATERIAL-PERF-A（P0-2）：整页可见素材一次批量授权，替代逐瓦片
-  // download-url + 元数据往返。图片仍走本机缓存判定；仅 generationTaskId
+  // download-url + 元数据往返。首屏只读取已有缓存或返回在线地址，不在批量
+  // 请求内下载 24 份原图；已有本机缓存仍优先使用。仅 generationTaskId
   // 的素材保持单资产回退通道。批量整体失败（超时/网络）时退化为逐条路径。
   const loadPreviewsBatch = useCallback(
     async (assets: StudioAsset[]) => {
@@ -2026,7 +2027,7 @@ function MaterialsPageContent() {
           user.id,
           pending.map((asset) => ({
             id: asset.previewAssetId ?? asset.assetId ?? "",
-            populate: asset.kind === "image" && !cacheSuppressedRef.current,
+            populate: false,
           })),
           { signal: controller.signal },
         );
@@ -2557,8 +2558,8 @@ function MaterialsPageContent() {
             {clearingCache ? "正在清理…" : "清理本机缓存"}
           </Button>
           <p>
-            图片自动缓存，视频和音频首次播放时后台缓存；单个文件不超过 50
-            MB，超限继续在线预览。
+            首屏优先在线预览并复用已有本机缓存；视频和音频首次播放时后台缓存。
+            单个文件不超过 50 MB，超限继续在线预览。
           </p>
           {cacheMessage ? <p role="status">{cacheMessage}</p> : null}
         </section>
