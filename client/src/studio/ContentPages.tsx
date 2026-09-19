@@ -1742,10 +1742,27 @@ function AssetCard({
   onPreviewError: (failedUrl?: string) => void;
   onPlay: () => void;
 }) {
+  const kindLabel = asset.composite ? "五视图" : assetKindLabel(asset.kind);
+  const status =
+    previewStatus === "loading"
+      ? "预览加载中…"
+      : previewStatus === "error"
+        ? "预览加载失败，点击重试"
+        : asset.delivery === "direct"
+          ? "生成完成"
+          : asset.saved
+            ? "永久保存"
+            : "处理中";
+  const statusTone =
+    previewStatus === "error"
+      ? "is-error"
+      : previewStatus === "loading" || status === "处理中"
+        ? "is-pending"
+        : "is-ready";
   return (
     <button
       type="button"
-      className={`content-asset ${asset.kind === "video" ? "content-asset--video" : ""} ${selected ? "is-selected" : ""} ${asset.composite ? "content-asset--composite" : ""}`}
+      className={`content-asset content-asset--${asset.kind} ${selected ? "is-selected" : ""} ${asset.composite ? "content-asset--composite" : ""}`}
       onClick={onSelect}
       aria-label={`选择素材 ${asset.name}`}
     >
@@ -1756,22 +1773,14 @@ function AssetCard({
         onError={onPreviewError}
         onPlay={onPlay}
       />
-      <strong>{asset.name}</strong>
-      <span>
-        {asset.group} ·{" "}
-        {asset.composite ? "1 套五视图" : assetKindLabel(asset.kind)}
+      <div className="content-asset__title-row">
+        <strong title={asset.name}>{asset.name}</strong>
+        <span className="content-asset__kind">{kindLabel}</span>
+      </div>
+      <span className="content-asset__meta">
+        {asset.group} · {asset.composite ? "1 套五视图" : kindLabel}
       </span>
-      <i>
-        {previewStatus === "loading"
-          ? "预览加载中…"
-          : previewStatus === "error"
-            ? "预览加载失败，点击重试"
-            : asset.delivery === "direct"
-              ? "生成完成"
-              : asset.saved
-                ? "永久保存"
-                : "处理中"}
-      </i>
+      <span className={`content-asset__status ${statusTone}`}>{status}</span>
     </button>
   );
 }
