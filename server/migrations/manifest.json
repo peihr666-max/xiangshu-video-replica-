@@ -535,7 +535,7 @@
     },
     "20260919T1000_browser_account_probe": {
       "file": "versions/20260919T1000_browser_account_probe.py",
-      "sha256": "46c70514b01e9bb577ecb74ba70bff9ef5feca5c144e9c83a1fde2f74ea452e1"
+      "sha256": "f896ecb25e85af081468d591014057233aca189f8ae3c1dbfd60bdeb52d18eb6"
     }
   },
   "task": "MIGRATION-GUARD-20260912"
