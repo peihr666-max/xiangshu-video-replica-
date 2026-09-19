@@ -97,6 +97,7 @@ import {
   hasCopyResult,
   MAX_REFERENCE_MEDIA_SECONDS,
   mergeStudioAssets,
+  resolveVideoMode,
   validateReferences,
 } from "./state";
 import type {
@@ -3004,6 +3005,17 @@ function ParameterControls() {
   const { state, patchDraft, user } = useStudio();
   const readOnly = user.role === "auditor";
   const draft = state.draft;
+  // 供应商 ratio 契约（2026-09-19 真实付费核对）：
+  //   t2v 不支持 adaptive，隐藏"自动"选项；
+  //   i2v/l2v 恒为 adaptive（比例由首帧图片决定），禁用选择器。
+  const mode = resolveVideoMode(
+    state.page,
+    Boolean(draft.firstFrameId),
+    Boolean(draft.tailFrameId),
+  );
+  const frameBased = mode === "i2v" || mode === "l2v";
+  const ratioOptions =
+    mode === "t2v" ? ratios.filter((r) => r !== "自动") : ratios;
   return (
     <div className="creation-parameters creation-parameters--inline">
       <Field label="分辨率">
@@ -3034,18 +3046,27 @@ function ParameterControls() {
         </select>
       </Field>
       <Field label="画面比例">
-        <select
-          aria-label="画面比例"
-          disabled={readOnly}
-          value={draft.ratio}
-          onChange={(event) => patchDraft({ ratio: event.target.value })}
-        >
-          {ratios.map((ratio) => (
-            <option key={ratio} value={ratio}>
-              {ratio}
-            </option>
-          ))}
-        </select>
+        {frameBased ? (
+          <>
+            <select aria-label="画面比例" disabled value="自动">
+              <option value="自动">自动（由首帧图片决定）</option>
+            </select>
+            <Hint>图生视频的画面比例由首帧图片决定，无需选择。</Hint>
+          </>
+        ) : (
+          <select
+            aria-label="画面比例"
+            disabled={readOnly}
+            value={ratioOptions.includes(draft.ratio) ? draft.ratio : "9:16"}
+            onChange={(event) => patchDraft({ ratio: event.target.value })}
+          >
+            {ratioOptions.map((ratio) => (
+              <option key={ratio} value={ratio}>
+                {ratio}
+              </option>
+            ))}
+          </select>
+        )}
       </Field>
       <Field label="生成数量">
         <select

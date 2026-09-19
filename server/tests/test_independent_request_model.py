@@ -158,6 +158,29 @@ def test_matrix_extended_gate_blocks_r2v_when_disabled() -> None:
     assert exc.value.detail["code"] == "EXTENDED_MODE_PENDING_VERIFICATION"
 
 
+def test_matrix_t2v_rejects_adaptive_ratio() -> None:
+    # BUG-1（2026-09-19 真实付费核对）：纯文本 T2V 供应商要求 ratio 必填
+    # 且不能为 adaptive（否则 400/err 2013），建批入口必须 422 拦下。
+    with pytest.raises(HTTPException) as exc:
+        _validate_independent_mode_assets(
+            _request(mode="t2v", ratio="adaptive"), extended_enabled=True
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "INDEPENDENT_T2V_RATIO_REQUIRED"
+
+
+def test_matrix_t2v_accepts_concrete_ratio() -> None:
+    _validate_independent_mode_assets(_request(mode="t2v", ratio="16:9"), extended_enabled=True)
+
+
+def test_matrix_i2v_allows_adaptive_ratio() -> None:
+    # I2V 的 ratio 由 build_h3_request 归一为 adaptive，入口不应拦截。
+    _validate_independent_mode_assets(
+        _request(mode="i2v", first_frame_asset_id="frame-1", ratio="adaptive"),
+        extended_enabled=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-kind reference caps (pure): image ≤ 8, video ≤ 3, audio ≤ 3.
 # ---------------------------------------------------------------------------

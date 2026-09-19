@@ -234,6 +234,16 @@ def _validate_independent_mode_assets(
             "INDEPENDENT_MODE_ASSET_CONFLICT",
             "参考素材仅支持参考生视频(R2V)。",
         )
+    # BUG-1（2026-09-19 对 MiniMax-H3 真实核对）：纯文本 T2V 供应商要求 ratio
+    # 必填且不能为 adaptive，否则 400（err 2013）。这里在建批入口就拦下，给
+    # 用户可读文案，而不是等 worker 提交时才失败。前端在 t2v 模式也会隐藏
+    # “自动”选项，二者一致。放在素材矩阵校验之后，保持既有错误码优先级。
+    if request.mode == "t2v" and request.ratio == "adaptive":
+        raise generation_error(
+            422,
+            "INDEPENDENT_T2V_RATIO_REQUIRED",
+            "文生视频需指定具体画面比例（如 16:9），不支持自动/自适应。",
+        )
     if request.mode == "i2v" and not request.first_frame_asset_id:
         raise generation_error(
             422, "INDEPENDENT_FIRST_FRAME_REQUIRED", "图生视频需要选择首帧图片。"

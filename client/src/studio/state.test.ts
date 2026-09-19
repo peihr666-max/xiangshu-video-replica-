@@ -9,6 +9,7 @@ import {
   draftFromTask,
   hasCopyResult,
   patchStudioDraft,
+  resolveSubmittedRatio,
   routeFromHash,
   studioHashForState,
   studioRouteFromHash,
@@ -21,6 +22,25 @@ describe("V1.4 交接合同", () => {
   it("新草稿默认使用竖屏生成比例", () => {
     expect(createDraft().ratio).toBe("9:16");
   });
+
+  // 供应商 ratio 契约（2026-09-19 对 MiniMax-H3 真实付费核对）。
+  it("文生视频自动/无效比例回落 9:16，具体比例透传", () => {
+    expect(resolveSubmittedRatio("t2v", "自动")).toBe("9:16");
+    expect(resolveSubmittedRatio("t2v", "adaptive")).toBe("9:16");
+    expect(resolveSubmittedRatio("t2v", "")).toBe("9:16");
+    expect(resolveSubmittedRatio("t2v", "16:9")).toBe("16:9");
+  });
+  it("图生/尾帧视频恒为 adaptive，用户选择不生效", () => {
+    expect(resolveSubmittedRatio("i2v", "16:9")).toBe("adaptive");
+    expect(resolveSubmittedRatio("i2v", "自动")).toBe("adaptive");
+    expect(resolveSubmittedRatio("l2v", "9:16")).toBe("adaptive");
+  });
+  it("参考生视频尊重用户选择，无效/自动时为 adaptive", () => {
+    expect(resolveSubmittedRatio("r2v", "16:9")).toBe("16:9");
+    expect(resolveSubmittedRatio("r2v", "自动")).toBe("adaptive");
+    expect(resolveSubmittedRatio("r2v", "nonsense")).toBe("adaptive");
+  });
+
   it("提取原文不冒充二创结果，历史人工稿仍可编辑", () => {
     const script = { ...createDraft().script, original: "原文", text: "原文" };
     expect(hasCopyResult(script)).toBe(false);

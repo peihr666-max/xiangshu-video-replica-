@@ -14,7 +14,6 @@ import {
   defaultBatchProvider,
   type GenerationBatch,
   type GenerationPriceQuote,
-  type GenerationRatio,
   getAssetDownloadUrl,
   getGenerationBatch,
   getGenerationPriceQuote,
@@ -91,8 +90,8 @@ import {
   navigateStudioState,
   pageTitles,
   patchStudioDraft,
+  resolveSubmittedRatio,
   resolveVideoMode,
-  SUPPORTED_VIDEO_RATIOS,
   studioHashForState,
   studioRouteFromHash,
   validateReferences,
@@ -1115,11 +1114,7 @@ export function StudioWorkspace({
             : 8,
         resolution:
           draft.resolution === "2K" ? ("2K" as const) : ("768P" as const),
-        ratio: (SUPPORTED_VIDEO_RATIOS as readonly string[]).includes(
-          draft.ratio,
-        )
-          ? (draft.ratio as GenerationRatio)
-          : "adaptive",
+        ratio: resolveSubmittedRatio(mode, draft.ratio),
         quantity: draft.count === 2 || draft.count === 4 ? draft.count : 1,
         provider: defaultBatchProvider(),
       };
