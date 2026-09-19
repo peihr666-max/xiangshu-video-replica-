@@ -39,6 +39,34 @@ ENDPOINTS = {
 DOUYIN_IDENTITY_URL = "https://creator.douyin.com/web/api/media/user/info/?aid=1128"
 DOUYIN_PROBE_INTERVAL_SECONDS = 3.0
 
+# 视频号登录二维码只在 /platform 控制台路径下直接渲染；根路径落地页需交互才出码，
+# 是网页版视频号取不到码的主因之一。抖音创作者后台根路径已能直接出码（测试通过），
+# 小红书保持不变，避免回退已验证的路径。
+LOGIN_PATHS = {
+    "douyin": "",
+    "wechat_channels": "/platform",
+    "xiaohongshu": "",
+}
+
+# 无头 Chromium 默认暴露 navigator.webdriver 等自动化特征，微信风控据此可能不渲染
+# 二维码或直接拦截。注入最小 stealth 脚本 + 常规 UA/语言，降低被识别为无头的概率。
+CHROMIUM_ARGS = ("--disable-blink-features=AutomationControlled",)
+STEALTH_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+STEALTH_INIT_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+window.chrome = window.chrome || { runtime: {} };
+Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+"""
+
+# 找不到二维码元素时的整页截图兜底：登录页稳定后（grace）按 interval 节流地把整页
+# 当作可扫图像推给前端，用户直接扫页面里的码。三平台统一启用。
+FULLPAGE_FALLBACK_GRACE_SECONDS = 6.0
+FULLPAGE_FALLBACK_INTERVAL_SECONDS = 3.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,12 +214,15 @@ async def login_events(
     last_douyin_probe_at: float | None = None
     tasks: set[asyncio.Task[None]] = set()
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
+        browser = await playwright.chromium.launch(headless=True, args=list(CHROMIUM_ARGS))
         try:
             context = await browser.new_context(
                 storage_state=cast(StorageState | None, storage),
                 viewport={"width": 1080, "height": 780},
+                user_agent=STEALTH_USER_AGENT,
+                locale="zh-CN",
             )
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
             page = await context.new_page()
 
             async def capture(response: Response) -> None:
@@ -216,8 +247,12 @@ async def login_events(
             page.on("response", on_response)
             # The login shell may keep loading optional scripts while its QR is ready.
             # Start observing after the response commits; each locator tolerates loading DOM.
-            await page.goto(ORIGINS[platform], wait_until="commit", timeout=45000)
-            deadline = time.monotonic() + 280
+            await page.goto(
+                ORIGINS[platform] + LOGIN_PATHS[platform], wait_until="commit", timeout=45000
+            )
+            started_at = time.monotonic()
+            last_fallback_at: float | None = None
+            deadline = started_at + 280
             while time.monotonic() < deadline:
                 on_douyin_creator_page = platform == "douyin" and _is_douyin_creator_page(page.url)
                 now = time.monotonic()
@@ -272,7 +307,21 @@ async def login_events(
                             else BrowserEvent("action_required")
                         )
                     else:
-                        yield BrowserEvent("loading")
+                        fallback_due = now - started_at >= FULLPAGE_FALLBACK_GRACE_SECONDS and (
+                            last_fallback_at is None
+                            or now - last_fallback_at >= FULLPAGE_FALLBACK_INTERVAL_SECONDS
+                        )
+                        if fallback_due:
+                            last_fallback_at = now
+                            png = await page.screenshot(type="png", timeout=5000)
+                            image = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+                            yield (
+                                BrowserEvent("qr_ready", image=image)
+                                if len(image) <= 600000
+                                else BrowserEvent("action_required")
+                            )
+                        else:
+                            yield BrowserEvent("loading")
                 except Exception:
                     yield BrowserEvent("action_required")
                 await asyncio.sleep(1.5)

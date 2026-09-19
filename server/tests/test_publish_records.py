@@ -117,10 +117,15 @@ def seed_account(
     enc = Fernet(_TEST_KEY.encode()).encrypt(
         json.dumps(storage if storage is not None else _STORAGE_STATE).encode()
     )
+    # 刚连接的账号尚未到 24h 巡检期：与生产 upsert_browser_account 一致把
+    # next_probe_at 设为 now+24h，这样发布投递测试走 phase 2，而不会被 worker
+    # 的 phase-1b 浏览器登录态探测抢占（探测到期语义在 test_publish_browser.py
+    # 专测）。留空 NULL 会被 claim_browser_probe_work 视作「立即到期」。
     pg.execute(
         "INSERT INTO publish_browser_accounts "
-        "(id, user_id, platform, platform_user_id, username, storage_state_enc, status) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        "(id, user_id, platform, platform_user_id, username, storage_state_enc, status, "
+        "next_probe_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, clock_timestamp() + interval '24 hours')",
         (account_id, user_id, platform, "uid-" + account_id[:8], username, enc.decode(), status),
     )
     return account_id
