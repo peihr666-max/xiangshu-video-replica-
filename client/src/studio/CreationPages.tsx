@@ -1944,6 +1944,7 @@ export function ReplicaPage() {
   const analysisCheck: ReplicaPreflightCheck = {
     id: "analysis-ready",
     label: "AI 视频拆解",
+    blocking: false,
     passed: hasShots && !analysisBusy && !analysisError && !restoreError,
     reason: analysisBusy
       ? "视频仍在拆解，请等待分镜读取完成。"
@@ -1954,6 +1955,7 @@ export function ReplicaPage() {
   const shotSaveCheck: ReplicaPreflightCheck = {
     id: "shot-edits-saved",
     label: "分镜保存",
+    blocking: false,
     passed:
       Boolean(shotCardVersionId) &&
       !shotsDirty &&
@@ -3227,7 +3229,7 @@ function ShotTableImporter({
         return;
       }
       onImport(result.promptText);
-      notify("分镜表已导入，请点击“AI 优化为 H3”。");
+      notify("分镜表已导入，请点击“AI 优化”。");
     } catch {
       notify("无法读取剪贴板，请检查剪贴板权限后重试。");
     }
@@ -4297,7 +4299,7 @@ export function VideoPage() {
               importedModeMismatch
                 ? "按当前素材 AI 转换"
                 : shotTableImported
-                  ? "AI 优化为 H3"
+                  ? "AI 优化"
                   : undefined
             }
             scope={`${user.id}:${state.page}`}

@@ -2570,7 +2570,7 @@ describe("V1.4 创作页面", () => {
     });
   });
 
-  it("图生视频可从剪贴板导入分镜表并提示优化为 H3", async () => {
+  it("图生视频可从剪贴板导入分镜表并提示 AI 优化", async () => {
     const readText = vi
       .fn()
       .mockResolvedValue(
@@ -2604,9 +2604,9 @@ describe("V1.4 创作页面", () => {
     });
     expect(
       screen.getByRole("button", { name: "AI 优化提示词" }),
-    ).toHaveTextContent("AI 优化为 H3");
+    ).toHaveTextContent("AI 优化");
     expect(value.notify).toHaveBeenCalledWith(
-      "分镜表已导入，请点击“AI 优化为 H3”。",
+      "分镜表已导入，请点击“AI 优化”。",
     );
   });
 

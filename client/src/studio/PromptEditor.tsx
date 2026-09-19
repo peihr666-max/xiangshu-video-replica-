@@ -25,6 +25,7 @@ export type ReplicaPreflightCheck = {
   label: string;
   passed: boolean;
   reason: string;
+  blocking?: boolean;
 };
 
 export function ReplicaPreflightChecklist({
@@ -32,17 +33,34 @@ export function ReplicaPreflightChecklist({
 }: {
   checks: ReplicaPreflightCheck[];
 }) {
-  const incomplete = checks.filter((check) => !check.passed).length;
+  const blocking = checks.filter(
+    (check) => !check.passed && check.blocking !== false,
+  ).length;
+  const warnings = checks.filter(
+    (check) => !check.passed && check.blocking === false,
+  ).length;
   return (
     <section className="replica-preflight" aria-label="生成前检查">
       <div className="replica-preflight__summary" aria-live="polite">
         <strong>生成前检查</strong>
-        <span>{incomplete ? `还需完成 ${incomplete} 项` : "全部通过"}</span>
+        <span>
+          {blocking
+            ? `还需完成 ${blocking} 项${warnings ? ` · ${warnings} 项建议` : ""}`
+            : warnings
+              ? `可继续 · ${warnings} 项建议`
+              : "全部通过"}
+        </span>
       </div>
       <ul>
         {checks.map((check) => (
           <li
-            className={check.passed ? "is-passed" : "is-blocked"}
+            className={
+              check.passed
+                ? "is-passed"
+                : check.blocking === false
+                  ? "is-warning"
+                  : "is-blocked"
+            }
             key={check.id}
           >
             <span aria-hidden="true">{check.passed ? "✓" : "!"}</span>
@@ -159,6 +177,7 @@ export function ReplicaFinalPromptControls({
       id: "script-confirmed",
       label: "口播文案",
       passed: confirmed,
+      blocking: false,
       reason: input.scriptText.trim()
         ? "请在口播文案区域点击“确认”。"
         : "请确认本视频无口播。",
@@ -179,7 +198,9 @@ export function ReplicaFinalPromptControls({
           : "所选首帧不是视频开头，请填写开场衔接。",
     },
   ];
-  const blockingChecks = preflightChecks.filter((check) => !check.passed);
+  const blockingChecks = preflightChecks.filter(
+    (check) => !check.passed && check.blocking !== false,
+  );
   const preparedCallback = useRef(onPrepared);
   preparedCallback.current = onPrepared;
   useEffect(() => {

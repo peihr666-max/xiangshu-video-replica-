@@ -1102,6 +1102,11 @@
   color: var(--studio-gold, #f3b431);
 }
 
+.replica-preflight li.is-warning > span:first-child,
+.replica-preflight li.is-warning small {
+  color: var(--studio-muted, #a9a9a9);
+}
+
 .creation-shot-row {
   display: flex;
   gap: 12px;

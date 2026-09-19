@@ -191,6 +191,17 @@ describe("最终提示词后置", () => {
       shot_card_version_id: "shots",
     });
   });
+  it("口播尚未确认时只提醒，不阻止合成最终提示词", async () => {
+    render(<FinalHarness />);
+
+    const checklist = screen.getByRole("region", { name: "生成前检查" });
+    expect(checklist).toHaveTextContent("可继续 · 1 项建议");
+    const compose = screen.getByRole("button", { name: "合成最终提示词" });
+    expect(compose).toBeEnabled();
+
+    fireEvent.click(compose);
+    await waitFor(() => expect(api.compile).toHaveBeenCalledOnce());
+  });
   it("迟到合成只作为候选展示，不能覆盖等待期间的人工修改", async () => {
     let finish: ((value: unknown) => void) | undefined;
     api.compile.mockReturnValue(
