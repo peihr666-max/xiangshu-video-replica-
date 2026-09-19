@@ -322,17 +322,30 @@ def _first_url(value: object) -> str | None:
     return None
 
 
+def _coerce_duration_ms(raw_duration: object) -> int:
+    """将单个原始时长值归一为毫秒：>10000 视为毫秒，否则视为秒。"""
+    if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float, str)):
+        return 0
+    try:
+        duration = float(raw_duration)
+    except (TypeError, ValueError):
+        return 0
+    if duration <= 0:
+        return 0
+    return round(duration if duration > 10_000 else duration * 1000)
+
+
 def _duration_ms(payload: dict[str, Any]) -> int:
+    # 顶层键优先；douyidou 把时长放在 data.other.duration（毫秒），顶层缺失时兜底读取。
     for key in ("duration", "video_duration", "time", "length"):
-        raw_duration = payload.get(key)
-        if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float, str)):
-            continue
-        try:
-            duration = float(raw_duration)
-        except (TypeError, ValueError):
-            continue
-        if duration > 0:
-            return round(duration if duration > 10_000 else duration * 1000)
+        resolved = _coerce_duration_ms(payload.get(key))
+        if resolved > 0:
+            return resolved
+    other = payload.get("other")
+    if isinstance(other, dict):
+        resolved = _coerce_duration_ms(other.get("duration"))
+        if resolved > 0:
+            return resolved
     return 0
 
 

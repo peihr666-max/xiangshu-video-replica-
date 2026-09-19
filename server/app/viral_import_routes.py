@@ -14,6 +14,8 @@ from app.auth import AuthenticatedUser, Database
 from app.customer_fence import BusinessDbDep
 from app.db_portable import BusinessConnection
 from app.media import (
+    DURATION_ROUNDING_TOLERANCE_SECONDS,
+    MAX_DURATION_SECONDS,
     MAX_UPLOAD_BYTES,
     FFprobeVideoProbe,
     VideoProbe,
@@ -50,6 +52,9 @@ from app.viral_tikhub import ViralSourceError, ViralVideo
 
 router = APIRouter(prefix="/api/viral", tags=["viral"])
 _LINK_RECEIPT_LEASE = timedelta(minutes=2)
+# 与上传/拆解预检保持一致：15 秒硬上限 + 舍入容差。
+_MAX_LINK_DURATION_SECONDS = MAX_DURATION_SECONDS + DURATION_ROUNDING_TOLERANCE_SECONDS
+_MAX_LINK_DURATION_MS = int(_MAX_LINK_DURATION_SECONDS * 1000)
 
 
 class ViralLinkResolutionRequest(BaseModel):
@@ -247,6 +252,15 @@ def _resolved_video(resolved: ResolvedViralLink) -> ViralVideo:
 def preflight_resolved_media(
     resolved: ResolvedViralLink, *, purpose: str, storage: StorageAdapter
 ) -> None:
+    # 链接解析已带时长时，先拦截超过 15 秒上限的视频，避免无谓下载与后续静默失败。
+    if resolved.duration_ms > _MAX_LINK_DURATION_MS:
+        raise ViralLinkError(
+            422,
+            "VIRAL_LINK_DURATION_EXCEEDED",
+            f"视频时长约 {round(resolved.duration_ms / 1000)} 秒，超过 15 秒上限，"
+            "无法复刻；请截取 15 秒以内片段后重试。",
+            retryable=False,
+        )
     # Resolver audio URLs may point to a video's background music instead of its
     # spoken soundtrack. Always cache the full video so copy extraction uses the
     # audio track embedded in the original upload.
@@ -356,6 +370,15 @@ def validate_resolved_media_content(
             422,
             "VIRAL_LINK_MEDIA_INVALID",
             "链接媒体无法播放，请上传 MP4 或 MOV 文件。",
+            retryable=False,
+        )
+    # 仅视频受 15 秒上限约束；口播声音样本（audio）时长可较长，不在此拦截。
+    if kind == "video" and metadata.duration_seconds > _MAX_LINK_DURATION_SECONDS:
+        raise ViralLinkError(
+            422,
+            "VIRAL_LINK_MEDIA_DURATION_EXCEEDED",
+            f"视频实测时长 {round(metadata.duration_seconds)} 秒，超过 15 秒上限，"
+            "无法复刻；请截取 15 秒以内片段后重试。",
             retryable=False,
         )
 
